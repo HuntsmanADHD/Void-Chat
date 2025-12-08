@@ -1,7 +1,3 @@
-// Clawed Messenger - Prisma Schema
-// Privacy-focused Web3 messaging platform with Solana wallet authentication
-// Learn more: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -10,10 +6,6 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
-
-// =============================================================================
-// ENUMS
-// =============================================================================
 
 enum MembershipRole {
   OWNER
@@ -37,33 +29,43 @@ enum ReportStatus {
 }
 
 enum ScanStatus {
-  PENDING      // File uploaded, scan not started
-  SCANNING     // Scan in progress
-  CLEAN        // Scan completed, no threats found
-  QUARANTINED  // Threat detected, file quarantined
-  ERROR        // Scan failed, manual review needed
+  PENDING
+  SCANNING
+  CLEAN
+  QUARANTINED
+  ERROR
 }
 
-// =============================================================================
-// USER MODEL
-// Represents a user identified by their Solana wallet address
-// =============================================================================
+enum AppealStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum NotificationType {
+  DM_RECEIVED
+  MENTION
+  REACTION
+  COMMUNITY_INVITE
+  STRIKE_RECEIVED
+  APPEAL_UPDATE
+  REPLY_RECEIVED
+}
 
 model User {
   id            String    @id @default(cuid())
   walletAddress String    @unique
-  xHandle       String?   @unique // Twitter/X handle (optional)
-  xId           String?   @unique // Twitter/X user ID (optional)
-  publicKey     String    // TweetNaCl public key for E2E encryption (base64 encoded)
-  tokenBalance  BigInt    @default(0) // $CLAWED token balance
-  strikes       Int       @default(0) // Strike count (0-3)
-  isBlacklisted Boolean   @default(false) // Permanent ban status
-  blacklistedAt DateTime? // When the user was blacklisted
-  timeoutUntil  DateTime? // Temporary ban expiration
+  xHandle       String?   @unique
+  xId           String?   @unique
+  publicKey     String
+  tokenBalance  BigInt    @default(0)
+  strikes       Int       @default(0)
+  isBlacklisted Boolean   @default(false)
+  blacklistedAt DateTime?
+  timeoutUntil  DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  // Relations
   ownedCommunities Community[]  @relation("CommunityOwner")
   memberships      Membership[]
   sentMessages     Message[]    @relation("MessageSender")
@@ -80,129 +82,84 @@ model User {
   notificationsSent     Notification[] @relation("NotificationSender")
 
   @@index([walletAddress])
-  @@index([xHandle])
   @@index([isBlacklisted])
-  @@index([timeoutUntil])
-  @@index([isBlacklisted, timeoutUntil])
-  @@index([tokenBalance])
 }
-
-// =============================================================================
-// COMMUNITY MODEL
-// Token-gated communities that users can join
-// =============================================================================
 
 model Community {
   id              String   @id @default(cuid())
   name            String
   description     String?
-  avatar          String?  // URL to community avatar image
+  avatar          String?
   ownerId         String
-  minTokenBalance BigInt   @default(0) // Minimum $CLAWED tokens required to join
-  isPublic        Boolean  @default(true) // Whether community is discoverable
+  minTokenBalance BigInt   @default(0)
+  isPublic        Boolean  @default(true)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  // Relations
   owner       User         @relation("CommunityOwner", fields: [ownerId], references: [id], onDelete: Cascade)
   channels    Channel[]
   memberships Membership[]
 
   @@index([ownerId])
   @@index([isPublic])
-  @@index([minTokenBalance])
 }
-
-// =============================================================================
-// CHANNEL MODEL
-// Channels within communities where messages are posted
-// =============================================================================
 
 model Channel {
   id          String   @id @default(cuid())
   name        String
   description String?
   communityId String
-  isDefault   Boolean  @default(false) // Default channel shown when joining community
+  isDefault   Boolean  @default(false)
   createdAt   DateTime @default(now())
 
-  // Relations
   community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
   messages  Message[]
 
   @@index([communityId])
-  @@index([isDefault])
 }
-
-// =============================================================================
-// MESSAGE MODEL
-// Encrypted messages - content is ALWAYS encrypted, never stored as plaintext
-// Supports threaded replies via self-referential parentId relation
-// =============================================================================
 
 model Message {
   id               String   @id @default(cuid())
-  encryptedContent String   // TweetNaCl encrypted content (base64 encoded)
-  nonce            String   // Encryption nonce (base64 encoded)
+  encryptedContent String
+  nonce            String
   senderId         String
-  channelId        String?  // For channel messages
-  recipientId      String?  // For direct messages
+  channelId        String?
+  recipientId      String?
   isDirectMessage  Boolean  @default(false)
   createdAt        DateTime @default(now())
+  parentId         String?
+  replyCount       Int      @default(0)
 
-  // Threading support
-  parentId         String?  // Reference to parent message (null = top-level message)
-  replyCount       Int      @default(0) // Cached count of replies for performance
-
-  // Relations
   sender      User         @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
   channel     Channel?     @relation(fields: [channelId], references: [id], onDelete: Cascade)
   recipient   User?        @relation("MessageRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
   reports     Report[]
   attachments Attachment[]
   reactions   Reaction[]
-
-  // Self-referential relation for threading
   parent      Message?     @relation("MessageReplies", fields: [parentId], references: [id], onDelete: SetNull)
   replies     Message[]    @relation("MessageReplies")
 
   @@index([senderId])
   @@index([channelId])
   @@index([recipientId])
-  @@index([isDirectMessage])
   @@index([createdAt])
   @@index([parentId])
-  @@index([senderId, recipientId, isDirectMessage, createdAt])
-  @@index([channelId, createdAt])
-  @@index([parentId, createdAt])
 }
-
-// =============================================================================
-// REACTION MODEL
-// Emoji reactions on messages
-// =============================================================================
 
 model Reaction {
   id        String   @id @default(cuid())
   messageId String
   userId    String
-  emoji     String   // The emoji character (e.g., "👍", "❤️")
+  emoji     String
   createdAt DateTime @default(now())
 
-  // Relations
   message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  // Each user can only react with a specific emoji once per message
   @@unique([messageId, userId, emoji])
   @@index([messageId])
   @@index([userId])
 }
-
-// =============================================================================
-// MEMBERSHIP MODEL
-// Tracks user membership in communities with role-based permissions
-// =============================================================================
 
 model Membership {
   id          String         @id @default(cuid())
@@ -211,189 +168,115 @@ model Membership {
   role        MembershipRole @default(MEMBER)
   joinedAt    DateTime       @default(now())
 
-  // Relations
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
 
   @@unique([userId, communityId])
   @@index([userId])
   @@index([communityId])
-  @@index([role])
 }
-
-// =============================================================================
-// REPORT MODEL
-// User reports for moderation - part of the 3-strike system
-// =============================================================================
 
 model Report {
   id             String       @id @default(cuid())
   reporterId     String
   reportedUserId String
-  messageId      String?      // Optional reference to the reported message
+  messageId      String?
   category       ReportCategory
   description    String
   status         ReportStatus @default(PENDING)
   reviewedAt     DateTime?
-  reviewedById   String?      // Admin who reviewed the report
+  reviewedById   String?
   createdAt      DateTime     @default(now())
 
-  // Relations
   reporter     User     @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
   reportedUser User     @relation("ReportedUser", fields: [reportedUserId], references: [id], onDelete: Cascade)
   message      Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
   reviewedBy   User?    @relation("ReportReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
-  strike       Strike?  // Strike that resulted from this report
+  strike       Strike?
 
   @@index([reporterId])
   @@index([reportedUserId])
   @@index([status])
-  @@index([category])
-  @@index([createdAt])
 }
-
-// =============================================================================
-// STRIKE MODEL
-// Tracks strikes against users - 3 strikes = permanent blacklist
-// Strike 1: Warning + 24hr timeout from reporting community
-// Strike 2: 7-day platform-wide timeout
-// Strike 3: Permanent blacklist
-// =============================================================================
 
 model Strike {
   id           String    @id @default(cuid())
   userId       String
-  reportId     String    @unique // The report that caused this strike
-  strikeNumber Int       // 1, 2, or 3
+  reportId     String    @unique
+  strikeNumber Int
   reason       String
   createdAt    DateTime  @default(now())
-  expiresAt    DateTime? // For timeout-based strikes
+  expiresAt    DateTime?
 
-  // Relations
   user   User    @relation("StrikeUser", fields: [userId], references: [id], onDelete: Cascade)
   report Report  @relation(fields: [reportId], references: [id], onDelete: Cascade)
-  appeal Appeal? // Appeal for this strike (if any)
+  appeal Appeal?
 
   @@index([userId])
-  @@index([strikeNumber])
-  @@index([expiresAt])
-}
-
-// =============================================================================
-// APPEAL MODEL
-// Allows users to appeal strikes - reviewed by platform admins
-// =============================================================================
-
-enum AppealStatus {
-  PENDING   // Submitted, awaiting review
-  APPROVED  // Appeal accepted, strike removed
-  REJECTED  // Appeal denied, strike stands
 }
 
 model Appeal {
   id           String       @id @default(cuid())
   strikeId     String       @unique
-  userId       String       // The user who submitted the appeal
-  reason       String       // User's explanation for the appeal
+  userId       String
+  reason       String
   status       AppealStatus @default(PENDING)
-  reviewedById String?      // Admin who reviewed the appeal
-  reviewNote   String?      // Admin's notes on the decision
+  reviewedById String?
+  reviewNote   String?
   createdAt    DateTime     @default(now())
   reviewedAt   DateTime?
 
-  // Relations
   strike     Strike @relation(fields: [strikeId], references: [id], onDelete: Cascade)
   user       User   @relation("AppealUser", fields: [userId], references: [id], onDelete: Cascade)
   reviewedBy User?  @relation("AppealReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([status])
-  @@index([createdAt])
 }
-
-// =============================================================================
-// ATTACHMENT MODEL
-// Encrypted file attachments linked to messages with malware scanning
-// =============================================================================
 
 model Attachment {
   id              String     @id @default(cuid())
-  messageId       String?    // Optional: can be attached to a message later
+  messageId       String?
   uploaderId      String
-
-  // File metadata
-  fileName        String     // Original filename (encrypted in storage)
-  fileType        String     // MIME type: image/jpeg, application/pdf, etc.
-  fileSize        Int        // Size in bytes (of encrypted file)
-  fileExtension   String     // Extension: jpg, png, pdf, txt
-
-  // Storage
-  storagePath     String     // Server-side storage path
-
-  // Encryption metadata (needed for decryption)
-  encryptionNonce String     // Base64 nonce used for file encryption
-
-  // Malware scanning
+  fileName        String
+  fileType        String
+  fileSize        Int
+  fileExtension   String
+  storagePath     String
+  encryptionNonce String
   scanStatus      ScanStatus @default(PENDING)
-  scanResult      Json?      // Detailed scan results (engines, threats found)
+  scanResult      Json?
   scannedAt       DateTime?
-  quarantineReason String?   // If quarantined, why
-
-  // Thumbnails (for images - stored encrypted)
+  quarantineReason String?
   thumbnailPath   String?
   thumbnailNonce  String?
-
   createdAt       DateTime   @default(now())
 
-  // Relations
   message         Message?   @relation(fields: [messageId], references: [id], onDelete: Cascade)
   uploader        User       @relation("AttachmentUploader", fields: [uploaderId], references: [id], onDelete: Cascade)
 
   @@index([messageId])
   @@index([uploaderId])
   @@index([scanStatus])
-  @@index([createdAt])
-  @@index([scanStatus, createdAt])
-}
-
-// =============================================================================
-// NOTIFICATION MODEL
-// Real-time notifications for user activity
-// =============================================================================
-
-enum NotificationType {
-  DM_RECEIVED      // New direct message
-  MENTION          // @mention in channel message
-  REACTION         // Someone reacted to your message
-  COMMUNITY_INVITE // Invited to join a community
-  STRIKE_RECEIVED  // Received a strike
-  APPEAL_UPDATE    // Appeal status changed
-  REPLY_RECEIVED   // Someone replied to your message
 }
 
 model Notification {
   id          String           @id @default(cuid())
-  userId      String           // User receiving the notification
+  userId      String
   type        NotificationType
-  title       String           // Short notification title
-  body        String?          // Optional longer description
+  title       String
+  body        String?
   read        Boolean          @default(false)
-
-  // Optional references for navigation
-  messageId   String?          // Link to a specific message
-  channelId   String?          // Link to a specific channel
-  communityId String?          // Link to a specific community
-  senderId    String?          // User who triggered the notification
-
+  messageId   String?
+  channelId   String?
+  communityId String?
+  senderId    String?
   createdAt   DateTime         @default(now())
 
-  // Relations
   user        User             @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
   sender      User?            @relation("NotificationSender", fields: [senderId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([read])
   @@index([createdAt])
-  @@index([type])
-  @@index([userId, read, createdAt])
 }
