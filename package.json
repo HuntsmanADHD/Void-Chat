@@ -1,0 +1,50 @@
+{
+  "name": "void-chat",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "socket": "npx tsx server/socket-server.ts",
+    "dev:all": "concurrently \"npm run dev\" \"npm run socket\""
+  },
+  "dependencies": {
+    "@noble/ed25519": "^2.1.0",
+    "@prisma/client": "^5.22.0",
+    "@solana/wallet-adapter-base": "^0.9.27",
+    "@solana/wallet-adapter-react": "^0.15.39",
+    "@solana/wallet-adapter-react-ui": "^0.9.39",
+    "@solana/wallet-adapter-wallets": "^0.19.37",
+    "@solana/web3.js": "^1.98.4",
+    "bs58": "^6.0.0",
+    "lucide-react": "^0.555.0",
+    "next": "14.2.33",
+    "next-auth": "^4.24.13",
+    "prisma": "^5.22.0",
+    "react": "^18",
+    "react-dom": "^18",
+    "simple-peer": "^9.11.1",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "@types/simple-peer": "^9.11.9",
+    "autoprefixer": "^10.4.22",
+    "concurrently": "^9.0.1",
+    "eslint": "^8",
+    "eslint-config-next": "14.2.33",
+    "postcss": "^8",
+    "tailwindcss": "^3.4.1",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5"
+  }
+}
