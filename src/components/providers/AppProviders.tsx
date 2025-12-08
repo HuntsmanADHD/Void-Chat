@@ -3,7 +3,7 @@
 /**
  * AppProviders Component
  *
- * Combines all context providers needed by Void Chat:
+ * Combines all context providers needed by Clawed Messenger:
  * - ErrorBoundary: Error handling and fallback UI
  * - WalletProvider: Solana wallet connectivity (primary auth)
  * - NextAuthProvider: X OAuth session (verification layer)

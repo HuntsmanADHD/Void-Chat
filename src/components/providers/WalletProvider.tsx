@@ -44,7 +44,7 @@ export const WalletProvider: FC<WalletProviderProps> = ({ children }) => {
   }, []);
 
   // Initialize wallet adapters
-  // These are the primary wallets supported by Void Chat
+  // These are the primary wallets supported by Clawed Messenger
   const wallets = useMemo(
     () => [
       new PhantomWalletAdapter(),
