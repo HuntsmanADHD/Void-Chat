@@ -2,9 +2,8 @@
 
 import React, { useState, useMemo, useCallback } from 'react';
 import { Avatar } from '@/components/ui/Avatar';
-import { getHolderTier, type HolderTier } from '@/types/wallet';
 import { EmojiPicker } from './EmojiPicker';
-import { truncateWallet } from '@/lib/format';
+import { truncatePublicId } from '@/lib/format';
 
 /**
  * Reaction data structure
@@ -19,11 +18,7 @@ export interface Reaction {
  * Message sender information
  */
 export interface MessageSender {
-  walletAddress: string;
-  xHandle?: string | null;
-  xVerified?: boolean;
-  tokenBalance: bigint;
-  strikes: number;
+  publicId: string;
   avatarUrl?: string | null;
 }
 
@@ -77,7 +72,7 @@ export interface MessageProps {
 }
 
 /**
- * Format a timestamp to relative time (e.g., "2 minutes ago")
+ * Format a timestamp to relative time
  */
 function formatRelativeTime(date: Date | string): string {
   const now = new Date();
@@ -105,9 +100,6 @@ function formatRelativeTime(date: Date | string): string {
   }
 }
 
-/**
- * Format timestamp for tooltip (full date and time)
- */
 function formatFullTimestamp(date: Date | string): string {
   const messageDate = typeof date === 'string' ? new Date(date) : date;
   return messageDate.toLocaleString('en-US', {
@@ -121,95 +113,8 @@ function formatFullTimestamp(date: Date | string): string {
   });
 }
 
-
 /**
- * Holder badge component - muted grey tones for void aesthetic
- */
-function HolderBadge({ tier }: { tier: HolderTier }) {
-  if (tier === 'none') return null;
-
-  // Override tier info with muted grey colors for void aesthetic
-  const voidTierStyles: Record<HolderTier, { color: string; bgColor: string; label: string }> = {
-    none: { color: '', bgColor: '', label: '' },
-    holder: { color: 'text-zinc-400', bgColor: 'bg-zinc-800/50', label: 'Holder' },
-    whale: { color: 'text-zinc-200', bgColor: 'bg-zinc-600/50', label: 'Whale' },
-    diamond: { color: 'text-zinc-100', bgColor: 'bg-gradient-to-r from-zinc-600 to-zinc-500', label: 'Diamond' },
-  };
-
-  const tierStyle = voidTierStyles[tier];
-
-  return (
-    <span
-      className={`inline-flex items-center px-1.5 py-0.5 text-xs font-medium rounded ${tierStyle.color} ${tierStyle.bgColor} border border-zinc-700/50`}
-    >
-      {tier === 'diamond' && (
-        <svg className="w-3 h-3 mr-0.5" fill="currentColor" viewBox="0 0 20 20">
-          <path d="M10 1l3 5h5l-4 4 1.5 6L10 13l-5.5 3L6 10l-4-4h5l3-5z" />
-        </svg>
-      )}
-      {tier === 'whale' && (
-        <svg className="w-3 h-3 mr-0.5" fill="currentColor" viewBox="0 0 20 20">
-          <path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z" />
-        </svg>
-      )}
-      {tierStyle.label}
-    </span>
-  );
-}
-
-/**
- * Strike indicator component - muted tones
- */
-function StrikeIndicator({ strikes }: { strikes: number }) {
-  if (strikes === 0) return null;
-
-  const strikeColors = [
-    'text-zinc-400', // 1 strike
-    'text-zinc-300', // 2 strikes
-    'text-zinc-200', // 3+ strikes
-  ];
-
-  const colorClass = strikeColors[Math.min(strikes - 1, 2)];
-
-  return (
-    <span
-      className={`inline-flex items-center text-xs ${colorClass}`}
-      title={`${strikes} strike${strikes !== 1 ? 's' : ''}`}
-    >
-      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-        <path
-          fillRule="evenodd"
-          d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
-          clipRule="evenodd"
-        />
-      </svg>
-      <span className="ml-0.5">{strikes}</span>
-    </span>
-  );
-}
-
-/**
- * Verified X badge - muted grey instead of blue
- */
-function VerifiedBadge() {
-  return (
-    <svg
-      className="w-4 h-4 text-zinc-400 inline-block ml-1"
-      fill="currentColor"
-      viewBox="0 0 20 20"
-      aria-label="X Verified"
-    >
-      <path
-        fillRule="evenodd"
-        d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-        clipRule="evenodd"
-      />
-    </svg>
-  );
-}
-
-/**
- * Reply indicator component - shows "Replying to @user" above message
+ * Reply indicator component
  */
 function ReplyIndicator({
   replyTo,
@@ -223,7 +128,6 @@ function ReplyIndicator({
       onClick={() => onScrollToReply?.(replyTo.id)}
       className="flex items-center gap-2 mb-1 text-xs text-zinc-500 hover:text-zinc-300 transition-colors group"
     >
-      {/* Reply arrow icon */}
       <svg
         className="w-3 h-3 text-zinc-600 group-hover:text-zinc-400 transition-colors"
         fill="none"
@@ -243,7 +147,6 @@ function ReplyIndicator({
           {replyTo.senderName}
         </span>
       </span>
-      {/* Preview snippet */}
       <span className="text-zinc-600 truncate max-w-[150px] hidden sm:inline">
         {replyTo.preview}
       </span>
@@ -252,7 +155,7 @@ function ReplyIndicator({
 }
 
 /**
- * Reactions display component - muted grey tones
+ * Reactions display component
  */
 function ReactionsDisplay({
   reactions,
@@ -310,7 +213,6 @@ function MessageHoverMenu({
 
   return (
     <div className="absolute -top-3 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-150 bg-zinc-900 rounded-md shadow-lg shadow-black/50 border border-zinc-800 flex items-center gap-0.5 p-0.5">
-      {/* Emoji reaction button */}
       {onReact && (
         <div className="relative">
           <button
@@ -319,66 +221,30 @@ function MessageHoverMenu({
             title="Add reaction"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-              />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </button>
           {showEmojiPicker && (
-            <EmojiPicker
-              onSelect={handleEmojiSelect}
-              onClose={() => setShowEmojiPicker(false)}
-              position="top"
-            />
+            <EmojiPicker onSelect={handleEmojiSelect} onClose={() => setShowEmojiPicker(false)} position="top" />
           )}
         </div>
       )}
       {onReply && (
-        <button
-          onClick={onReply}
-          className="p-1.5 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded transition-colors"
-          title="Reply"
-        >
+        <button onClick={onReply} className="p-1.5 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded transition-colors" title="Reply">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"
-            />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
           </svg>
         </button>
       )}
-      <button
-        onClick={onCopy}
-        className="p-1.5 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded transition-colors"
-        title="Copy message"
-      >
+      <button onClick={onCopy} className="p-1.5 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded transition-colors" title="Copy message">
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-          />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
         </svg>
       </button>
       {onReport && (
-        <button
-          onClick={onReport}
-          className="p-1.5 text-zinc-500 hover:text-zinc-400 hover:bg-zinc-800 rounded transition-colors"
-          title="Report message"
-        >
+        <button onClick={onReport} className="p-1.5 text-zinc-500 hover:text-zinc-400 hover:bg-zinc-800 rounded transition-colors" title="Report message">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2zm9-13.5V9"
-            />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2zm9-13.5V9" />
           </svg>
         </button>
       )}
@@ -387,17 +253,7 @@ function MessageHoverMenu({
 }
 
 /**
- * Single message component for Clawed Messenger
- *
- * Features:
- * - Avatar with wallet-based gradient
- * - Username (X handle or truncated wallet)
- * - Relative timestamp
- * - Holder tier badge
- * - Strike indicator
- * - Verified X badge
- * - Hover menu with Report, Copy actions
- * - Decryption error state
+ * Single message component for Void Chat
  */
 export const Message = React.memo(function Message({
   message,
@@ -415,27 +271,12 @@ export const Message = React.memo(function Message({
 
   const { sender, createdAt } = message;
 
-  const holderTier = useMemo(
-    () => getHolderTier(sender.tokenBalance),
-    [sender.tokenBalance]
-  );
-
   const displayName = useMemo(() => {
-    if (sender.xHandle) {
-      return `@${sender.xHandle}`;
-    }
-    return truncateWallet(sender.walletAddress);
-  }, [sender.xHandle, sender.walletAddress]);
+    return truncatePublicId(sender.publicId);
+  }, [sender.publicId]);
 
-  const relativeTime = useMemo(
-    () => formatRelativeTime(createdAt),
-    [createdAt]
-  );
-
-  const fullTimestamp = useMemo(
-    () => formatFullTimestamp(createdAt),
-    [createdAt]
-  );
+  const relativeTime = useMemo(() => formatRelativeTime(createdAt), [createdAt]);
+  const fullTimestamp = useMemo(() => formatFullTimestamp(createdAt), [createdAt]);
 
   const handleCopy = useCallback(() => {
     const textToCopy = decryptedContent || message.content;
@@ -466,66 +307,43 @@ export const Message = React.memo(function Message({
   const isDecryptionError = message.decryptionError || (!decryptedContent && message.isDecrypted === false);
 
   return (
-    <div
-      className={`group relative flex items-start gap-3 px-4 py-1 hover:bg-zinc-900/50 transition-colors ${className}`}
-    >
-      {/* Avatar - only show on messages with sender info */}
+    <div className={`group relative flex items-start gap-3 px-4 py-1 hover:bg-zinc-900/50 transition-colors ${className}`}>
       {showSender ? (
         <Avatar
-          walletAddress={sender.walletAddress}
+          publicId={sender.publicId}
           imageUrl={sender.avatarUrl}
           size="md"
           className="flex-shrink-0 mt-0.5"
         />
       ) : (
-        <div className="w-10 flex-shrink-0" /> // Spacer for alignment
+        <div className="w-10 flex-shrink-0" />
       )}
 
-      {/* Message content */}
       <div className="flex-1 min-w-0">
-        {/* Reply indicator - shows when this message is replying to another */}
         {message.replyTo && (
-          <ReplyIndicator
-            replyTo={message.replyTo}
-            onScrollToReply={onScrollToReply}
-          />
+          <ReplyIndicator replyTo={message.replyTo} onScrollToReply={onScrollToReply} />
         )}
 
-        {/* Sender info row */}
         {showSender && (
           <div className="flex items-center gap-2 mb-0.5">
             <span
               className={`font-medium ${isOwn ? 'text-zinc-300' : 'text-zinc-200'} hover:underline cursor-pointer`}
-              title={sender.walletAddress}
+              title={sender.publicId}
             >
               {displayName}
             </span>
 
-            {sender.xVerified && <VerifiedBadge />}
-
-            <HolderBadge tier={holderTier} />
-
-            <StrikeIndicator strikes={sender.strikes} />
-
-            <span
-              className="text-xs text-zinc-600"
-              title={fullTimestamp}
-            >
+            <span className="text-xs text-zinc-600" title={fullTimestamp}>
               {relativeTime}
             </span>
           </div>
         )}
 
-        {/* Message text */}
         <div className={`text-zinc-300 break-words ${!showSender ? 'ml-0' : ''}`}>
           {isDecryptionError ? (
             <span className="text-zinc-500 italic flex items-center gap-1">
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                <path
-                  fillRule="evenodd"
-                  d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z"
-                  clipRule="evenodd"
-                />
+                <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
               </svg>
               Unable to decrypt message
             </span>
@@ -534,41 +352,23 @@ export const Message = React.memo(function Message({
           ) : (
             <span className="text-zinc-600 italic flex items-center gap-1">
               <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                />
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                />
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
               </svg>
               Decrypting...
             </span>
           )}
         </div>
 
-        {/* Reactions */}
         {reactions && reactions.length > 0 && (
-          <ReactionsDisplay
-            reactions={reactions}
-            onReact={onReact}
-            messageId={message.id}
-          />
+          <ReactionsDisplay reactions={reactions} onReact={onReact} messageId={message.id} />
         )}
 
-        {/* Copied indicator */}
         {copied && (
           <span className="text-xs text-zinc-500 mt-1">Copied!</span>
         )}
       </div>
 
-      {/* Hover menu */}
       <MessageHoverMenu
         onReport={!isOwn ? handleReport : undefined}
         onReply={onReply ? handleReply : undefined}

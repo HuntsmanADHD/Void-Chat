@@ -6,7 +6,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useWallet } from '@solana/wallet-adapter-react';
+import { useAuth } from './useAuth';
 import Peer, { Instance as PeerInstance, SignalData } from 'simple-peer';
 import { getSocketManager, SocketManager } from '@/lib/socket';
 import type {
@@ -42,7 +42,7 @@ export interface UseCallReturn {
   localMediaState: MediaState;
   participants: CallParticipant[];
   connectionQuality: ConnectionQuality | null;
-  initiateCall: (targetWallet: string, type: CallType, channelId?: string) => Promise<string>;
+  initiateCall: (targetPublicId: string, type: CallType, channelId?: string) => Promise<string>;
   acceptCall: () => Promise<void>;
   rejectCall: (reason?: string) => void;
   endCall: () => void;
@@ -90,7 +90,7 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
     onParticipantLeft,
   } = options;
 
-  const { publicKey, connected: walletConnected } = useWallet();
+  const { publicId, isAuthenticated } = useAuth();
 
   const [currentCall, setCurrentCall] = useState<Call | null>(null);
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
@@ -141,7 +141,7 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
   }, []);
 
   const createPeer = useCallback((
-    targetWallet: string,
+    targetPublicId: string,
     initiator: boolean,
     stream: MediaStream
   ): PeerInstance => {
@@ -157,18 +157,18 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
       if (!socketManager?.isConnected()) return;
 
       if (signal.type === 'offer') {
-        socketManager.sendSignalOffer(targetWallet, { type: 'offer', sdp: signal.sdp });
+        socketManager.sendSignalOffer(targetPublicId, { type: 'offer', sdp: signal.sdp });
       } else if (signal.type === 'answer') {
-        socketManager.sendSignalAnswer(targetWallet, { type: 'answer', sdp: signal.sdp });
+        socketManager.sendSignalAnswer(targetPublicId, { type: 'answer', sdp: signal.sdp });
       } else if ('candidate' in signal && signal.candidate) {
-        socketManager.sendICECandidate(targetWallet, signal.candidate as RTCIceCandidate);
+        socketManager.sendICECandidate(targetPublicId, signal.candidate as RTCIceCandidate);
       }
     });
 
     peer.on('stream', (remoteStream: MediaStream) => {
       setParticipants(prev => {
         const updated = [...prev];
-        const idx = updated.findIndex(p => p.peerId === targetWallet);
+        const idx = updated.findIndex(p => p.peerId === targetPublicId);
         if (idx >= 0) {
           updated[idx] = {
             ...updated[idx],
@@ -186,14 +186,14 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
     });
 
     peer.on('close', () => {
-      peersRef.current.delete(targetWallet);
+      peersRef.current.delete(targetPublicId);
     });
 
     peer.on('error', (error: Error) => {
-      console.error(`[useCall] Peer error with ${targetWallet}:`, error);
+      console.error(`[useCall] Peer error with ${targetPublicId}:`, error);
     });
 
-    peersRef.current.set(targetWallet, peer);
+    peersRef.current.set(targetPublicId, peer);
     return peer;
   }, []);
 
@@ -241,13 +241,12 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
   }, [stopStream, stopCallTimer]);
 
   const initiateCall = useCallback(async (
-    targetWallet: string,
+    targetPublicId: string,
     type: CallType,
     channelId?: string
   ): Promise<string> => {
-    if (!publicKey) throw new Error('Wallet not connected');
+    if (!publicId) throw new Error('Not authenticated');
 
-    const walletAddress = publicKey.toBase58();
     const callId = generateCallId();
 
     try {
@@ -265,7 +264,7 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
         id: callId,
         type,
         state: 'initiating',
-        initiatorId: walletAddress,
+        initiatorId: publicId,
         participants: new Map(),
         channelId,
         isGroupCall: !!channelId,
@@ -275,7 +274,7 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
       const socketManager = socketManagerRef.current;
       if (socketManager?.isConnected()) {
         const socket = (socketManager as unknown as { socket: { emit: (e: string, d: unknown) => void } }).socket;
-        socket?.emit('call:initiate', { callId, type, targetWallet, channelId });
+        socket?.emit('call:initiate', { callId, type, targetPublicId, channelId });
       }
 
       setCurrentCall(prev => prev ? { ...prev, state: 'ringing' } : null);
@@ -287,16 +286,16 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
         }
       }, CALL_TIMEOUTS.ringing);
 
-      createPeer(targetWallet, true, stream);
+      createPeer(targetPublicId, true, stream);
       return callId;
     } catch (error) {
       cleanupCall();
       throw error;
     }
-  }, [publicKey, getUserMedia, createPeer, cleanupCall, currentCall?.state]);
+  }, [publicId, getUserMedia, createPeer, cleanupCall, currentCall?.state]);
 
   const acceptCall = useCallback(async (): Promise<void> => {
-    if (!incomingCall || !publicKey) throw new Error('No incoming call to accept');
+    if (!incomingCall || !publicId) throw new Error('No incoming call to accept');
 
     try {
       const stream = await getUserMedia(incomingCall.type);
@@ -325,7 +324,7 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
       const socketManager = socketManagerRef.current;
       if (socketManager?.isConnected()) {
         const socket = (socketManager as unknown as { socket: { emit: (e: string, d: unknown) => void } }).socket;
-        socket?.emit('call:accept', { callId: incomingCall.callId, initiatorWallet: incomingCall.callerId });
+        socket?.emit('call:accept', { callId: incomingCall.callId, initiatorPublicId: incomingCall.callerId });
       }
 
       createPeer(incomingCall.callerId, false, stream);
@@ -336,7 +335,7 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
       cleanupCall();
       throw error;
     }
-  }, [incomingCall, publicKey, getUserMedia, createPeer, cleanupCall, startCallTimer]);
+  }, [incomingCall, publicId, getUserMedia, createPeer, cleanupCall, startCallTimer]);
 
   const rejectCall = useCallback((reason?: string): void => {
     if (!incomingCall) return;
@@ -344,7 +343,7 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
     const socketManager = socketManagerRef.current;
     if (socketManager?.isConnected()) {
       const socket = (socketManager as unknown as { socket: { emit: (e: string, d: unknown) => void } }).socket;
-      socket?.emit('call:reject', { callId: incomingCall.callId, initiatorWallet: incomingCall.callerId, reason });
+      socket?.emit('call:reject', { callId: incomingCall.callId, initiatorPublicId: incomingCall.callerId, reason });
     }
 
     onCallRejectedRef.current?.(incomingCall.callId, reason);
@@ -378,13 +377,13 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
         const socket = (socketManager as unknown as { socket: { emit: (e: string, d: unknown) => void } }).socket;
         socket?.emit('call:media-toggle', {
           callId: currentCall.id,
-          peerId: publicKey?.toBase58(),
+          peerId: publicId,
           mediaType: 'audio',
           enabled: audioTrack.enabled,
         });
       }
     }
-  }, [currentCall, publicKey]);
+  }, [currentCall, publicId]);
 
   const toggleVideo = useCallback((): void => {
     const stream = localStreamRef.current;
@@ -400,13 +399,13 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
         const socket = (socketManager as unknown as { socket: { emit: (e: string, d: unknown) => void } }).socket;
         socket?.emit('call:media-toggle', {
           callId: currentCall.id,
-          peerId: publicKey?.toBase58(),
+          peerId: publicId,
           mediaType: 'video',
           enabled: videoTrack.enabled,
         });
       }
     }
-  }, [currentCall, publicKey]);
+  }, [currentCall, publicId]);
 
   const startScreenShare = useCallback(async (): Promise<void> => {
     try {
@@ -429,7 +428,7 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
         const socket = (socketManager as unknown as { socket: { emit: (e: string, d: unknown) => void } }).socket;
         socket?.emit('call:media-toggle', {
           callId: currentCall.id,
-          peerId: publicKey?.toBase58(),
+          peerId: publicId,
           mediaType: 'screen',
           enabled: true,
         });
@@ -438,7 +437,7 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
       console.error('[useCall] Failed to start screen share:', error);
       throw new Error('Failed to start screen sharing');
     }
-  }, [currentCall, publicKey]);
+  }, [currentCall, publicId]);
 
   const stopScreenShare = useCallback((): void => {
     if (!screenStreamRef.current) return;
@@ -463,15 +462,15 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
       const socket = (socketManager as unknown as { socket: { emit: (e: string, d: unknown) => void } }).socket;
       socket?.emit('call:media-toggle', {
         callId: currentCall.id,
-        peerId: publicKey?.toBase58(),
+        peerId: publicId,
         mediaType: 'screen',
         enabled: false,
       });
     }
-  }, [stopStream, currentCall, publicKey]);
+  }, [stopStream, currentCall, publicId]);
 
   const joinVoiceChannel = useCallback(async (channelId: string): Promise<void> => {
-    if (!publicKey) throw new Error('Wallet not connected');
+    if (!publicId) throw new Error('Not authenticated');
 
     try {
       const stream = await getUserMedia('voice');
@@ -488,7 +487,7 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
         id: `voice-channel-${channelId}`,
         type: 'voice',
         state: 'connecting',
-        initiatorId: publicKey.toBase58(),
+        initiatorId: publicId,
         participants: new Map(),
         channelId,
         isGroupCall: true,
@@ -507,7 +506,7 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
       cleanupCall();
       throw error;
     }
-  }, [publicKey, getUserMedia, cleanupCall, startCallTimer]);
+  }, [publicId, getUserMedia, cleanupCall, startCallTimer]);
 
   const leaveVoiceChannel = useCallback((): void => {
     if (!currentCall?.channelId) return;
@@ -523,7 +522,7 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
 
   // Initialize socket manager and set up event handlers
   useEffect(() => {
-    if (!walletConnected || !publicKey) return;
+    if (!isAuthenticated || !publicId) return;
 
     socketManagerRef.current = getSocketManager();
     const socketManager = socketManagerRef.current;
@@ -600,27 +599,27 @@ export function useCall(options: UseCallOptions = {}): UseCallReturn {
 
     // Handle WebRTC signals
     socketManager.setOnSignalOffer((data) => {
-      const peer = peersRef.current.get(data.fromWallet);
+      const peer = peersRef.current.get(data.fromPublicId);
       if (peer) {
         peer.signal({ type: 'offer', sdp: data.signal.sdp });
       } else if (localStreamRef.current) {
-        const newPeer = createPeer(data.fromWallet, false, localStreamRef.current);
+        const newPeer = createPeer(data.fromPublicId, false, localStreamRef.current);
         newPeer.signal({ type: 'offer', sdp: data.signal.sdp });
       }
     });
 
     socketManager.setOnSignalAnswer((data) => {
-      const peer = peersRef.current.get(data.fromWallet);
+      const peer = peersRef.current.get(data.fromPublicId);
       if (peer) peer.signal({ type: 'answer', sdp: data.signal.sdp });
     });
 
     socketManager.setOnICECandidate((data) => {
-      const peer = peersRef.current.get(data.fromWallet);
+      const peer = peersRef.current.get(data.fromPublicId);
       if (peer) peer.signal({ type: 'candidate', candidate: data.candidate });
     });
 
     return () => { cleanupCall(); };
-  }, [walletConnected, publicKey, cleanupCall, createPeer, startCallTimer]);
+  }, [isAuthenticated, publicId, cleanupCall, createPeer, startCallTimer]);
 
   return {
     currentCall,

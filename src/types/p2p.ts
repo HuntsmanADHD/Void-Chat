@@ -31,18 +31,18 @@ export interface P2PMessage {
 }
 
 export interface ClientToServerEvents {
-  authenticate: (data: { walletAddress: string; signature: string; message: string }) => void;
+  authenticate: (data: { publicId: string; signature: string; message: string }) => void;
   'join:channel': (channelId: string) => void;
   'leave:channel': (channelId: string) => void;
-  'join:dm': (recipientWallet: string) => void;
-  'leave:dm': (recipientWallet: string) => void;
+  'join:dm': (recipientPublicId: string) => void;
+  'leave:dm': (recipientPublicId: string) => void;
   'message:channel': (data: { channelId: string; encrypted: string; nonce: string; senderId: string }) => void;
-  'message:dm': (data: { recipientWallet: string; encrypted: string; nonce: string; senderId: string }) => void;
-  'signal:offer': (data: { targetWallet: string; signal: P2PSignal }) => void;
-  'signal:answer': (data: { targetWallet: string; signal: P2PSignal }) => void;
-  'signal:ice': (data: { targetWallet: string; candidate: RTCIceCandidate }) => void;
-  'typing:start': (data: { channelId?: string; dmWallet?: string }) => void;
-  'typing:stop': (data: { channelId?: string; dmWallet?: string }) => void;
+  'message:dm': (data: { recipientPublicId: string; encrypted: string; nonce: string; senderId: string }) => void;
+  'signal:offer': (data: { targetPublicId: string; signal: P2PSignal }) => void;
+  'signal:answer': (data: { targetPublicId: string; signal: P2PSignal }) => void;
+  'signal:ice': (data: { targetPublicId: string; candidate: RTCIceCandidate }) => void;
+  'typing:start': (data: { channelId?: string; dmPublicId?: string }) => void;
+  'typing:stop': (data: { channelId?: string; dmPublicId?: string }) => void;
   ping: () => void;
 }
 
@@ -50,13 +50,13 @@ export interface ServerToClientEvents {
   authenticated: (data: { success: boolean; error?: string }) => void;
   'message:channel': (data: { id: string; channelId: string; encrypted: string; nonce: string; senderId: string; timestamp: number }) => void;
   'message:dm': (data: { id: string; encrypted: string; nonce: string; senderId: string; timestamp: number }) => void;
-  'signal:offer': (data: { fromWallet: string; signal: P2PSignal }) => void;
-  'signal:answer': (data: { fromWallet: string; signal: P2PSignal }) => void;
-  'signal:ice': (data: { fromWallet: string; candidate: RTCIceCandidate }) => void;
-  'user:online': (walletAddress: string) => void;
-  'user:offline': (walletAddress: string) => void;
-  'typing:update': (data: { channelId?: string; dmWallet?: string; walletAddress: string; isTyping: boolean }) => void;
-  'users:online': (walletAddresses: string[]) => void;
+  'signal:offer': (data: { fromPublicId: string; signal: P2PSignal }) => void;
+  'signal:answer': (data: { fromPublicId: string; signal: P2PSignal }) => void;
+  'signal:ice': (data: { fromPublicId: string; candidate: RTCIceCandidate }) => void;
+  'user:online': (publicId: string) => void;
+  'user:offline': (publicId: string) => void;
+  'typing:update': (data: { channelId?: string; dmPublicId?: string; publicId: string; isTyping: boolean }) => void;
+  'users:online': (publicIds: string[]) => void;
   error: (data: { code: string; message: string }) => void;
   pong: () => void;
   'rate-limited': (data: { retryAfter: number }) => void;
@@ -65,13 +65,13 @@ export interface ServerToClientEvents {
 export type SocketConnectionState = 'disconnected' | 'connecting' | 'connected' | 'authenticated' | 'error';
 
 export interface OnlineUser {
-  walletAddress: string;
+  publicId: string;
   connectedAt: number;
   lastSeen: number;
 }
 
 export interface TypingUser {
-  walletAddress: string;
+  publicId: string;
   startedAt: number;
 }
 

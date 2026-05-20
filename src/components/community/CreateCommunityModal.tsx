@@ -9,7 +9,6 @@ export interface CreateCommunityFormData {
   description: string;
   icon?: File | null;
   iconPreview?: string | null;
-  minHold: string;
   isPrivate: boolean;
 }
 
@@ -239,13 +238,12 @@ function Toggle({
 }
 
 /**
- * Create community modal component for Clawed Messenger
+ * Create community modal component for Void Chat
  *
  * Features:
  * - Community name input with validation
  * - Description textarea
  * - Icon upload with preview
- * - Minimum token requirement input
  * - Public/private toggle
  * - Form validation
  * - Loading state
@@ -263,7 +261,6 @@ export function CreateCommunityModal({
     description: '',
     icon: null,
     iconPreview: null,
-    minHold: '0',
     isPrivate: false,
   });
 
@@ -278,7 +275,6 @@ export function CreateCommunityModal({
         description: '',
         icon: null,
         iconPreview: null,
-        minHold: '0',
         isPrivate: false,
       });
       setValidationErrors({});
@@ -304,7 +300,6 @@ export function CreateCommunityModal({
     const result = createCommunityFormSchema.safeParse({
       name: formData.name,
       description: formData.description || undefined,
-      minHold: formData.minHold || undefined,
       isPrivate: formData.isPrivate,
     });
 
@@ -351,11 +346,6 @@ export function CreateCommunityModal({
   const handleDescriptionChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setFormData((prev) => ({ ...prev, description: e.target.value }));
     setValidationErrors((prev) => ({ ...prev, description: '' }));
-  }, []);
-
-  const handleMinHoldChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    setFormData((prev) => ({ ...prev, minHold: e.target.value }));
-    setValidationErrors((prev) => ({ ...prev, minHold: '' }));
   }, []);
 
   const handleIconChange = useCallback((file: File | null, preview: string | null) => {
@@ -462,39 +452,13 @@ export function CreateCommunityModal({
             />
           </FormField>
 
-          {/* Minimum token hold */}
-          <FormField
-            label="Minimum Token Requirement"
-            error={validationErrors.minHold}
-            hint="Minimum $CLAWED tokens required to join. Set to 0 for free access."
-          >
-            <div className="relative">
-              <input
-                type="number"
-                value={formData.minHold}
-                onChange={handleMinHoldChange}
-                min="0"
-                step="any"
-                placeholder="0"
-                className={`w-full px-4 py-2 pr-24 bg-zinc-900/80 border rounded-lg text-white placeholder-zinc-500 focus:outline-none focus:ring-2 transition-colors ${
-                  validationErrors.minHold
-                    ? 'border-red-500 focus:ring-red-500'
-                    : 'border-zinc-700 focus:ring-zinc-500 focus:border-zinc-500'
-                }`}
-              />
-              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-zinc-400">
-                $CLAWED
-              </span>
-            </div>
-          </FormField>
-
           {/* Private toggle */}
           <div className="pt-2">
             <Toggle
               checked={formData.isPrivate}
               onChange={handlePrivateChange}
               label="Private Community"
-              description="Only users with an invite can join. Token requirement still applies."
+              description="Only users with an invite can join."
             />
           </div>
 

@@ -1,11 +1,12 @@
 /**
  * POST /api/reports
- * Create a new report against a user
+ * File a report against a user in a community
  *
  * Request body:
  * {
  *   reportedUserId: string,
- *   messageId?: string,
+ *   communityId: string,
+ *   messageRef?: string,  // plain string reference, not a DB foreign key
  *   category: ReportCategory,
  *   description: string
  * }
@@ -21,17 +22,14 @@ import {
   OPTIONS,
 } from '@/lib/auth';
 import { createReportSchema } from '@/lib/validation';
+import { fileReport } from '@/lib/moderation';
 import type { CreateReportRequest, CreateReportResponse } from '@/types/api';
-import type { ReportCategory } from '@prisma/client';
 
 export { OPTIONS };
 
-// Valid report categories
-const VALID_CATEGORIES: ReportCategory[] = ['SPAM', 'HARASSMENT', 'SCAM', 'ILLEGAL', 'OTHER'];
-
 /**
  * POST /api/reports
- * Create a new report
+ * File a community report
  */
 export async function POST(req: NextRequest): Promise<Response> {
   try {
@@ -55,9 +53,9 @@ export async function POST(req: NextRequest): Promise<Response> {
       return createErrorResponse(`Validation failed: ${errors}`, 400);
     }
 
-    const { reportedUserId, messageId, category, description } = validationResult.data;
+    const { reportedUserId, communityId, messageId: messageRef, category, description } = validationResult.data;
 
-    // Sanitize description (already validated by Zod)
+    // Sanitize description
     const sanitizedDescription = sanitizeInput(description);
 
     // Cannot report yourself
@@ -79,59 +77,32 @@ export async function POST(req: NextRequest): Promise<Response> {
       return createErrorResponse('This user is already banned', 400);
     }
 
-    // Verify message exists if provided
-    if (messageId) {
-      const message = await prisma.message.findUnique({
-        where: { id: messageId },
-      });
+    // messageRef is a plain string reference — messages are no longer stored in the DB
+    // so we skip any message existence/ownership verification
 
-      if (!message) {
-        return createErrorResponse('Referenced message not found', 404);
-      }
+    // File the report through the moderation system
+    // This handles: duplicate checking, anti-raid, threshold auto-kick, platform ban
+    const result = await fileReport(
+      user.id,
+      reportedUserId,
+      communityId,
+      category,
+      sanitizedDescription,
+      messageRef
+    );
 
-      // Verify the message was sent by the reported user
-      if (message.senderId !== reportedUserId) {
-        return createErrorResponse(
-          'Message was not sent by the reported user',
-          400
-        );
-      }
+    if (!result.success || !result.data) {
+      return createErrorResponse(result.error || 'Failed to process report', 400);
     }
-
-    // Check for duplicate recent reports from the same user
-    const recentReport = await prisma.report.findFirst({
-      where: {
-        reporterId: user.id,
-        reportedUserId,
-        createdAt: {
-          gte: new Date(Date.now() - 24 * 60 * 60 * 1000), // Within last 24 hours
-        },
-      },
-    });
-
-    if (recentReport) {
-      return createErrorResponse(
-        'You have already reported this user in the last 24 hours',
-        429
-      );
-    }
-
-    // Create the report
-    const report = await prisma.report.create({
-      data: {
-        reporterId: user.id,
-        reportedUserId,
-        messageId: messageId || null,
-        category,
-        description: sanitizedDescription,
-        status: 'PENDING',
-      },
-    });
 
     // Build response
     const response: CreateReportResponse = {
       success: true,
-      reportId: report.id,
+      reported: result.data.reported,
+      userKicked: result.data.userKicked,
+      userBanned: result.data.userBanned,
+      reportCount: result.data.reportCount,
+      threshold: result.data.threshold,
     };
 
     return createSuccessResponse(response, 201);

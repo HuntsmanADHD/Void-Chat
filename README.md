@@ -1,140 +1,82 @@
 # Void Chat
 
-A privacy-focused, Web3-native messaging platform built on Solana. Your wallet is your identity, your messages are end-to-end encrypted, and community moderation is transparent and accountable.
+Anonymous, decentralized messaging. No accounts, no email, no recovery. Your identity is a cryptographic key you generate locally and keep yourself.
 
-## Overview
+## What's different
 
-Void Chat is a Discord/Telegram alternative that combines:
-- **Solana wallet authentication** - No passwords, no email, just your wallet
-- **End-to-end encryption** - Messages encrypted client-side with TweetNaCl
-- **Token-gated communities** - Access controlled by $CLAWED token holdings
-- **X/Twitter verification** - Optional identity linking for accountability
-- **Transparent moderation** - 3-strike system with clear rules
+- **No identity providers.** You generate a NaCl keypair on your device. The server stores only your `publicId` (a username you pick once and keep forever) and your public key. There is no password, no email, no OAuth, no SSO.
+- **No central moderators.** There are no admins. Members of a community report bad actors; once a threshold of unique reporters is reached, the user is auto-kicked from that community. Kicked from three communities → automatic permanent platform ban. Every member has equal weight.
+- **No recovery.** If you lose your private key, the account is gone. The server has no way to give it back to you because it never had it. The key is shown to you exactly once, at account creation.
+- **Soul art.** During account creation, you draw a small piece of art that gets hashed into your identity. The image itself stays on your device. If you're ever cast out from the Void, the art is what remains as a marker.
 
-## Features
+## Identity flow
 
-### Core Messaging
-- Real-time messaging via WebSocket (Socket.io)
-- End-to-end encrypted direct messages
-- Community channels with token-gating
-- P2P direct communication via WebRTC
-- Typing indicators and online status
+1. **Create**: client generates an ed25519 keypair (TweetNaCl). User is shown the raw private key once, picks a permanent `publicId` (3–32 chars, alphanumeric + `_-`), and draws a soul art canvas (≥3 strokes, ≥5 seconds). Server stores `{ publicId, publicKey, artHash }`. One key per lifetime — same key cannot register twice.
+2. **Login**: user pastes their private key into the login page. Client signs a timestamped message (`Void Chat Login\ntimestamp: <ms>`), server verifies the signature against the stored public key. Session token issued (HMAC-SHA256, 24h).
+3. **E2E messaging**: direct messages and channel content are encrypted client-side with `nacl.box` / `nacl.secretbox`. Server stores ciphertext only.
 
-### Authentication & Identity
-- Phantom, Solflare, and other Solana wallet support
-- Message signing for wallet ownership verification
-- Optional X/Twitter account linking
-- Verified holder badges based on token tiers
+## Moderation
 
-### Privacy & Security
-- TweetNaCl encryption (nacl.box for asymmetric, nacl.secretbox for symmetric)
-- Private keys never leave the client (stored in IndexedDB)
-- Public keys stored server-side for message routing
-- No plaintext message storage on servers
+- Within a community: any member can file a report. Reports are stored but the running tally is hidden. When unique reporter count hits the community's threshold (default 5, configurable 1–100 by the owner), the user is auto-kicked. Anti-raid: only reports from members who joined the community *before* the reported user count toward the threshold.
+- Across the platform: a user kicked from three communities is permanently blacklisted. Fully automatic, no human review.
+- No appeals. No strikes. No timeouts. No admin panel.
 
-### Token Integration
-- $CLAWED token balance verification via Helius API
-- Token-gated community access (minimum hold requirements)
-- Cached balance checks (5-minute TTL)
-- Holder tier badges displayed on profiles
+## Tech stack
 
-### Moderation System
-- Community-driven reporting system
-- 3-strike progressive discipline:
-  - **Strike 1**: Warning + 24-hour timeout from reporting community
-  - **Strike 2**: 7-day platform-wide timeout
-  - **Strike 3**: Permanent wallet blacklist
-- Report categories: Spam, Harassment, Scam, Illegal, Other
-- Admin review panel for report management
-
-## Tech Stack
-
-| Category | Technology |
-|----------|------------|
-| Frontend | Next.js 14 (App Router), TypeScript, Tailwind CSS |
-| Backend | Next.js API Routes, Prisma ORM |
+| Layer | Technology |
+|---|---|
+| Frontend (web) | Next.js 14 (App Router), TypeScript, Tailwind CSS |
+| Frontend (desktop) | Vite + React + Tauri 2 *(in progress, in `client/`)* |
+| Backend (current) | Next.js API routes + Prisma |
+| Backend (rewrite) | Express + Socket.io + Helmet *(in progress, in `server/`)* |
 | Database | PostgreSQL |
-| Blockchain | Solana (@solana/web3.js, @solana/wallet-adapter) |
-| Encryption | TweetNaCl |
 | Real-time | Socket.io |
 | P2P | WebRTC via simple-peer |
-| Auth | Wallet signatures + NextAuth (X OAuth) |
+| Crypto | TweetNaCl (ed25519 signing, Curve25519 boxes), @noble/ed25519 |
+| Identifiers | base58 (bs58) |
 
 ## Prerequisites
 
-Before you begin, ensure you have:
+- Node.js >= 18
+- PostgreSQL >= 14
+- npm (or pnpm/yarn)
 
-- **Node.js** >= 18.0.0
-- **npm** or **yarn** or **pnpm**
-- **PostgreSQL** >= 14 (or use Prisma Postgres)
-- **Solana wallet** (Phantom, Solflare, etc.)
-- **Helius API key** (free tier available at [helius.dev](https://www.helius.dev/))
-- **X/Twitter Developer App** (optional, for identity verification)
-
-## Installation
-
-### 1. Clone the repository
+## Setup
 
 ```bash
 git clone https://github.com/HuntsmanADHD/Void-Chat.git
 cd Void-Chat
-```
-
-### 2. Install dependencies
-
-```bash
 npm install
-```
-
-### 3. Set up environment variables
-
-```bash
 cp .env.example .env
-```
-
-Edit `.env` with your actual values.
-
-### 4. Set up the database
-
-```bash
+# edit .env: set DATABASE_URL, AUTH_TOKEN_SECRET (≥32 chars), ALLOWED_ORIGINS
 npx prisma generate
 npx prisma migrate dev --name init
-```
-
-### 5. Run the application
-
-```bash
-# Run both Next.js and Socket.io server
 npm run dev:all
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open [http://localhost:3000](http://localhost:3000).
 
-## Project Structure
+## Project layout
 
 ```
 void-chat/
-├── prisma/              # Database schema
-├── server/              # Socket.io server
-├── src/
-│   ├── app/             # Next.js App Router pages & API routes
-│   ├── components/      # React components
-│   ├── hooks/           # Custom React hooks
-│   ├── lib/             # Utility functions
-│   └── types/           # TypeScript types
+├── prisma/              # Database schema (User, Community, Channel, Membership,
+│                        # Report, CommunityKick, Vouch)
+├── server/              # Standalone Express + Socket.io backend (WIP)
+├── client/              # Vite + React + Tauri desktop client (WIP)
+├── server/socket-server.ts   # Original Next.js-paired Socket.io server
+└── src/
+    ├── app/             # Next.js App Router pages + API routes
+    ├── components/      # React components
+    ├── hooks/           # Custom hooks (useAuth, useRealtime, useEncryption, ...)
+    ├── lib/             # auth, encryption, p2p, moderation, format
+    └── types/           # TypeScript types
 ```
 
-## Security Features
+## Status
 
-- End-to-end encryption with TweetNaCl
-- Wallet-based authentication (no passwords)
-- Token gating for community access
-- 3-strike moderation system
+This codebase is mid-rework. See `PROGRESS.md` for what's done and what's next. Build state is not guaranteed to compile cleanly at every commit.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
-
----
-
-Built with privacy in mind. Your keys, your messages.
+MIT — see [LICENSE](LICENSE).

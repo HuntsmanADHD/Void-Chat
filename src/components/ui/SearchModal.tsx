@@ -178,18 +178,13 @@ export function SearchModal({
         return (
           <div className="flex items-center gap-3">
             <Avatar
-              walletAddress={result.walletAddress}
+              publicId={result.publicId}
               size="sm"
             />
             <div className="min-w-0 flex-1">
               <div className="font-medium text-[var(--text-primary)] truncate">
-                {result.xHandle ? `@${result.xHandle}` : result.walletAddress.slice(0, 8) + '...'}
+                {result.publicId.slice(0, 8)}...{result.publicId.slice(-6)}
               </div>
-              {result.xHandle && (
-                <div className="text-xs text-[var(--text-muted)] truncate">
-                  {result.walletAddress.slice(0, 8)}...{result.walletAddress.slice(-6)}
-                </div>
-              )}
             </div>
             <User size={16} className="text-[var(--text-muted)] flex-shrink-0" />
           </div>

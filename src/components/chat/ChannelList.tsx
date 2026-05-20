@@ -277,7 +277,7 @@ function EmptyChannelList({
 }
 
 /**
- * Channel list component for Clawed Messenger
+ * Channel list component for Void Chat
  *
  * Features:
  * - Shows channels organized by category

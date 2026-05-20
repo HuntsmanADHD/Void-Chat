@@ -23,8 +23,8 @@ export interface MessageListProps {
   messages: MessageData[];
   /** Map of message ID to decrypted content */
   decryptedMessages: Map<string, string>;
-  /** Current user's wallet address */
-  currentUserWallet: string;
+  /** Current user's public ID */
+  currentUserId: string;
   /** Callback when user reports a message */
   onReport?: (messageId: string, senderId: string) => void;
   /** Callback when user replies to a message */
@@ -198,7 +198,7 @@ const EmptyState = React.memo(function EmptyState({ type = 'channel' }: { type?:
 });
 
 /**
- * Message list component for Clawed Messenger
+ * Message list component for Void Chat
  *
  * Features:
  * - Native scroll (no virtualization for simplicity, but optimized)
@@ -213,7 +213,7 @@ const EmptyState = React.memo(function EmptyState({ type = 'channel' }: { type?:
 export function MessageList({
   messages,
   decryptedMessages,
-  currentUserWallet,
+  currentUserId,
   onReport,
   onReply,
   hasNewMessages = false,
@@ -325,7 +325,7 @@ export function MessageList({
       // Render messages in group with background
       const groupMessages = group.messages.map((message, index) => {
         const isFirstInGroup = index === 0;
-        const isOwn = message.sender.walletAddress === currentUserWallet;
+        const isOwn = message.sender.publicId === currentUserId;
         const decryptedContent = decryptedMessages.get(message.id);
 
         return (

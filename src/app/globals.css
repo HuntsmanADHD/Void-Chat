@@ -44,9 +44,9 @@
   --accent-danger: #8b4545;
   --accent-gold: #9a8a6a;
 
-  /* Token/Clawed branding - muted for void aesthetic */
-  --clawed-primary: #7a6b9e;
-  --clawed-secondary: #6b9b8a;
+  /* Token/Void Chat branding - muted for void aesthetic */
+  --void-primary: #7a6b9e;
+  --void-secondary: #6b9b8a;
 
   /* Status colors - muted for void aesthetic */
   --status-online: #4a7c59;
@@ -291,12 +291,7 @@ body {
 
   /* Token balance display */
   .token-balance {
-    @apply inline-flex items-center gap-1.5 px-2 py-1 rounded bg-[var(--void-dark)] text-[var(--clawed-secondary)] font-mono text-sm border border-[var(--void-active)];
-  }
-
-  /* Wallet address display */
-  .wallet-address {
-    @apply font-mono text-xs text-[var(--void-text-muted)] truncate;
+    @apply inline-flex items-center gap-1.5 px-2 py-1 rounded bg-[var(--void-dark)] text-[var(--void-secondary)] font-mono text-sm border border-[var(--void-active)];
   }
 
   /* X handle display */

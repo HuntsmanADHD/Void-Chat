@@ -68,11 +68,11 @@ export function VoiceChannel({
             >
               <div className="w-6 h-6 rounded-full bg-zinc-600 flex items-center justify-center">
                 <span className="text-xs text-white">
-                  {(participant.xHandle || participant.peerId.slice(0, 2)).charAt(0).toUpperCase()}
+                  {participant.peerId.slice(0, 2).charAt(0).toUpperCase()}
                 </span>
               </div>
               <span className="text-xs text-zinc-400 truncate">
-                {participant.xHandle ? `@${participant.xHandle}` : `${participant.peerId.slice(0, 6)}...`}
+                {`${participant.peerId.slice(0, 6)}...`}
               </span>
               {participant.speaking && (
                 <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />

@@ -4,27 +4,18 @@ import React, { useEffect, useCallback } from 'react';
 import {
   X,
   Crown,
-  Shield,
-  AlertTriangle,
-  BadgeCheck,
-  Coins,
   MessageSquare,
   Copy,
   Check,
-  ExternalLink,
 } from 'lucide-react';
 import { Avatar } from './Avatar';
 
 export interface UserProfileData {
   id: string;
-  walletAddress: string;
-  xHandle?: string | null;
-  xVerified?: boolean;
+  publicId: string;
   imageUrl?: string | null;
   status?: 'online' | 'idle' | 'dnd' | 'offline';
-  role?: 'OWNER' | 'ADMIN' | 'MODERATOR' | 'MEMBER';
-  tokenBalance?: bigint | number;
-  strikes?: number;
+  role?: 'OWNER' | 'MEMBER';
   isOnline?: boolean;
   joinedAt?: string | Date;
   publicKey?: string;
@@ -34,30 +25,12 @@ export interface UserProfileModalProps {
   isOpen: boolean;
   onClose: () => void;
   user: UserProfileData | null;
-  verifiedHolderThreshold?: bigint | number;
-  ownerWallet?: string;
-  onStartDM?: (walletAddress: string) => void;
-  formatBalance?: (balance: bigint | number) => string;
-  currentUserWallet?: string;
+  ownerId?: string;
+  onStartDM?: (publicId: string) => void;
+  currentUserId?: string;
 }
 
-const DEFAULT_VERIFIED_THRESHOLD = BigInt(1_000_000);
-
-function defaultFormatBalance(balance: bigint | number): string {
-  const num = typeof balance === 'bigint' ? Number(balance) : balance;
-  if (num >= 1_000_000_000) {
-    return `${(num / 1_000_000_000).toFixed(1)}B`;
-  }
-  if (num >= 1_000_000) {
-    return `${(num / 1_000_000).toFixed(1)}M`;
-  }
-  if (num >= 1_000) {
-    return `${(num / 1_000).toFixed(1)}K`;
-  }
-  return num.toLocaleString();
-}
-
-function truncateWallet(address: string): string {
+function truncateId(address: string): string {
   if (address.length <= 12) return address;
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
@@ -71,24 +44,7 @@ function getRoleBadge(role: UserProfileData['role'], isOwner: boolean) {
       </span>
     );
   }
-  switch (role) {
-    case 'ADMIN':
-      return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-[var(--accent-danger)]/20 text-[var(--accent-danger)]">
-          <Shield size={12} />
-          Admin
-        </span>
-      );
-    case 'MODERATOR':
-      return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-[var(--accent-primary)]/20 text-[var(--accent-primary)]">
-          <Shield size={12} />
-          Moderator
-        </span>
-      );
-    default:
-      return null;
-  }
+  return null;
 }
 
 function getStatusText(status?: string) {
@@ -121,11 +77,9 @@ export function UserProfileModal({
   isOpen,
   onClose,
   user,
-  verifiedHolderThreshold = DEFAULT_VERIFIED_THRESHOLD,
-  ownerWallet,
+  ownerId,
   onStartDM,
-  formatBalance = defaultFormatBalance,
-  currentUserWallet,
+  currentUserId,
 }: UserProfileModalProps) {
   const [copied, setCopied] = React.useState(false);
 
@@ -151,11 +105,11 @@ export function UserProfileModal({
     [onClose]
   );
 
-  // Copy wallet address
-  const handleCopyWallet = useCallback(async () => {
+  // Copy public ID
+  const handleCopyId = useCallback(async () => {
     if (!user) return;
     try {
-      await navigator.clipboard.writeText(user.walletAddress);
+      await navigator.clipboard.writeText(user.publicId);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
@@ -166,23 +120,15 @@ export function UserProfileModal({
   // Handle DM button click
   const handleStartDM = useCallback(() => {
     if (user && onStartDM) {
-      onStartDM(user.walletAddress);
+      onStartDM(user.publicId);
       onClose();
     }
   }, [user, onStartDM, onClose]);
 
   if (!isOpen || !user) return null;
 
-  const balance = user.tokenBalance ?? 0;
-  const threshold =
-    typeof verifiedHolderThreshold === 'bigint'
-      ? verifiedHolderThreshold
-      : BigInt(verifiedHolderThreshold);
-  const balanceNum = typeof balance === 'bigint' ? balance : BigInt(balance);
-  const isVerifiedHolder = balanceNum >= threshold;
-  const hasStrikes = (user.strikes ?? 0) > 0;
-  const isOwner = user.walletAddress === ownerWallet;
-  const isSelf = user.walletAddress === currentUserWallet;
+  const isOwner = user.publicId === ownerId;
+  const isSelf = user.publicId === currentUserId;
 
   return (
     <div
@@ -194,7 +140,7 @@ export function UserProfileModal({
         className="w-full max-w-sm bg-[var(--discord-secondary)] rounded-xl shadow-2xl overflow-hidden"
       >
         {/* Banner/Header */}
-        <div className="relative h-24 bg-gradient-to-br from-[var(--clawed-primary)] to-[var(--clawed-secondary)]">
+        <div className="relative h-24 bg-gradient-to-br from-[var(--void-primary)] to-[var(--void-secondary)]">
           {/* Close button */}
           <button
             onClick={onClose}
@@ -208,7 +154,7 @@ export function UserProfileModal({
         <div className="relative px-4 -mt-12">
           <div className="w-24 h-24 rounded-full ring-4 ring-[var(--discord-secondary)] overflow-hidden">
             <Avatar
-              walletAddress={user.walletAddress}
+              publicId={user.publicId}
               imageUrl={user.imageUrl}
               size="xl"
               status={user.status}
@@ -223,34 +169,14 @@ export function UserProfileModal({
           <div className="mb-3">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-xl font-bold text-[var(--text-primary)]">
-                {user.xHandle ? `@${user.xHandle}` : truncateWallet(user.walletAddress)}
+                {truncateId(user.publicId)}
               </h2>
-              {user.xVerified && (
-                <BadgeCheck size={18} className="text-[var(--text-link)]" />
-              )}
             </div>
-            {user.xHandle && (
-              <p className="text-sm text-[var(--text-muted)] font-mono mt-0.5">
-                {truncateWallet(user.walletAddress)}
-              </p>
-            )}
           </div>
 
           {/* Role and status badges */}
           <div className="flex flex-wrap items-center gap-2 mb-4">
             {getRoleBadge(user.role, isOwner)}
-            {isVerifiedHolder && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-[var(--accent-gold)]/20 text-[var(--accent-gold)]">
-                <Coins size={12} />
-                Verified Holder
-              </span>
-            )}
-            {hasStrikes && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-[var(--accent-warning)]/20 text-[var(--accent-warning)]">
-                <AlertTriangle size={12} />
-                {user.strikes} Strike{user.strikes !== 1 ? 's' : ''}
-              </span>
-            )}
           </div>
 
           {/* Status */}
@@ -263,53 +189,25 @@ export function UserProfileModal({
 
           {/* Info sections */}
           <div className="space-y-3">
-            {/* Token balance */}
+            {/* Public ID */}
             <div className="p-3 bg-[var(--discord-dark)] rounded-lg">
               <p className="text-xs text-[var(--text-muted)] uppercase font-semibold mb-1">
-                $CLAWED Balance
-              </p>
-              <div className="flex items-center gap-2 text-[var(--clawed-secondary)]">
-                <Coins size={16} />
-                <span className="font-semibold">{formatBalance(balance)}</span>
-              </div>
-            </div>
-
-            {/* Wallet address */}
-            <div className="p-3 bg-[var(--discord-dark)] rounded-lg">
-              <p className="text-xs text-[var(--text-muted)] uppercase font-semibold mb-1">
-                Wallet Address
+                Public ID
               </p>
               <div className="flex items-center justify-between gap-2">
                 <p className="text-sm text-[var(--text-secondary)] font-mono truncate">
-                  {user.walletAddress}
+                  {user.publicId}
                 </p>
                 <button
-                  onClick={handleCopyWallet}
+                  onClick={handleCopyId}
                   className="flex-shrink-0 p-1.5 rounded hover:bg-[var(--discord-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-                  title="Copy wallet address"
+                  title="Copy public ID"
                 >
                   {copied ? <Check size={14} /> : <Copy size={14} />}
                 </button>
               </div>
             </div>
 
-            {/* X/Twitter link */}
-            {user.xHandle && (
-              <div className="p-3 bg-[var(--discord-dark)] rounded-lg">
-                <p className="text-xs text-[var(--text-muted)] uppercase font-semibold mb-1">
-                  X / Twitter
-                </p>
-                <a
-                  href={`https://x.com/${user.xHandle}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-2 text-sm text-[var(--text-link)] hover:underline"
-                >
-                  @{user.xHandle}
-                  <ExternalLink size={12} />
-                </a>
-              </div>
-            )}
           </div>
 
           {/* Actions */}
@@ -325,17 +223,6 @@ export function UserProfileModal({
             </div>
           )}
 
-          {/* View on Solscan */}
-          <div className="mt-3 text-center">
-            <a
-              href={`https://solscan.io/account/${user.walletAddress}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-[var(--text-muted)] hover:text-[var(--text-link)] transition-colors"
-            >
-              View on Solscan
-            </a>
-          </div>
         </div>
       </div>
     </div>

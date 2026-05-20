@@ -5,7 +5,7 @@ import { useRouter, useParams } from 'next/navigation';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { ChatContainer, type ChatHeaderInfo } from '@/components/chat/ChatContainer';
 import type { MessageData } from '@/components/chat/Message';
-import { useWalletAuth } from '@/hooks/useWalletAuth';
+import { useAuth } from '@/hooks/useAuth';
 import { useEncryption } from '@/hooks/useEncryption';
 import { useRealtime, type OnMessageReceived } from '@/hooks/useRealtime';
 import type { Community, Channel, CurrentUser } from '@/components/layout/Sidebar';
@@ -17,7 +17,6 @@ interface CommunityDetail {
   icon?: string | null;
   description?: string;
   ownerId: string;
-  minHold: bigint;
   memberCount: number;
 }
 
@@ -30,12 +29,6 @@ interface ChannelDetail {
 
 /**
  * Channel view page
- *
- * Features:
- * - Same as community but with specific channel selected
- * - ChatContainer connected to channel
- * - Real-time messaging
- * - E2E encryption
  */
 export default function ChannelPage() {
   const router = useRouter();
@@ -44,11 +37,10 @@ export default function ChannelPage() {
   const channelId = params.channelId as string;
 
   const {
-    wallet,
-    isConnected,
+    publicId,
     isAuthenticated,
     session,
-  } = useWalletAuth();
+  } = useAuth();
   const { } = useEncryption();
 
   // State
@@ -58,8 +50,6 @@ export default function ChannelPage() {
   const [messages, setMessages] = useState<MessageData[]>([]);
   const [communities, setCommunities] = useState<Community[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
 
   // Handle incoming realtime messages
   const handleMessage: OnMessageReceived = useCallback((message) => {
@@ -71,11 +61,7 @@ export default function ChannelPage() {
         nonce: msgAny.nonce || '',
         senderId: message.senderId,
         sender: {
-          walletAddress: message.senderId,
-          xHandle: null,
-          xVerified: false,
-          tokenBalance: BigInt(0),
-          strikes: 0,
+          publicId: message.senderId,
         },
         channelId: message.channelId,
         createdAt: new Date(message.timestamp),
@@ -94,28 +80,25 @@ export default function ChannelPage() {
     autoConnect: isAuthenticated,
   });
 
-  // Redirect if not connected
+  // Redirect if not authenticated
   useEffect(() => {
-    if (!isConnected) {
+    if (!isAuthenticated) {
       router.push('/');
     }
-  }, [isConnected, router]);
+  }, [isAuthenticated, router]);
 
   // Fetch community and channel details
   useEffect(() => {
     const fetchData = async () => {
-      if (!isAuthenticated || !wallet || !communityId || !session) return;
+      if (!isAuthenticated || !publicId || !communityId || !session) return;
 
-      // Build auth headers
       const authHeaders = {
-        'x-wallet-address': session.walletAddress,
-        'x-wallet-signature': session.signature,
-        'x-auth-message': session.message,
+        'x-public-id': session.publicId,
+        'x-signature': session.signature,
       };
 
       setIsLoading(true);
       try {
-        // Fetch community details
         const communityResponse = await fetch(`/api/communities/${communityId}`, {
           headers: authHeaders,
         });
@@ -131,10 +114,8 @@ export default function ChannelPage() {
         const communityData = await communityResponse.json();
         setCommunity({
           ...communityData.community,
-          minHold: BigInt(communityData.community.minHold || 0),
         });
 
-        // Fetch channels
         const channelsResponse = await fetch(`/api/communities/${communityId}/channels`, {
           headers: authHeaders,
         });
@@ -144,25 +125,21 @@ export default function ChannelPage() {
           setChannels(channelsData.channels || []);
         }
 
-        // Fetch members
         const membersResponse = await fetch(`/api/communities/${communityId}/members`, {
           headers: authHeaders,
         });
 
         if (membersResponse.ok) {
           const membersData = await membersResponse.json();
-          const memberList: Member[] = membersData.members?.map((m: { walletAddress: string; xHandle?: string; xVerified?: boolean; role?: string; tokenBalance?: string }) => ({
-            walletAddress: m.walletAddress,
-            xHandle: m.xHandle || null,
-            xVerified: m.xVerified || false,
+          const memberList: Member[] = membersData.members?.map((m: { publicId: string; role?: string }) => ({
+            id: m.publicId,
+            publicId: m.publicId,
             role: m.role || 'MEMBER',
-            isOnline: isUserOnline(m.walletAddress),
-            tokenBalance: BigInt(m.tokenBalance || 0),
+            isOnline: isUserOnline(m.publicId),
           })) || [];
           setMembers(memberList);
         }
 
-        // Fetch all communities for sidebar
         const allCommunitiesResponse = await fetch('/api/communities', {
           headers: authHeaders,
         });
@@ -186,7 +163,7 @@ export default function ChannelPage() {
     };
 
     fetchData();
-  }, [isAuthenticated, wallet, communityId, router, isUserOnline, session]);
+  }, [isAuthenticated, publicId, communityId, router, isUserOnline, session]);
 
   // Join channel when component mounts
   useEffect(() => {
@@ -199,179 +176,71 @@ export default function ChannelPage() {
     return undefined;
   }, [channelId, isAuthenticated, joinChannel, leaveChannel]);
 
-  // Fetch messages for the channel
-  useEffect(() => {
-    const fetchMessages = async () => {
-      if (!channelId || !wallet || !session) return;
+  // Messages come from socket events only — no server-side storage
+  // On mount, start with an empty message list. New messages arrive via handleMessage.
 
-      setIsLoadingMessages(true);
-      try {
-        const response = await fetch(`/api/channels/${channelId}/messages`, {
-          headers: {
-            'x-wallet-address': session.walletAddress,
-            'x-wallet-signature': session.signature,
-            'x-auth-message': session.message,
-          },
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          const messageList: MessageData[] = data.messages?.map((m: { id: string; encryptedContent: string; nonce: string; senderWallet: string; senderXHandle?: string | null; createdAt: string }) => ({
-            id: m.id,
-            content: m.encryptedContent,
-            nonce: m.nonce,
-            senderId: m.senderWallet,
-            sender: {
-              walletAddress: m.senderWallet,
-              xHandle: m.senderXHandle || null,
-              xVerified: false,
-              tokenBalance: BigInt(0),
-              strikes: 0,
-            },
-            channelId: channelId,
-            createdAt: new Date(m.createdAt),
-          })) || [];
-          setMessages(messageList);
-          setHasMore(data.hasMore || false);
-        }
-      } catch (error) {
-        console.error('Failed to fetch messages:', error);
-      } finally {
-        setIsLoadingMessages(false);
-      }
-    };
-
-    fetchMessages();
-  }, [channelId, wallet, session]);
-
-  // Handle load more messages
-  const handleLoadMore = useCallback(async () => {
-    if (!channelId || !wallet || !session || messages.length === 0) return;
-
-    const oldestMessage = messages[0];
-    try {
-      const response = await fetch(
-        `/api/channels/${channelId}/messages?cursor=${oldestMessage.id}`,
-        {
-          headers: {
-            'x-wallet-address': session.walletAddress,
-            'x-wallet-signature': session.signature,
-            'x-auth-message': session.message,
-          },
-        }
-      );
-
-      if (response.ok) {
-        const data = await response.json();
-        const olderMessages: MessageData[] = data.messages?.map((m: { id: string; encryptedContent: string; nonce: string; senderWallet: string; senderXHandle?: string | null; createdAt: string }) => ({
-          id: m.id,
-          content: m.encryptedContent,
-          nonce: m.nonce,
-          senderId: m.senderWallet,
-          sender: {
-            walletAddress: m.senderWallet,
-            xHandle: m.senderXHandle || null,
-            xVerified: false,
-            tokenBalance: BigInt(0),
-            strikes: 0,
-          },
-          channelId: channelId,
-          createdAt: new Date(m.createdAt),
-        })) || [];
-        setMessages((prev) => [...olderMessages, ...prev]);
-        setHasMore(data.hasMore || false);
-      }
-    } catch (error) {
-      console.error('Failed to load more messages:', error);
-    }
-  }, [channelId, wallet, session, messages]);
-
-  // Handle channel selection
   const handleSelectChannel = useCallback((newChannelId: string) => {
     router.push(`/app/community/${communityId}/channel/${newChannelId}`);
   }, [communityId, router]);
 
-  // Handle community selection
   const handleSelectCommunity = useCallback((newCommunityId: string) => {
     router.push(`/app/community/${newCommunityId}`);
   }, [router]);
 
-  // Handle DM selection
-  const handleSelectDM = useCallback((dmWallet: string) => {
-    router.push(`/app/dm/${dmWallet}`);
+  const handleSelectDM = useCallback((dmId: string) => {
+    router.push(`/app/dm/${dmId}`);
   }, [router]);
 
-  // Handle switch to DMs
   const handleSwitchToDMs = useCallback(() => {
     router.push('/app');
   }, [router]);
 
-  // Handle message sent
   const handleMessageSent = useCallback((message: { content: string; nonce: string }) => {
     sendChannelMessage(channelId, message.content, message.nonce);
   }, [channelId, sendChannelMessage]);
 
-  // Handle report
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const handleReport = useCallback((_messageId: string, _senderId: string) => {
-    // Report will be handled by the ReportModal component
-  }, []);
+  const handleReport = useCallback((_messageId: string, _senderId: string) => {}, []);
 
-  // Handle member click
   const handleMemberClick = useCallback((member: Member) => {
-    if (member.walletAddress !== wallet) {
-      router.push(`/app/dm/${member.walletAddress}`);
+    if (member.publicId !== publicId) {
+      router.push(`/app/dm/${member.publicId}`);
     }
-  }, [router, wallet]);
+  }, [router, publicId]);
 
-  // Handle settings
   const handleSettings = useCallback(() => {
     router.push('/app/settings');
   }, [router]);
 
   // Current user
   const currentUser: CurrentUser = {
-    walletAddress: wallet || '',
-    xHandle: null,
+    publicId: publicId || '',
     imageUrl: null,
     status: 'online',
   };
 
-  // Active channel for header
   const activeChannel = useMemo(() => {
     const channel = channels.find((c) => c.id === channelId);
     if (!channel) return null;
-    return {
-      id: channel.id,
-      name: channel.name,
-      description: channel.description,
-    };
+    return { id: channel.id, name: channel.name, description: channel.description };
   }, [channelId, channels]);
 
-  // Sidebar channels format
   const sidebarChannels: Channel[] = useMemo(() => {
     return channels.map((c) => ({
-      id: c.id,
-      name: c.name,
-      type: c.type,
-      isActive: c.id === channelId,
+      id: c.id, name: c.name, type: c.type, isActive: c.id === channelId,
     }));
   }, [channels, channelId]);
 
-  // Chat header info
   const headerInfo: ChatHeaderInfo | undefined = activeChannel ? {
-    name: activeChannel.name,
-    description: activeChannel.description,
-    memberCount: members.length,
+    name: activeChannel.name, description: activeChannel.description, memberCount: members.length,
   } : undefined;
 
-  // Loading state
-  if (!isConnected || isLoading) {
+  if (!isAuthenticated || isLoading) {
     return (
-      <div className="h-screen w-screen flex items-center justify-center bg-[var(--discord-bg)]">
+      <div className="h-screen w-screen flex items-center justify-center bg-black">
         <div className="text-center">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center mb-4 mx-auto animate-pulse">
-            <span className="text-white font-bold text-2xl">C</span>
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-zinc-700 via-zinc-600 to-zinc-500 flex items-center justify-center mb-4 mx-auto animate-pulse border border-zinc-500/30">
+            <span className="text-zinc-100 font-bold text-2xl">C</span>
           </div>
           <p className="text-zinc-400">Loading channel...</p>
         </div>
@@ -379,16 +248,15 @@ export default function ChannelPage() {
     );
   }
 
-  // Channel not found
   if (!activeChannel && !isLoading) {
     return (
-      <div className="h-screen w-screen flex items-center justify-center bg-[var(--discord-bg)]">
+      <div className="h-screen w-screen flex items-center justify-center bg-black">
         <div className="text-center">
           <h2 className="text-xl font-semibold text-white mb-2">Channel Not Found</h2>
           <p className="text-zinc-400 mb-4">This channel does not exist or you do not have access.</p>
           <button
             onClick={() => router.push(`/app/community/${communityId}`)}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors"
+            className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white rounded-lg transition-colors"
           >
             Back to Community
           </button>
@@ -406,8 +274,7 @@ export default function ChannelPage() {
       currentUser={currentUser}
       activeChannel={activeChannel}
       members={members}
-      communityOwnerWallet={community?.ownerId}
-      verifiedHolderThreshold={community?.minHold}
+      communityOwnerId={community?.ownerId}
       isDMView={false}
       onSelectCommunity={handleSelectCommunity}
       onSelectChannel={handleSelectChannel}
@@ -422,9 +289,9 @@ export default function ChannelPage() {
         channelId={channelId}
         headerInfo={headerInfo}
         messages={messages}
-        isLoading={isLoadingMessages}
-        hasMore={hasMore}
-        onLoadMore={handleLoadMore}
+        isLoading={false}
+        hasMore={false}
+        onLoadMore={() => {}}
         onMessageSent={handleMessageSent}
         onReport={handleReport}
         isTimedOut={false}

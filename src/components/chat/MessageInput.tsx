@@ -182,7 +182,7 @@ function DisabledOverlay({ reason }: { reason?: string }) {
 }
 
 /**
- * Message input component for Clawed Messenger
+ * Message input component for Void Chat
  *
  * Features:
  * - Auto-resizing textarea

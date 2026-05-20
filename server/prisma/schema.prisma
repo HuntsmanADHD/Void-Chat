@@ -1,0 +1,140 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ReportCategory {
+  SPAM
+  HARASSMENT
+  SCAM
+  ILLEGAL
+  OTHER
+}
+
+model User {
+  id            String    @id @default(cuid())
+  publicId      String    @unique
+  publicKey     String    @unique
+  artHash       String
+  isBlacklisted Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  memberships        Membership[]
+  communitiesCreated Community[]  @relation("CommunityCreator")
+  reportsFiled       Report[]     @relation("Reporter")
+  reportsReceived    Report[]     @relation("ReportedUser")
+  communityKicks     CommunityKick[]
+  vouchesGiven       Vouch[]  @relation("Voucher")
+  vouchesReceived    Vouch[]  @relation("Vouched")
+
+  @@index([publicId])
+  @@index([isBlacklisted])
+}
+
+model Community {
+  id              String   @id @default(cuid())
+  name            String
+  description     String?
+  avatar          String?
+  reportThreshold Int      @default(5)
+  requireVouch    Boolean  @default(false)
+  createdById     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  createdBy   User?        @relation("CommunityCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  channels    Channel[]
+  memberships Membership[]
+  reports     Report[]
+  kicks       CommunityKick[]
+  vouches     Vouch[]
+
+  @@index([createdById])
+}
+
+model Channel {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  communityId String
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+
+  @@unique([communityId, name])
+  @@index([communityId])
+}
+
+model Membership {
+  id          String   @id @default(cuid())
+  userId      String
+  communityId String
+  joinedAt    DateTime @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, communityId])
+  @@index([userId])
+  @@index([communityId])
+}
+
+model Report {
+  id             String         @id @default(cuid())
+  reporterId     String
+  reportedUserId String
+  communityId    String
+  messageRef     String?
+  category       ReportCategory
+  description    String
+  createdAt      DateTime       @default(now())
+
+  reporter     User      @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUser User      @relation("ReportedUser", fields: [reportedUserId], references: [id], onDelete: Cascade)
+  community    Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+
+  @@unique([reporterId, reportedUserId, communityId])
+  @@index([reporterId])
+  @@index([reportedUserId])
+  @@index([communityId])
+  @@index([createdAt])
+}
+
+model CommunityKick {
+  id          String   @id @default(cuid())
+  userId      String
+  communityId String
+  reportCount Int
+  kickedAt    DateTime @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, communityId])
+  @@index([userId])
+  @@index([communityId])
+}
+
+model Vouch {
+  id          String   @id @default(cuid())
+  voucherId   String
+  vouchedId   String
+  communityId String?
+  signature   String     // Cryptographic signature proving the vouch
+  createdAt   DateTime @default(now())
+
+  voucher   User      @relation("Voucher", fields: [voucherId], references: [id], onDelete: Cascade)
+  vouched   User      @relation("Vouched", fields: [vouchedId], references: [id], onDelete: Cascade)
+  community Community? @relation(fields: [communityId], references: [id], onDelete: Cascade)
+
+  @@unique([voucherId, vouchedId, communityId])
+  @@index([voucherId])
+  @@index([vouchedId])
+  @@index([communityId])
+}

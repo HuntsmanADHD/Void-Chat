@@ -8,8 +8,7 @@ import { z } from 'zod';
 // COMMON SCHEMAS
 // =============================================================================
 
-export const walletAddressSchema = z.string().min(32).max(44);
-export const xHandleSchema = z.string().min(1).max(15).regex(/^[a-zA-Z0-9_]+$/);
+export const publicIdSchema = z.string().min(3).max(32).regex(/^[a-zA-Z0-9_-]+$/);
 export const publicKeySchema = z.string().min(32);
 
 // =============================================================================
@@ -20,8 +19,6 @@ export const createCommunitySchema = z.object({
   name: z.string().min(3).max(50).trim(),
   description: z.string().max(500).trim().optional().nullable(),
   avatar: z.string().url().optional().nullable(),
-  minTokenBalance: z.string().regex(/^\d+$/).optional(),
-  isPublic: z.boolean().optional(),
 });
 
 // =============================================================================
@@ -60,35 +57,10 @@ export const reportCategories = [
 
 export const createReportSchema = z.object({
   reportedUserId: z.string().cuid(),
+  communityId: z.string().cuid(),
   messageId: z.string().cuid().optional(),
   category: z.enum(['SPAM', 'HARASSMENT', 'SCAM', 'ILLEGAL', 'OTHER']),
   description: z.string().min(10).max(1000).trim(),
-});
-
-export const reviewReportSchema = z.object({
-  status: z.enum(['REVIEWED', 'DISMISSED', 'ACTION_TAKEN']),
-  issueStrike: z.boolean().optional(),
-  strikeReason: z.string().min(10).max(500).trim().optional(),
-}).refine(
-  (data) => !data.issueStrike || (data.issueStrike && data.strikeReason),
-  {
-    message: 'strikeReason is required when issueStrike is true',
-    path: ['strikeReason'],
-  }
-);
-
-// =============================================================================
-// APPEAL SCHEMAS
-// =============================================================================
-
-export const createAppealSchema = z.object({
-  strikeId: z.string().cuid(),
-  reason: z.string().min(20).max(2000).trim(),
-});
-
-export const reviewAppealSchema = z.object({
-  action: z.enum(['approve', 'reject']),
-  reviewNote: z.string().max(500).trim().optional(),
 });
 
 // =============================================================================

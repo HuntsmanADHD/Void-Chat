@@ -5,7 +5,7 @@ import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import type { MessageData } from './Message';
 import { useEncryption } from '@/hooks/useEncryption';
-import { useWalletAuth } from '@/hooks/useWalletAuth';
+import { useAuth } from '@/hooks/useAuth';
 
 /**
  * Chat mode - either a channel or direct message
@@ -26,8 +26,8 @@ export interface ChatHeaderInfo {
   memberCount?: number;
   /** Online status for DMs */
   isOnline?: boolean;
-  /** Recipient wallet for DMs */
-  recipientWallet?: string;
+  /** Recipient ID for DMs */
+  recipientId?: string;
 }
 
 export interface ChatContainerProps {
@@ -35,8 +35,8 @@ export interface ChatContainerProps {
   mode: ChatMode;
   /** Channel ID (for channel mode) */
   channelId?: string;
-  /** Recipient wallet address (for DM mode) */
-  recipientWallet?: string;
+  /** Recipient ID (for DM mode) */
+  recipientId?: string;
   /** Header information */
   headerInfo?: ChatHeaderInfo;
   /** Messages to display */
@@ -64,7 +64,7 @@ export interface ChatContainerProps {
 // ChatHeader removed - using AppLayout's Header component instead
 
 /**
- * Chat container component for Clawed Messenger
+ * Chat container component for Void Chat
  *
  * Features:
  * - Combines MessageList and MessageInput
@@ -77,7 +77,7 @@ export interface ChatContainerProps {
 export function ChatContainer({
   mode,
   channelId,
-  recipientWallet,
+  recipientId,
   headerInfo,
   messages,
   isLoading = false,
@@ -90,7 +90,7 @@ export function ChatContainer({
   className = '',
   testMode = false,
 }: ChatContainerProps) {
-  const { wallet, isBlacklisted } = useWalletAuth();
+  const { publicId, isBlacklisted } = useAuth();
   const {
     isInitialized,
     hasKeypair,
@@ -167,11 +167,11 @@ export function ChatContainer({
         try {
           let decrypted: string | null = null;
 
-          if (mode === 'dm' && message.sender.walletAddress) {
+          if (mode === 'dm' && message.sender.publicId) {
             decrypted = await decryptFromUser(
               message.content,
               message.nonce,
-              message.sender.walletAddress
+              message.sender.publicId
             );
           } else if (mode === 'channel' && channelId) {
             decrypted = await decryptFromChannel(
@@ -249,8 +249,8 @@ export function ChatContainer({
       try {
         let encrypted: { encrypted: string; nonce: string } | null = null;
 
-        if (mode === 'dm' && recipientWallet) {
-          encrypted = await encryptForUser(plaintext, recipientWallet);
+        if (mode === 'dm' && recipientId) {
+          encrypted = await encryptForUser(plaintext, recipientId);
         } else if (mode === 'channel' && channelId) {
           encrypted = await encryptForChannel(plaintext, channelId);
         }
@@ -266,13 +266,11 @@ export function ChatContainer({
             nonce: encrypted.nonce,
           });
         }
-
-        // Clear reply
-        setReplyTo(null);
       } catch (err) {
         console.error('Failed to send message:', err);
         setError(err instanceof Error ? err.message : 'Failed to send message');
       } finally {
+        setReplyTo(null);
         setIsSending(false);
       }
     },
@@ -281,7 +279,7 @@ export function ChatContainer({
       isInitialized,
       hasKeypair,
       mode,
-      recipientWallet,
+      recipientId,
       channelId,
       encryptForUser,
       encryptForChannel,
@@ -294,7 +292,7 @@ export function ChatContainer({
     const decrypted = decryptedMessages.get(message.id);
     setReplyTo({
       id: message.id,
-      senderName: message.sender.xHandle || message.sender.walletAddress.slice(0, 8),
+      senderName: (message.sender.publicId || message.senderId).slice(0, 8),
       preview: decrypted?.slice(0, 50) || '[Encrypted message]',
     });
   }, [decryptedMessages]);
@@ -307,7 +305,7 @@ export function ChatContainer({
   // Calculate disabled reason
   const disabledReason = useMemo(() => {
     if (isBlacklisted) {
-      return 'Your wallet has been blacklisted';
+      return 'Your account has been blacklisted';
     }
     if (isTimedOut && timeoutEndTime) {
       const remaining = Math.max(0, timeoutEndTime.getTime() - Date.now());
@@ -358,7 +356,7 @@ export function ChatContainer({
       <MessageList
         messages={messages}
         decryptedMessages={decryptedMessages}
-        currentUserWallet={wallet || ''}
+        currentUserId={publicId || ''}
         onReport={onReport}
         onReply={handleReply}
         isLoading={isLoading}

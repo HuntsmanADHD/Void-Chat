@@ -7,12 +7,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum MembershipRole {
-  OWNER
-  ADMIN
-  MEMBER
-}
-
 enum ReportCategory {
   SPAM
   HARASSMENT
@@ -21,67 +15,24 @@ enum ReportCategory {
   OTHER
 }
 
-enum ReportStatus {
-  PENDING
-  REVIEWED
-  DISMISSED
-  ACTION_TAKEN
-}
-
-enum ScanStatus {
-  PENDING
-  SCANNING
-  CLEAN
-  QUARANTINED
-  ERROR
-}
-
-enum AppealStatus {
-  PENDING
-  APPROVED
-  REJECTED
-}
-
-enum NotificationType {
-  DM_RECEIVED
-  MENTION
-  REACTION
-  COMMUNITY_INVITE
-  STRIKE_RECEIVED
-  APPEAL_UPDATE
-  REPLY_RECEIVED
-}
-
 model User {
   id            String    @id @default(cuid())
-  walletAddress String    @unique
-  xHandle       String?   @unique
-  xId           String?   @unique
-  publicKey     String
-  tokenBalance  BigInt    @default(0)
-  strikes       Int       @default(0)
+  publicId      String    @unique
+  publicKey     String    @unique
+  artHash       String
   isBlacklisted Boolean   @default(false)
-  blacklistedAt DateTime?
-  timeoutUntil  DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  ownedCommunities Community[]  @relation("CommunityOwner")
-  memberships      Membership[]
-  sentMessages     Message[]    @relation("MessageSender")
-  receivedMessages Message[]    @relation("MessageRecipient")
-  reportsFiled     Report[]     @relation("Reporter")
-  reportsReceived  Report[]     @relation("ReportedUser")
-  strikes_received Strike[]     @relation("StrikeUser")
-  reviewedReports  Report[]     @relation("ReportReviewer")
-  uploadedAttachments Attachment[] @relation("AttachmentUploader")
-  appealsSubmitted Appeal[]     @relation("AppealUser")
-  appealsReviewed  Appeal[]     @relation("AppealReviewer")
-  reactions        Reaction[]
-  notificationsReceived Notification[] @relation("NotificationRecipient")
-  notificationsSent     Notification[] @relation("NotificationSender")
+  memberships        Membership[]
+  communitiesCreated Community[]  @relation("CommunityCreator")
+  reportsFiled       Report[]     @relation("Reporter")
+  reportsReceived    Report[]     @relation("ReportedUser")
+  communityKicks     CommunityKick[]
+  vouchesGiven       Vouch[]  @relation("Voucher")
+  vouchesReceived    Vouch[]  @relation("Vouched")
 
-  @@index([walletAddress])
+  @@index([publicId])
   @@index([isBlacklisted])
 }
 
@@ -90,18 +41,20 @@ model Community {
   name            String
   description     String?
   avatar          String?
-  ownerId         String
-  minTokenBalance BigInt   @default(0)
-  isPublic        Boolean  @default(true)
+  reportThreshold Int      @default(5)
+  requireVouch    Boolean  @default(false)
+  createdById     String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  owner       User         @relation("CommunityOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  createdBy   User?        @relation("CommunityCreator", fields: [createdById], references: [id], onDelete: SetNull)
   channels    Channel[]
   memberships Membership[]
+  reports     Report[]
+  kicks       CommunityKick[]
+  vouches     Vouch[]
 
-  @@index([ownerId])
-  @@index([isPublic])
+  @@index([createdById])
 }
 
 model Channel {
@@ -113,60 +66,15 @@ model Channel {
   createdAt   DateTime @default(now())
 
   community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
-  messages  Message[]
 
   @@index([communityId])
 }
 
-model Message {
-  id               String   @id @default(cuid())
-  encryptedContent String
-  nonce            String
-  senderId         String
-  channelId        String?
-  recipientId      String?
-  isDirectMessage  Boolean  @default(false)
-  createdAt        DateTime @default(now())
-  parentId         String?
-  replyCount       Int      @default(0)
-
-  sender      User         @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
-  channel     Channel?     @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  recipient   User?        @relation("MessageRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
-  reports     Report[]
-  attachments Attachment[]
-  reactions   Reaction[]
-  parent      Message?     @relation("MessageReplies", fields: [parentId], references: [id], onDelete: SetNull)
-  replies     Message[]    @relation("MessageReplies")
-
-  @@index([senderId])
-  @@index([channelId])
-  @@index([recipientId])
-  @@index([createdAt])
-  @@index([parentId])
-}
-
-model Reaction {
-  id        String   @id @default(cuid())
-  messageId String
-  userId    String
-  emoji     String
-  createdAt DateTime @default(now())
-
-  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([messageId, userId, emoji])
-  @@index([messageId])
-  @@index([userId])
-}
-
 model Membership {
-  id          String         @id @default(cuid())
+  id          String   @id @default(cuid())
   userId      String
   communityId String
-  role        MembershipRole @default(MEMBER)
-  joinedAt    DateTime       @default(now())
+  joinedAt    DateTime @default(now())
 
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
@@ -177,106 +85,54 @@ model Membership {
 }
 
 model Report {
-  id             String       @id @default(cuid())
+  id             String         @id @default(cuid())
   reporterId     String
   reportedUserId String
-  messageId      String?
+  communityId    String
+  messageRef     String?
   category       ReportCategory
   description    String
-  status         ReportStatus @default(PENDING)
-  reviewedAt     DateTime?
-  reviewedById   String?
-  createdAt      DateTime     @default(now())
+  createdAt      DateTime       @default(now())
 
-  reporter     User     @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
-  reportedUser User     @relation("ReportedUser", fields: [reportedUserId], references: [id], onDelete: Cascade)
-  message      Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
-  reviewedBy   User?    @relation("ReportReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
-  strike       Strike?
+  reporter     User      @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUser User      @relation("ReportedUser", fields: [reportedUserId], references: [id], onDelete: Cascade)
+  community    Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
 
+  @@unique([reporterId, reportedUserId, communityId])
   @@index([reporterId])
   @@index([reportedUserId])
-  @@index([status])
+  @@index([communityId])
 }
 
-model Strike {
-  id           String    @id @default(cuid())
-  userId       String
-  reportId     String    @unique
-  strikeNumber Int
-  reason       String
-  createdAt    DateTime  @default(now())
-  expiresAt    DateTime?
-
-  user   User    @relation("StrikeUser", fields: [userId], references: [id], onDelete: Cascade)
-  report Report  @relation(fields: [reportId], references: [id], onDelete: Cascade)
-  appeal Appeal?
-
-  @@index([userId])
-}
-
-model Appeal {
-  id           String       @id @default(cuid())
-  strikeId     String       @unique
-  userId       String
-  reason       String
-  status       AppealStatus @default(PENDING)
-  reviewedById String?
-  reviewNote   String?
-  createdAt    DateTime     @default(now())
-  reviewedAt   DateTime?
-
-  strike     Strike @relation(fields: [strikeId], references: [id], onDelete: Cascade)
-  user       User   @relation("AppealUser", fields: [userId], references: [id], onDelete: Cascade)
-  reviewedBy User?  @relation("AppealReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
-
-  @@index([userId])
-  @@index([status])
-}
-
-model Attachment {
-  id              String     @id @default(cuid())
-  messageId       String?
-  uploaderId      String
-  fileName        String
-  fileType        String
-  fileSize        Int
-  fileExtension   String
-  storagePath     String
-  encryptionNonce String
-  scanStatus      ScanStatus @default(PENDING)
-  scanResult      Json?
-  scannedAt       DateTime?
-  quarantineReason String?
-  thumbnailPath   String?
-  thumbnailNonce  String?
-  createdAt       DateTime   @default(now())
-
-  message         Message?   @relation(fields: [messageId], references: [id], onDelete: Cascade)
-  uploader        User       @relation("AttachmentUploader", fields: [uploaderId], references: [id], onDelete: Cascade)
-
-  @@index([messageId])
-  @@index([uploaderId])
-  @@index([scanStatus])
-}
-
-model Notification {
-  id          String           @id @default(cuid())
+model CommunityKick {
+  id          String   @id @default(cuid())
   userId      String
-  type        NotificationType
-  title       String
-  body        String?
-  read        Boolean          @default(false)
-  messageId   String?
-  channelId   String?
-  communityId String?
-  senderId    String?
-  createdAt   DateTime         @default(now())
+  communityId String
+  reportCount Int
+  kickedAt    DateTime @default(now())
 
-  user        User             @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
-  sender      User?            @relation("NotificationSender", fields: [senderId], references: [id], onDelete: SetNull)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
 
+  @@unique([userId, communityId])
   @@index([userId])
-  @@index([read])
-  @@index([createdAt])
+  @@index([communityId])
+}
+
+model Vouch {
+  id          String   @id @default(cuid())
+  voucherId   String
+  vouchedId   String
+  communityId String?
+  signature   String     // Cryptographic signature proving the vouch
+  createdAt   DateTime @default(now())
+
+  voucher   User      @relation("Voucher", fields: [voucherId], references: [id], onDelete: Cascade)
+  vouched   User      @relation("Vouched", fields: [vouchedId], references: [id], onDelete: Cascade)
+  community Community? @relation(fields: [communityId], references: [id], onDelete: Cascade)
+
+  @@unique([voucherId, vouchedId, communityId])
+  @@index([voucherId])
+  @@index([vouchedId])
+  @@index([communityId])
 }

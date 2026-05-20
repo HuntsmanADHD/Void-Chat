@@ -2,26 +2,29 @@
   "name": "void-chat",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "yarn@4.15.0",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "socket": "npx tsx server/socket-server.ts",
-    "dev:all": "concurrently \"npm run dev\" \"npm run socket\""
+    "socket": "tsx server/socket-server.ts",
+    "dev:all": "concurrently \"yarn dev\" \"yarn socket\""
+  },
+  "dependenciesMeta": {
+    "@prisma/client": {
+      "built": true
+    },
+    "prisma": {
+      "built": true
+    }
   },
   "dependencies": {
     "@noble/ed25519": "^2.1.0",
     "@prisma/client": "^5.22.0",
-    "@solana/wallet-adapter-base": "^0.9.27",
-    "@solana/wallet-adapter-react": "^0.15.39",
-    "@solana/wallet-adapter-react-ui": "^0.9.39",
-    "@solana/wallet-adapter-wallets": "^0.19.37",
-    "@solana/web3.js": "^1.98.4",
     "bs58": "^6.0.0",
     "lucide-react": "^0.555.0",
     "next": "14.2.33",
-    "next-auth": "^4.24.13",
     "prisma": "^5.22.0",
     "react": "^18",
     "react-dom": "^18",

@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Clawed Messenger - Strike Indicator Component
+ * Void Chat - Strike Indicator Component
  *
  * Displays a user's strike count with visual indicators.
  * Shows warning icon with strike count and tooltip with details.

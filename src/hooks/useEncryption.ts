@@ -4,19 +4,19 @@
  * React hook for encryption operations in Void Chat
  *
  * Provides:
- * - Keypair generation and storage (encrypted with wallet signature)
+ * - Keypair generation and storage (encrypted with auth signature)
  * - Message encryption/decryption for DMs
  * - Channel message encryption/decryption
- * - Integration with Solana wallet for signing
+ * - Integration with local identity keypair
  *
  * Security Notes:
- * - Private keys are encrypted before storage using wallet signature
+ * - Private keys are encrypted before storage using auth signature
  * - Keypairs are stored in localStorage (encrypted)
  * - Never expose secret keys in plaintext
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { useWallet } from '@solana/wallet-adapter-react';
+import { useAuth } from './useAuth';
 import bs58 from 'bs58';
 import type { KeyPair, EncryptedMessage, StoredKeyPair } from '@/types/encryption';
 import {
@@ -41,9 +41,6 @@ import {
 // localStorage key for stored keypair
 const KEYPAIR_STORAGE_KEY = 'voidchat_user_keypair';
 
-// Message to sign for deriving encryption key
-const SIGNATURE_MESSAGE = 'Void Chat - Authorize encryption keys';
-
 interface UseEncryptionState {
   isInitialized: boolean;
   isLoading: boolean;
@@ -58,8 +55,8 @@ interface UseEncryptionReturn extends UseEncryptionState {
   clearKeyPair: () => void;
 
   // DM encryption
-  encryptForUser: (message: string, recipientWallet: string) => Promise<EncryptedMessage | null>;
-  decryptFromUser: (encrypted: string, nonce: string, senderWallet: string) => Promise<string | null>;
+  encryptForUser: (message: string, recipientPublicId: string) => Promise<EncryptedMessage | null>;
+  decryptFromUser: (encrypted: string, nonce: string, senderPublicId: string) => Promise<string | null>;
 
   // Channel encryption
   encryptForChannel: (message: string, channelId: string) => Promise<EncryptedMessage | null>;
@@ -75,10 +72,10 @@ interface UseEncryptionReturn extends UseEncryptionState {
 
 /**
  * Hook for managing encryption operations
- * Must be used within WalletProvider context
+ * Must be used within an authenticated context
  */
 export function useEncryption(): UseEncryptionReturn {
-  const { publicKey: walletPublicKey, signMessage, connected } = useWallet();
+  const { publicId, publicKey: authPublicKey, isAuthenticated, session } = useAuth();
 
   const [state, setState] = useState<UseEncryptionState>({
     isInitialized: false,
@@ -93,46 +90,27 @@ export function useEncryption(): UseEncryptionReturn {
   const signatureRef = useRef<string | null>(null);
 
   /**
-   * Get wallet address as string
+   * Get signature from session for key derivation
    */
-  const getWalletAddress = useCallback((): string | null => {
-    if (!walletPublicKey) return null;
-    return walletPublicKey.toBase58();
-  }, [walletPublicKey]);
-
-  /**
-   * Sign a message with the wallet to derive encryption key
-   */
-  const getSignature = useCallback(async (): Promise<string | null> => {
-    // Return cached signature if available
+  const getSignature = useCallback((): string | null => {
     if (signatureRef.current) {
       return signatureRef.current;
     }
 
-    if (!signMessage) {
-      setState((prev) => ({ ...prev, error: 'Wallet does not support message signing' }));
-      return null;
+    if (session?.signature) {
+      signatureRef.current = session.signature;
+      return session.signature;
     }
 
-    try {
-      const messageBytes = new TextEncoder().encode(SIGNATURE_MESSAGE);
-      const signature = await signMessage(messageBytes);
-      const signatureString = bs58.encode(signature);
-      signatureRef.current = signatureString;
-      return signatureString;
-    } catch (error) {
-      console.error('[useEncryption] Failed to sign message:', error);
-      setState((prev) => ({ ...prev, error: 'Failed to authorize encryption' }));
-      return null;
-    }
-  }, [signMessage]);
+    setState((prev) => ({ ...prev, error: 'No auth signature available' }));
+    return null;
+  }, [session]);
 
   /**
    * Load stored keypair from localStorage
    */
   const loadStoredKeypair = useCallback(async (): Promise<KeyPair | null> => {
-    const walletAddress = getWalletAddress();
-    if (!walletAddress) return null;
+    if (!publicId) return null;
 
     try {
       const stored = localStorage.getItem(KEYPAIR_STORAGE_KEY);
@@ -140,14 +118,18 @@ export function useEncryption(): UseEncryptionReturn {
 
       const storedData: StoredKeyPair = JSON.parse(stored);
 
-      // Verify this keypair belongs to the current wallet
-      if (storedData.walletAddress !== walletAddress) {
-        console.warn('[useEncryption] Stored keypair belongs to different wallet');
+      if (!storedData?.publicId || !storedData?.encryptedSecretKey || !storedData?.nonce || !storedData?.salt) {
+        throw new Error('Invalid stored keypair structure');
+      }
+
+      // Verify this keypair belongs to the current user
+      if (storedData.publicId !== publicId) {
+        console.warn('[useEncryption] Stored keypair belongs to different user');
         return null;
       }
 
       // Get signature to decrypt
-      const signature = await getSignature();
+      const signature = getSignature();
       if (!signature) return null;
 
       // Decrypt the secret key
@@ -170,18 +152,17 @@ export function useEncryption(): UseEncryptionReturn {
       console.error('[useEncryption] Failed to load stored keypair:', error);
       return null;
     }
-  }, [getWalletAddress, getSignature]);
+  }, [publicId, getSignature]);
 
   /**
    * Save keypair to localStorage (encrypted)
    */
   const saveKeypair = useCallback(
     async (keypair: KeyPair): Promise<boolean> => {
-      const walletAddress = getWalletAddress();
-      if (!walletAddress) return false;
+      if (!publicId) return false;
 
       try {
-        const signature = await getSignature();
+        const signature = getSignature();
         if (!signature) return false;
 
         // Encrypt the secret key
@@ -195,7 +176,7 @@ export function useEncryption(): UseEncryptionReturn {
           encryptedSecretKey: encrypted.encrypted,
           publicKey: keypair.publicKey,
           nonce: encrypted.nonce,
-          walletAddress,
+          publicId,
         };
 
         localStorage.setItem(KEYPAIR_STORAGE_KEY, JSON.stringify(storedData));
@@ -205,15 +186,15 @@ export function useEncryption(): UseEncryptionReturn {
         return false;
       }
     },
-    [getWalletAddress, getSignature]
+    [publicId, getSignature]
   );
 
   /**
    * Get existing keypair or create a new one
    */
   const getOrCreateKeyPair = useCallback(async (): Promise<KeyPair | null> => {
-    if (!connected || !walletPublicKey) {
-      setState((prev) => ({ ...prev, error: 'Wallet not connected' }));
+    if (!isAuthenticated || !publicId) {
+      setState((prev) => ({ ...prev, error: 'Not authenticated' }));
       return null;
     }
 
@@ -228,9 +209,8 @@ export function useEncryption(): UseEncryptionReturn {
         secretKeyRef.current = keypair.secretKey;
 
         // Cache our own public key
-        const walletAddress = getWalletAddress();
-        if (walletAddress) {
-          cachePublicKey(walletAddress, keypair.publicKey);
+        if (publicId) {
+          cachePublicKey(publicId, keypair.publicKey);
         }
 
         setState((prev) => ({
@@ -270,9 +250,8 @@ export function useEncryption(): UseEncryptionReturn {
       secretKeyRef.current = keypair.secretKey;
 
       // Cache our own public key
-      const walletAddress = getWalletAddress();
-      if (walletAddress) {
-        cachePublicKey(walletAddress, keypair.publicKey);
+      if (publicId) {
+        cachePublicKey(publicId, keypair.publicKey);
       }
 
       // Register public key with the server
@@ -296,7 +275,7 @@ export function useEncryption(): UseEncryptionReturn {
       }));
       return null;
     }
-  }, [connected, walletPublicKey, loadStoredKeypair, saveKeypair, getWalletAddress]);
+  }, [isAuthenticated, publicId, loadStoredKeypair, saveKeypair]);
 
   /**
    * Register public key with the server
@@ -338,14 +317,14 @@ export function useEncryption(): UseEncryptionReturn {
    * Encrypt a message for a specific user (DM)
    */
   const encryptForUser = useCallback(
-    async (message: string, recipientWallet: string): Promise<EncryptedMessage | null> => {
+    async (message: string, recipientPublicId: string): Promise<EncryptedMessage | null> => {
       if (!secretKeyRef.current) {
         console.error('[useEncryption] No secret key available');
         return null;
       }
 
       // Get recipient's public key
-      const recipientPublicKey = await getPublicKey(recipientWallet);
+      const recipientPublicKey = await getPublicKey(recipientPublicId);
       if (!recipientPublicKey) {
         console.error('[useEncryption] Could not find recipient public key');
         return null;
@@ -360,14 +339,14 @@ export function useEncryption(): UseEncryptionReturn {
    * Decrypt a message from a specific user (DM)
    */
   const decryptFromUser = useCallback(
-    async (encrypted: string, nonce: string, senderWallet: string): Promise<string | null> => {
+    async (encrypted: string, nonce: string, senderPublicId: string): Promise<string | null> => {
       if (!secretKeyRef.current) {
         console.error('[useEncryption] No secret key available');
         return null;
       }
 
       // Get sender's public key
-      const senderPublicKey = await getPublicKey(senderWallet);
+      const senderPublicKey = await getPublicKey(senderPublicId);
       if (!senderPublicKey) {
         console.error('[useEncryption] Could not find sender public key');
         return null;
@@ -464,7 +443,7 @@ export function useEncryption(): UseEncryptionReturn {
    */
   const reauthorize = useCallback(async (): Promise<boolean> => {
     signatureRef.current = null;
-    const signature = await getSignature();
+    const signature = getSignature();
     return signature !== null;
   }, [getSignature]);
 
@@ -476,10 +455,10 @@ export function useEncryption(): UseEncryptionReturn {
   }, []);
 
   /**
-   * Clear keys when wallet disconnects
+   * Clear keys when user logs out
    */
   useEffect(() => {
-    if (!connected) {
+    if (!isAuthenticated) {
       secretKeyRef.current = null;
       signatureRef.current = null;
       setState((prev) => ({
@@ -489,7 +468,7 @@ export function useEncryption(): UseEncryptionReturn {
         isInitialized: false,
       }));
     }
-  }, [connected]);
+  }, [isAuthenticated]);
 
   return {
     ...state,

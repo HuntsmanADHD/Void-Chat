@@ -2,12 +2,9 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Wallet, Key, Shield, Link2, AlertTriangle, Copy, Check, RefreshCw, ExternalLink, LogOut } from 'lucide-react';
-import { useWalletAuth } from '@/hooks/useWalletAuth';
+import { ArrowLeft, Key, Shield, AlertTriangle, Copy, Check, RefreshCw, ExternalLink, LogOut } from 'lucide-react';
+import { useAuth } from '@/hooks/useAuth';
 import { useEncryption } from '@/hooks/useEncryption';
-import { useXAuth } from '@/hooks/useXAuth';
-import { formatTokenBalance } from '@/lib/solana';
-import { XLinkButton } from '@/components/auth/XLinkButton';
 
 function SettingsSection({ title, description, icon: Icon, children }: { title: string; description?: string; icon: React.ElementType; children: React.ReactNode }) {
   return (
@@ -39,18 +36,16 @@ function InfoRow({ label, value, copyable = false, monospace = false }: { label:
 
 export default function SettingsPage() {
   const router = useRouter();
-  const { wallet, isConnected, isAuthenticated, tokenBalance, refreshBalance, isLoadingBalance, signOut, isBlacklisted } = useWalletAuth();
+  const { publicId, isAuthenticated, isBlacklisted, logout } = useAuth();
   const { isInitialized, hasKeypair, publicKey, getOrCreateKeyPair, clearKeyPair } = useEncryption();
-  const { xAccountStatus, isXConfigured } = useXAuth();
   const [isRegeneratingKeys, setIsRegeneratingKeys] = useState(false);
   const [showKeyWarning, setShowKeyWarning] = useState(false);
 
-  useEffect(() => { if (!isConnected) { router.push('/'); } }, [isConnected, router]);
+  useEffect(() => { if (!isAuthenticated) { router.push('/'); } }, [isAuthenticated, router]);
   useEffect(() => { if (isAuthenticated && !isInitialized) { getOrCreateKeyPair(); } }, [isAuthenticated, isInitialized, getOrCreateKeyPair]);
 
   const handleBack = useCallback(() => { router.push('/app'); }, [router]);
-  const handleSignOut = useCallback(() => { signOut(); router.push('/'); }, [signOut, router]);
-  const handleRefreshBalance = useCallback(async () => { await refreshBalance(); }, [refreshBalance]);
+  const handleSignOut = useCallback(() => { logout(); router.push('/'); }, [logout, router]);
 
   const handleRegenerateKeys = useCallback(async () => {
     if (!showKeyWarning) { setShowKeyWarning(true); return; }
@@ -59,10 +54,10 @@ export default function SettingsPage() {
   }, [showKeyWarning, clearKeyPair, getOrCreateKeyPair]);
 
   const handleCancelRegenerate = useCallback(() => { setShowKeyWarning(false); }, []);
-  const formatWalletAddress = (address: string) => { if (address.length <= 12) return address; return `${address.slice(0, 6)}...${address.slice(-4)}`; };
+  const formatId = (id: string) => { if (id.length <= 12) return id; return `${id.slice(0, 6)}...${id.slice(-4)}`; };
 
-  if (!isConnected) {
-    return (<div className="h-screen w-screen flex items-center justify-center bg-[var(--discord-bg)]"><div className="text-center"><div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center mb-4 mx-auto animate-pulse"><span className="text-white font-bold text-2xl">C</span></div><p className="text-zinc-400">Loading...</p></div></div>);
+  if (!isAuthenticated) {
+    return (<div className="h-screen w-screen flex items-center justify-center bg-black"><div className="text-center"><div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-zinc-700 via-zinc-600 to-zinc-500 flex items-center justify-center mb-4 mx-auto animate-pulse border border-zinc-500/30"><span className="text-zinc-100 font-bold text-2xl">C</span></div><p className="text-zinc-400">Loading...</p></div></div>);
   }
 
   return (
@@ -74,30 +69,13 @@ export default function SettingsPage() {
         </div>
       </header>
       <main className="max-w-3xl mx-auto px-4 py-8 space-y-6">
-        <SettingsSection title="Connected Wallet" description="Your Solana wallet is your identity" icon={Wallet}>
+        <SettingsSection title="Identity" description="Your keypair is your identity" icon={Key}>
           <div className="space-y-1">
-            <InfoRow label="Wallet Address" value={wallet || 'Not connected'} copyable={!!wallet} monospace />
-            <InfoRow label="Display Address" value={wallet ? formatWalletAddress(wallet) : 'N/A'} />
-            <div className="flex items-center justify-between py-3 border-b border-zinc-700/50">
-              <span className="text-sm text-zinc-400">$CLAWED Balance</span>
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-amber-400 font-medium">{formatTokenBalance(tokenBalance)} $CLAWED</span>
-                <button onClick={handleRefreshBalance} disabled={isLoadingBalance} className="p-1 text-zinc-500 hover:text-white transition-colors disabled:opacity-50" title="Refresh balance"><RefreshCw className={`w-4 h-4 ${isLoadingBalance ? 'animate-spin' : ''}`} /></button>
-              </div>
-            </div>
+            <InfoRow label="Public ID" value={publicId || 'Not authenticated'} copyable={!!publicId} monospace />
+            <InfoRow label="Display ID" value={publicId ? formatId(publicId) : 'N/A'} />
             <InfoRow label="Authentication Status" value={isAuthenticated ? 'Authenticated' : 'Not authenticated'} />
           </div>
-          <div className="mt-6"><button onClick={handleSignOut} className="flex items-center gap-2 px-4 py-2 bg-red-600/20 hover:bg-red-600/30 text-red-400 rounded-lg transition-colors"><LogOut className="w-4 h-4" />Disconnect Wallet</button></div>
-        </SettingsSection>
-
-        <SettingsSection title="X (Twitter) Verification" description="Link your X account for identity verification" icon={Link2}>
-          {!isXConfigured ? (<div className="text-center py-4"><p className="text-zinc-400 text-sm">X authentication is not configured on this server.</p></div>) : (
-            <div className="space-y-4">
-              {xAccountStatus?.linked ? (<div className="space-y-1"><InfoRow label="X Handle" value={xAccountStatus.xHandle ? `@${xAccountStatus.xHandle}` : 'Unknown'} /><InfoRow label="Verification Status" value={xAccountStatus.xVerified ? 'Verified' : 'Pending'} /><InfoRow label="Status" value={xAccountStatus.linked ? 'Linked' : 'Not linked'} /></div>) : (<div className="text-center py-4"><p className="text-zinc-400 text-sm mb-4">Link your X account to verify your identity and build trust in the community.</p></div>)}
-              <XLinkButton />
-              {xAccountStatus?.linked && (<p className="text-xs text-zinc-500">Verified X accounts are displayed publicly on your profile.</p>)}
-            </div>
-          )}
+          <div className="mt-6"><button onClick={handleSignOut} className="flex items-center gap-2 px-4 py-2 bg-red-600/20 hover:bg-red-600/30 text-red-400 rounded-lg transition-colors"><LogOut className="w-4 h-4" />Sign Out</button></div>
         </SettingsSection>
 
         <SettingsSection title="Encryption Keys" description="Manage your end-to-end encryption keys" icon={Key}>
@@ -112,7 +90,7 @@ export default function SettingsPage() {
                 <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
                 <div className="flex-1">
                   <h4 className="font-medium text-red-400 mb-1">Warning: Key Regeneration</h4>
-                  <p className="text-sm text-zinc-300 mb-4">Regenerating your encryption keys will make all your previous messages unreadable. This action cannot be undone.</p>
+                      <p className="text-sm text-zinc-300 mb-4">Regenerating your encryption keys will make all your previous messages unreadable. This action cannot be undone.</p>
                   <div className="flex items-center gap-3">
                     <button onClick={handleRegenerateKeys} disabled={isRegeneratingKeys} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm rounded-lg transition-colors disabled:opacity-50">{isRegeneratingKeys ? 'Regenerating...' : 'Confirm Regenerate'}</button>
                     <button onClick={handleCancelRegenerate} className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white text-sm rounded-lg transition-colors">Cancel</button>
@@ -138,7 +116,7 @@ export default function SettingsPage() {
           <div className="mt-6 p-4 bg-emerald-900/20 border border-emerald-800/50 rounded-lg">
             <div className="flex items-start gap-3">
               <Shield className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
-              <div><h4 className="font-medium text-emerald-400 mb-1">Your Privacy is Protected</h4><p className="text-sm text-zinc-300">All messages are encrypted client-side before being sent. Your private keys never leave your device. Even Clawed cannot read your messages.</p></div>
+              <div><h4 className="font-medium text-emerald-400 mb-1">Your Privacy is Protected</h4><p className="text-sm text-zinc-300">All messages are encrypted client-side before being sent. Your private keys never leave your device. Even Void Chat cannot read your messages.</p></div>
             </div>
           </div>
         </SettingsSection>
@@ -147,13 +125,13 @@ export default function SettingsPage() {
           <div className="p-6 bg-red-900/30 border border-red-800 rounded-xl">
             <div className="flex items-start gap-3">
               <AlertTriangle className="w-6 h-6 text-red-400 flex-shrink-0" />
-              <div><h3 className="font-semibold text-red-400 mb-1">Account Restricted</h3><p className="text-sm text-zinc-300">Your wallet has been blacklisted due to violations of community guidelines. You cannot send messages or join communities. If you believe this is an error, please contact support.</p></div>
+              <div><h3 className="font-semibold text-red-400 mb-1">Account Restricted</h3><p className="text-sm text-zinc-300">Your account has been blacklisted due to violations of community guidelines. You cannot send messages or join communities. If you believe this is an error, please contact support.</p></div>
             </div>
           </div>
         )}
 
         <div className="text-center pt-8 pb-16">
-          <p className="text-sm text-zinc-500">Clawed Messenger v0.1.0</p>
+          <p className="text-sm text-zinc-500">Void Chat v0.1.0</p>
           <div className="flex items-center justify-center gap-4 mt-2">
             <a href="#" className="text-sm text-zinc-400 hover:text-white transition-colors flex items-center gap-1">Documentation<ExternalLink className="w-3 h-3" /></a>
             <a href="#" className="text-sm text-zinc-400 hover:text-white transition-colors flex items-center gap-1">Support<ExternalLink className="w-3 h-3" /></a>
