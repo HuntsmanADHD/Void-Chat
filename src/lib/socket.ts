@@ -1,5 +1,5 @@
 /**
- * Socket.io Client for Clawed Messenger
+ * Socket.io Client for Void Chat
  * Handles real-time communication, signaling for WebRTC, and message relay
  *
  * Features:
@@ -53,22 +53,22 @@ export type OnDMMessageCallback = (data: {
 }) => void;
 
 export type OnSignalCallback = (data: {
-  fromWallet: string;
+  fromPublicId: string;
   signal: P2PSignal;
 }) => void;
 
 export type OnICECandidateCallback = (data: {
-  fromWallet: string;
+  fromPublicId: string;
   candidate: RTCIceCandidate;
 }) => void;
 
-export type OnUserStatusCallback = (walletAddress: string) => void;
-export type OnUsersOnlineCallback = (walletAddresses: string[]) => void;
+export type OnUserStatusCallback = (publicId: string) => void;
+export type OnUsersOnlineCallback = (publicIds: string[]) => void;
 
 export type OnTypingCallback = (data: {
   channelId?: string;
-  dmWallet?: string;
-  walletAddress: string;
+  dmPublicId?: string;
+  publicId: string;
   isTyping: boolean;
 }) => void;
 
@@ -84,7 +84,7 @@ export class SocketManager {
   private socket: Socket<ServerToClientEvents, ClientToServerEvents> | null = null;
   private config: SocketConfig;
   private connectionState: SocketConnectionState = 'disconnected';
-  private localWallet: string | null = null;
+  private localPublicId: string | null = null;
   private joinedChannels: Set<string> = new Set();
   private joinedDMs: Set<string> = new Set();
   private typingTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
@@ -151,6 +151,8 @@ export class SocketManager {
 
     this.socket.on('connect_error', (error) => {
       console.error('[Socket] Connection error:', error);
+      this.typingTimeouts.forEach((timeout) => clearTimeout(timeout));
+      this.typingTimeouts.clear();
       this.updateConnectionState('error');
     });
 
@@ -200,21 +202,21 @@ export class SocketManager {
     });
 
     // Presence events
-    this.socket.on('user:online', (walletAddress) => {
+    this.socket.on('user:online', (publicId) => {
       if (this.onUserOnline) {
-        this.onUserOnline(walletAddress);
+        this.onUserOnline(publicId);
       }
     });
 
-    this.socket.on('user:offline', (walletAddress) => {
+    this.socket.on('user:offline', (publicId) => {
       if (this.onUserOffline) {
-        this.onUserOffline(walletAddress);
+        this.onUserOffline(publicId);
       }
     });
 
-    this.socket.on('users:online', (walletAddresses) => {
-      if (this.onUsersOnline) {
-        this.onUsersOnline(walletAddresses);
+    this.socket.on('users:online', (publicIds) => {
+      if (this.onUsersOnline && Array.isArray(publicIds)) {
+        this.onUsersOnline(publicIds);
       }
     });
 
@@ -248,16 +250,16 @@ export class SocketManager {
   }
 
   /**
-   * Authenticate with the server using wallet signature
+   * Authenticate with the server using NaCl signature
    */
-  authenticate(walletAddress: string, signature: string, message: string): void {
+  authenticate(publicId: string, signature: string, message: string): void {
     if (!this.socket?.connected) {
       console.error('[Socket] Cannot authenticate: not connected');
       return;
     }
 
-    this.localWallet = walletAddress;
-    this.socket.emit('authenticate', { walletAddress, signature, message });
+    this.localPublicId = publicId;
+    this.socket.emit('authenticate', { publicId, signature, message });
   }
 
   /**
@@ -269,8 +271,8 @@ export class SocketManager {
       return;
     }
 
-    this.socket.emit('join:channel', channelId);
     this.joinedChannels.add(channelId);
+    this.socket.emit('join:channel', channelId);
   }
 
   /**
@@ -282,41 +284,41 @@ export class SocketManager {
       return;
     }
 
-    this.socket.emit('leave:channel', channelId);
     this.joinedChannels.delete(channelId);
+    this.socket.emit('leave:channel', channelId);
   }
 
   /**
    * Join a DM room with a specific user
    */
-  joinDM(recipientWallet: string): void {
+  joinDM(recipientPublicId: string): void {
     if (!this.socket?.connected) {
       console.error('[Socket] Cannot join DM: not connected');
       return;
     }
 
-    this.socket.emit('join:dm', recipientWallet);
-    this.joinedDMs.add(recipientWallet);
+    this.joinedDMs.add(recipientPublicId);
+    this.socket.emit('join:dm', recipientPublicId);
   }
 
   /**
    * Leave a DM room
    */
-  leaveDM(recipientWallet: string): void {
+  leaveDM(recipientPublicId: string): void {
     if (!this.socket?.connected) {
       console.error('[Socket] Cannot leave DM: not connected');
       return;
     }
 
-    this.socket.emit('leave:dm', recipientWallet);
-    this.joinedDMs.delete(recipientWallet);
+    this.joinedDMs.delete(recipientPublicId);
+    this.socket.emit('leave:dm', recipientPublicId);
   }
 
   /**
    * Send an encrypted message to a channel
    */
   sendChannelMessage(channelId: string, encrypted: string, nonce: string): void {
-    if (!this.socket?.connected || !this.localWallet) {
+    if (!this.socket?.connected || !this.localPublicId) {
       console.error('[Socket] Cannot send message: not connected or not authenticated');
       return;
     }
@@ -325,70 +327,70 @@ export class SocketManager {
       channelId,
       encrypted,
       nonce,
-      senderId: this.localWallet,
+      senderId: this.localPublicId,
     });
   }
 
   /**
    * Send an encrypted DM message
    */
-  sendDMMessage(recipientWallet: string, encrypted: string, nonce: string): void {
-    if (!this.socket?.connected || !this.localWallet) {
+  sendDMMessage(recipientPublicId: string, encrypted: string, nonce: string): void {
+    if (!this.socket?.connected || !this.localPublicId) {
       console.error('[Socket] Cannot send DM: not connected or not authenticated');
       return;
     }
 
     this.socket.emit('message:dm', {
-      recipientWallet,
+      recipientPublicId,
       encrypted,
       nonce,
-      senderId: this.localWallet,
+      senderId: this.localPublicId,
     });
   }
 
   /**
    * Send a P2P signal offer
    */
-  sendSignalOffer(targetWallet: string, signal: P2PSignal): void {
+  sendSignalOffer(targetPublicId: string, signal: P2PSignal): void {
     if (!this.socket?.connected) {
       console.error('[Socket] Cannot send signal: not connected');
       return;
     }
 
-    this.socket.emit('signal:offer', { targetWallet, signal });
+    this.socket.emit('signal:offer', { targetPublicId, signal });
   }
 
   /**
    * Send a P2P signal answer
    */
-  sendSignalAnswer(targetWallet: string, signal: P2PSignal): void {
+  sendSignalAnswer(targetPublicId: string, signal: P2PSignal): void {
     if (!this.socket?.connected) {
       console.error('[Socket] Cannot send signal: not connected');
       return;
     }
 
-    this.socket.emit('signal:answer', { targetWallet, signal });
+    this.socket.emit('signal:answer', { targetPublicId, signal });
   }
 
   /**
    * Send an ICE candidate
    */
-  sendICECandidate(targetWallet: string, candidate: RTCIceCandidate): void {
+  sendICECandidate(targetPublicId: string, candidate: RTCIceCandidate): void {
     if (!this.socket?.connected) {
       console.error('[Socket] Cannot send ICE candidate: not connected');
       return;
     }
 
-    this.socket.emit('signal:ice', { targetWallet, candidate });
+    this.socket.emit('signal:ice', { targetPublicId, candidate });
   }
 
   /**
    * Start typing indicator
    */
-  startTyping(channelId?: string, dmWallet?: string): void {
+  startTyping(channelId?: string, dmPublicId?: string): void {
     if (!this.socket?.connected) return;
 
-    const key = channelId || dmWallet || '';
+    const key = channelId || dmPublicId || '';
 
     // Clear existing timeout
     const existingTimeout = this.typingTimeouts.get(key);
@@ -396,11 +398,11 @@ export class SocketManager {
       clearTimeout(existingTimeout);
     }
 
-    this.socket.emit('typing:start', { channelId, dmWallet });
+    this.socket.emit('typing:start', { channelId, dmPublicId });
 
     // Auto-stop typing after 5 seconds
     const timeout = setTimeout(() => {
-      this.stopTyping(channelId, dmWallet);
+      this.stopTyping(channelId, dmPublicId);
     }, 5000);
 
     this.typingTimeouts.set(key, timeout);
@@ -409,10 +411,10 @@ export class SocketManager {
   /**
    * Stop typing indicator
    */
-  stopTyping(channelId?: string, dmWallet?: string): void {
+  stopTyping(channelId?: string, dmPublicId?: string): void {
     if (!this.socket?.connected) return;
 
-    const key = channelId || dmWallet || '';
+    const key = channelId || dmPublicId || '';
 
     // Clear timeout
     const existingTimeout = this.typingTimeouts.get(key);
@@ -421,7 +423,7 @@ export class SocketManager {
       this.typingTimeouts.delete(key);
     }
 
-    this.socket.emit('typing:stop', { channelId, dmWallet });
+    this.socket.emit('typing:stop', { channelId, dmPublicId });
   }
 
   /**
@@ -432,8 +434,8 @@ export class SocketManager {
       this.socket?.emit('join:channel', channelId);
     });
 
-    this.joinedDMs.forEach((wallet) => {
-      this.socket?.emit('join:dm', wallet);
+    this.joinedDMs.forEach((publicId) => {
+      this.socket?.emit('join:dm', publicId);
     });
   }
 
@@ -557,7 +559,7 @@ export class SocketManager {
 
     this.joinedChannels.clear();
     this.joinedDMs.clear();
-    this.localWallet = null;
+    this.localPublicId = null;
     this.updateConnectionState('disconnected');
   }
 
@@ -590,7 +592,7 @@ export class SocketManager {
     this.joinedDMs.clear();
 
     // Reset state
-    this.localWallet = null;
+    this.localPublicId = null;
     this.connectionState = 'disconnected';
   }
 }

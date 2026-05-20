@@ -7,11 +7,11 @@ import { Hash, Plus, Settings, ChevronDown, ArrowLeft, X, Users, Globe } from 'l
 import { useHarmonicTyping } from '@/hooks/useHarmonicTyping';
 
 const DEMO_MESSAGES = [
-  { id: '1', sender: 'CryptoWhale', wallet: '7xKX...9mPq', content: 'Hey everyone! Welcome to the Clawed community!', time: '2:30 PM', isOwn: false },
-  { id: '2', sender: 'SolanaBuilder', wallet: '4nFz...2kLp', content: 'This E2E encryption is really solid. Love that messages are encrypted with TweetNaCl.', time: '2:31 PM', isOwn: false },
-  { id: '3', sender: 'You', wallet: 'Demo...User', content: 'The 432Hz typing sounds are so relaxing! Try typing in the input below.', time: '2:32 PM', isOwn: true },
-  { id: '4', sender: 'TokenHolder', wallet: '9pQr...5vXw', content: 'Just verified my $CLAWED holdings. Token-gated access is working perfectly.', time: '2:33 PM', isOwn: false },
-  { id: '5', sender: 'Web3Dev', wallet: '2mNk...8jYt', content: 'The P2P messaging is blazing fast. No middleman, pure Web3.', time: '2:34 PM', isOwn: false },
+  { id: '1', sender: 'VoidDweller', publicId: '7xKX...9mPq', content: 'Hey everyone! Welcome to the Void community!', time: '2:30 PM', isOwn: false },
+  { id: '2', sender: 'CipherNode', publicId: '4nFz...2kLp', content: 'This E2E encryption is really solid. Love that messages are encrypted with TweetNaCl.', time: '2:31 PM', isOwn: false },
+  { id: '3', sender: 'You', publicId: 'Demo...User', content: 'The 432Hz typing sounds are so relaxing! Try typing in the input below.', time: '2:32 PM', isOwn: true },
+  { id: '4', sender: 'PrivacyFan', publicId: '9pQr...5vXw', content: 'Zero-knowledge architecture means nobody can read our messages. Not even the server.', time: '2:33 PM', isOwn: false },
+  { id: '5', sender: 'DevBuilder', publicId: '2mNk...8jYt', content: 'The P2P messaging is blazing fast. No middleman, direct connections.', time: '2:34 PM', isOwn: false },
 ];
 
 const DEMO_CHANNELS = [
@@ -22,9 +22,9 @@ const DEMO_CHANNELS = [
 ];
 
 const INITIAL_COMMUNITIES = [
-  { id: '1', name: 'Clawed Official', icon: null },
-  { id: '2', name: 'SOL Traders', icon: null },
-  { id: '3', name: 'NFT Collectors', icon: null },
+  { id: '1', name: 'Void Chat Official', icon: null },
+  { id: '2', name: 'Privacy Fans', icon: null },
+  { id: '3', name: 'Dev Talk', icon: null },
 ];
 
 function CreateCommunityModal({ isOpen, onClose, onCreateCommunity }: { isOpen: boolean; onClose: () => void; onCreateCommunity: (name: string, description: string) => void }) {
@@ -95,7 +95,7 @@ function DemoMessage({ message }: { message: typeof DEMO_MESSAGES[0] }) {
       <div className={`flex flex-col ${message.isOwn ? 'items-end' : ''}`}>
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-white">{message.sender}</span>
-          <span className="text-xs text-zinc-500">{message.wallet}</span>
+          <span className="text-xs text-zinc-500">{message.publicId}</span>
           <span className="text-xs text-zinc-600">{message.time}</span>
         </div>
         <div className={`mt-1 px-3 py-2 rounded-lg max-w-md ${message.isOwn ? 'bg-indigo-600 text-white' : 'bg-zinc-700 text-zinc-100'}`}>{message.content}</div>
@@ -155,7 +155,7 @@ export default function DemoPage() {
       <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 gap-2">
         <div className="relative group">
           <div className="w-12 h-12 rounded-2xl hover:rounded-xl transition-all duration-200 overflow-hidden bg-indigo-600 flex items-center justify-center cursor-pointer">
-            <Image src="/images/logo.png" alt="Clawed" width={48} height={48} className="w-full h-full object-cover" />
+            <Image src="/images/logo.png" alt="Void Chat" width={48} height={48} className="w-full h-full object-cover" />
           </div>
           <span className="absolute left-0 w-1 h-5 bg-white rounded-r-full -translate-x-1 top-1/2 -translate-y-1/2" />
         </div>
@@ -208,7 +208,7 @@ export default function DemoPage() {
           <Link href="/" className="text-zinc-400 hover:text-white transition-colors"><ArrowLeft className="w-5 h-5" /></Link>
           <Hash className="w-6 h-6 text-zinc-400" />
           <h3 className="font-semibold text-white">general</h3>
-          <span className="text-zinc-500 text-sm ml-2">Welcome to Clawed - Demo Mode</span>
+          <span className="text-zinc-500 text-sm ml-2">Welcome to Void Chat - Demo Mode</span>
         </div>
         <div className="flex-1 overflow-y-auto relative">
           <div className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-10 pointer-events-none" style={{ backgroundImage: 'url(/images/chat-background.jpg)' }} />
@@ -237,15 +237,15 @@ export default function DemoPage() {
             <p className="text-xs text-zinc-400">All messages encrypted with TweetNaCl</p>
           </div>
           <div className="p-3 bg-zinc-800 rounded-lg">
-            <div className="flex items-center gap-2 text-purple-400 mb-1"><Image src="/images/logo.png" alt="Logo" width={16} height={16} className="rounded" /><span className="text-sm font-medium">Clawed Branding</span></div>
+            <div className="flex items-center gap-2 text-purple-400 mb-1"><Image src="/images/logo.png" alt="Logo" width={16} height={16} className="rounded" /><span className="text-sm font-medium">Void Chat Branding</span></div>
             <p className="text-xs text-zinc-400">Custom logo and cosmic chat background</p>
           </div>
           <div className="p-3 bg-zinc-800 rounded-lg">
-            <div className="flex items-center gap-2 text-amber-400 mb-1"><svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z" /><path fillRule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clipRule="evenodd" /></svg><span className="text-sm font-medium">$CLAWED Token</span></div>
-            <p className="text-xs text-zinc-400">Token-gated access for communities</p>
+            <div className="flex items-center gap-2 text-amber-400 mb-1"><svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" /></svg><span className="text-sm font-medium">Zero Knowledge</span></div>
+            <p className="text-xs text-zinc-400">Privacy-first, no data collection</p>
           </div>
         </div>
-        <Link href="/" className="mt-6 block w-full py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white text-center rounded-lg font-medium transition-colors">Connect Wallet</Link>
+        <Link href="/" className="mt-6 block w-full py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white text-center rounded-lg font-medium transition-colors">Enter Void</Link>
       </div>
     </div>
   );

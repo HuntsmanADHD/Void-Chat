@@ -5,7 +5,7 @@ import { useState } from 'react';
 /**
  * Warrant Canary Component
  *
- * Displays the warrant canary status for Clawed Messenger.
+ * Displays the warrant canary status for Void Chat.
  * The canary is "alive" (shown) unless it needs to be removed.
  *
  * A warrant canary is a method by which a service provider can inform
@@ -56,7 +56,7 @@ export function WarrantCanary({ compact = false, className = '' }: WarrantCanary
               <span className="text-green-400 font-medium text-sm">Canary Active</span>
             </div>
             <p className="text-gray-300 text-xs leading-relaxed">
-              As of {LAST_VERIFIED}, Clawed has not received any secret court orders,
+              As of {LAST_VERIFIED}, Void Chat has not received any secret court orders,
               national security letters, or gag orders.
             </p>
             <div className="absolute bottom-0 left-1/2 transform -translate-x-1/2 translate-y-1/2 rotate-45 w-2 h-2 bg-gray-800 border-r border-b border-green-500/30"></div>
@@ -88,7 +88,7 @@ export function WarrantCanary({ compact = false, className = '' }: WarrantCanary
           </div>
 
           <p className="text-gray-300 text-sm leading-relaxed mb-4">
-            As of <strong>{LAST_VERIFIED}</strong>, Clawed Messenger has:
+            As of <strong>{LAST_VERIFIED}</strong>, Void Chat has:
           </p>
 
           <ul className="space-y-2 text-sm text-gray-300">

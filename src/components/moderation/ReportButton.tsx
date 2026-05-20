@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Clawed Messenger - Report Button Component
+ * Void Chat - Report Button Component
  *
  * Small flag icon button that opens the ReportModal.
  * Can be used on messages or user profiles.

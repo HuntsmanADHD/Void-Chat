@@ -4,7 +4,7 @@ import React, { useState, useCallback, ReactNode } from 'react';
 import { Sidebar, type Community, type Channel, type DirectMessage, type CurrentUser } from './Sidebar';
 import { Header, type HeaderUser } from './Header';
 import { MemberList, type Member } from './MemberList';
-import { truncateWallet } from '@/lib/format';
+import { truncatePublicId as truncateId } from '@/lib/format';
 
 export interface AppLayoutProps {
   /** List of communities the user is in */
@@ -29,10 +29,8 @@ export interface AppLayoutProps {
   activeDMUser?: HeaderUser & Member;
   /** Whether viewing DMs section */
   isDMView?: boolean;
-  /** Community owner wallet for member list */
-  communityOwnerWallet?: string;
-  /** Verified holder threshold for member list */
-  verifiedHolderThreshold?: bigint | number;
+  /** Community owner ID for member list */
+  communityOwnerId?: string;
   /** Notification count for header */
   notificationCount?: number;
   /** Main content (message area) */
@@ -79,8 +77,8 @@ export const AppLayout = React.memo(function AppLayout({
   activeChannel,
   activeDMUser,
   isDMView = false,
-  communityOwnerWallet,
-  verifiedHolderThreshold,
+  communityOwnerId,
+  communityOwnerId,
   notificationCount = 0,
   children,
   onSelectCommunity,
@@ -119,10 +117,8 @@ export const AppLayout = React.memo(function AppLayout({
   // Determine header type and content
   const headerType = isDMView ? 'dm' : 'channel';
   const headerName = isDMView
-    ? activeDMUser?.xHandle
-      ? `@${activeDMUser.xHandle}`
-      : activeDMUser?.walletAddress
-      ? truncateWallet(activeDMUser.walletAddress)
+    ? activeDMUser?.publicId
+      ? truncateId(activeDMUser.publicId)
       : 'Direct Message'
     : activeChannel?.name || 'general';
   const headerDescription = !isDMView ? activeChannel?.description : undefined;
@@ -215,8 +211,8 @@ export const AppLayout = React.memo(function AppLayout({
             {memberListVisible && (
               <MemberList
                 members={members}
-                verifiedHolderThreshold={verifiedHolderThreshold}
-                ownerWallet={communityOwnerWallet}
+                ownerId={communityOwnerId}
+                ownerId={communityOwnerId}
                 onMemberClick={onMemberClick}
                 isDM={isDMView}
                 dmUser={activeDMUser}

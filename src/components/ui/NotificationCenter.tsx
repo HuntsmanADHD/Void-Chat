@@ -70,40 +70,8 @@ export function NotificationCenter({
   const [hasMore, setHasMore] = useState(false);
   const [page, setPage] = useState(1);
 
-  const fetchNotifications = useCallback(async (pageNum: number = 1) => {
-    if (!authToken) return;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const response = await fetch(`/api/notifications?page=${pageNum}&limit=20`, {
-        headers: {
-          Authorization: `Bearer ${authToken}`,
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to fetch notifications');
-      }
-
-      const data = await response.json();
-
-      if (pageNum === 1) {
-        setNotifications(data.notifications);
-      } else {
-        setNotifications((prev) => [...prev, ...data.notifications]);
-      }
-
-      setUnreadCount(data.unreadCount);
-      setHasMore(data.hasMore);
-      setPage(pageNum);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
-    } finally {
-      setLoading(false);
-    }
-  }, [authToken]);
+  // No-op: notification API endpoint no longer exists; notifications come via socket only
+  const fetchNotifications = useCallback(async (_pageNum: number = 1) => {}, []);
 
   useEffect(() => {
     if (isOpen) {
@@ -111,38 +79,8 @@ export function NotificationCenter({
     }
   }, [isOpen, fetchNotifications]);
 
-  const markAsRead = async (notificationIds?: string[]) => {
-    if (!authToken) return;
-
-    try {
-      const response = await fetch('/api/notifications', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ notificationIds }),
-      });
-
-      if (response.ok) {
-        // Update local state
-        if (notificationIds && notificationIds.length > 0) {
-          setNotifications((prev) =>
-            prev.map((n) =>
-              notificationIds.includes(n.id) ? { ...n, read: true } : n
-            )
-          );
-          setUnreadCount((prev) => Math.max(0, prev - notificationIds.length));
-        } else {
-          // Mark all as read
-          setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-          setUnreadCount(0);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to mark notifications as read:', err);
-    }
-  };
+  // No-op: notification API endpoint no longer exists
+  const markAsRead = async (_notificationIds?: string[]) => {};
 
   const handleNotificationClick = (notification: NotificationResponse) => {
     // Mark as read if unread
@@ -259,10 +197,10 @@ export function NotificationCenter({
                           )}
                           <div className="flex items-center gap-2 mt-1 text-xs text-[var(--text-muted)]">
                             <span>{formatTimeAgo(notification.createdAt)}</span>
-                            {notification.senderXHandle && (
+                            {notification.senderPublicId && (
                               <>
                                 <span>-</span>
-                                <span>@{notification.senderXHandle}</span>
+                                <span>{notification.senderPublicId}</span>
                               </>
                             )}
                           </div>

@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Clawed Messenger - Report Modal Component
+ * Void Chat - Report Modal Component
  *
  * Modal dialog for reporting users or messages.
  * Allows selection of report category and description.
@@ -25,7 +25,7 @@ export interface ReportModalProps {
   onSubmit: (data: ReportSubmission) => Promise<void>;
   /** ID of the user being reported */
   userId: string;
-  /** Display name or wallet address of the user being reported */
+  /** Display name or public ID of the user being reported */
   userName?: string;
   /** Optional ID of the message being reported */
   messageId?: string;
@@ -231,7 +231,7 @@ export function ReportModal({
               </svg>
             </div>
             <h3 className="text-xl font-semibold text-white mb-2">Report Submitted</h3>
-            <p className="text-zinc-400 mb-6">Thank you for helping keep Clawed safe. Our team will review this report.</p>
+            <p className="text-zinc-400 mb-6">Thank you for helping keep Void Chat safe. Our team will review this report.</p>
             <button
               onClick={onClose}
               className="px-6 py-2 bg-zinc-700 hover:bg-zinc-600 text-white rounded-lg transition-colors"

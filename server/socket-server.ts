@@ -3,13 +3,13 @@
  * Handles real-time communication, WebRTC signaling, and message relay
  *
  * Features:
- * - Wallet-based authentication
+ * - PublicId-based authentication
  * - Room management (channels and DMs)
  * - P2P signal relay for WebRTC
  * - Encrypted message relay (never decrypted server-side)
  * - Online status broadcasting
  * - Typing indicators
- * - Rate limiting per wallet
+ * - Rate limiting per user
  *
  * Run separately: npx ts-node server/socket-server.ts
  * Or integrate with custom Next.js server
@@ -49,7 +49,7 @@ interface P2PSignal {
 }
 
 interface AuthenticatedSocket extends Socket {
-  walletAddress?: string;
+  publicId?: string;
   authenticated?: boolean;
 }
 
@@ -60,7 +60,7 @@ interface RateLimitEntry {
 }
 
 interface OnlineUser {
-  walletAddress: string;
+  publicId: string;
   socketId: string;
   connectedAt: number;
   lastSeen: number;
@@ -71,9 +71,28 @@ interface OnlineUser {
  * In production, consider using Redis for scalability
  */
 const onlineUsers: Map<string, OnlineUser> = new Map();
-const socketToWallet: Map<string, string> = new Map();
+const socketToUser: Map<string, string> = new Map();
 const rateLimits: Map<string, RateLimitEntry> = new Map();
-const typingUsers: Map<string, Set<string>> = new Map(); // roomId -> Set<walletAddress>
+const typingUsers: Map<string, Set<string>> = new Map(); // roomId -> Set<publicId>
+
+/**
+ * Ephemeral store-and-forward buffer for offline users.
+ * Messages are held in memory with a TTL and delivered when the user comes online.
+ * Nothing is persisted to disk — if the server restarts, buffered messages are lost.
+ * This is intentional: zero data at rest.
+ */
+const MESSAGE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const MAX_BUFFERED_PER_USER = 500; // Max messages buffered per offline user
+
+interface BufferedMessage {
+  id: string;
+  type: 'channel' | 'dm';
+  payload: Record<string, unknown>;
+  timestamp: number;
+  expiresAt: number;
+}
+
+const offlineBuffer: Map<string, BufferedMessage[]> = new Map();
 
 /**
  * Create HTTP server and Socket.io instance
@@ -99,11 +118,11 @@ function generateMessageId(): string {
 }
 
 /**
- * Get or create DM room ID (deterministic based on both wallets)
+ * Get or create DM room ID (deterministic based on both publicIds)
  */
-function getDMRoomId(wallet1: string, wallet2: string): string {
-  // Sort wallets to ensure consistent room ID regardless of who initiates
-  const sorted = [wallet1, wallet2].sort();
+function getDMRoomId(id1: string, id2: string): string {
+  // Sort publicIds to ensure consistent room ID regardless of who initiates
+  const sorted = [id1, id2].sort();
   return `dm:${sorted[0]}:${sorted[1]}`;
 }
 
@@ -117,9 +136,9 @@ function getChannelRoomId(channelId: string): string {
 /**
  * Check and update rate limit
  */
-function checkRateLimit(walletAddress: string, type: 'message' | 'signal'): boolean {
+function checkRateLimit(publicId: string, type: 'message' | 'signal'): boolean {
   const now = Date.now();
-  let entry = rateLimits.get(walletAddress);
+  let entry = rateLimits.get(publicId);
 
   if (!entry || now - entry.windowStart > RATE_LIMIT.windowMs) {
     // Reset window
@@ -128,7 +147,7 @@ function checkRateLimit(walletAddress: string, type: 'message' | 'signal'): bool
       signals: 0,
       windowStart: now,
     };
-    rateLimits.set(walletAddress, entry);
+    rateLimits.set(publicId, entry);
   }
 
   if (type === 'message') {
@@ -147,16 +166,15 @@ function checkRateLimit(walletAddress: string, type: 'message' | 'signal'): bool
 }
 
 /**
- * Verify wallet signature for authentication
- * Note: This is a simplified version. In production, use proper Solana message verification
+ * Verify NaCl signature for authentication
  */
-async function verifyWalletSignature(
-  walletAddress: string,
+async function verifySignature(
+  publicKey: string,
   signature: string,
   message: string
 ): Promise<boolean> {
   try {
-    const publicKeyBytes = bs58.decode(walletAddress);
+    const publicKeyBytes = bs58.decode(publicKey);
     const signatureBytes = bs58.decode(signature);
     const messageBytes = new TextEncoder().encode(message);
 
@@ -169,12 +187,59 @@ async function verifyWalletSignature(
   }
 }
 
+function bufferForOfflineUser(targetPublicId: string, type: 'channel' | 'dm', payload: Record<string, unknown>): void {
+  const now = Date.now();
+  const msg: BufferedMessage = {
+    id: generateMessageId(),
+    type,
+    payload,
+    timestamp: now,
+    expiresAt: now + MESSAGE_TTL_MS,
+  };
+
+  let buffer = offlineBuffer.get(targetPublicId);
+  if (!buffer) {
+    buffer = [];
+    offlineBuffer.set(targetPublicId, buffer);
+  }
+
+  // Evict expired messages
+  const valid = buffer.filter(m => m.expiresAt > now);
+
+  // Cap buffer size
+  if (valid.length >= MAX_BUFFERED_PER_USER) {
+    valid.shift(); // Drop oldest
+  }
+
+  valid.push(msg);
+  offlineBuffer.set(targetPublicId, valid);
+}
+
+function flushOfflineBuffer(publicId: string, socket: AuthenticatedSocket): void {
+  const buffer = offlineBuffer.get(publicId);
+  if (!buffer || buffer.length === 0) return;
+
+  const now = Date.now();
+  const valid = buffer.filter(m => m.expiresAt > now);
+
+  for (const msg of valid) {
+    socket.emit(`message:${msg.type}`, msg.payload);
+  }
+
+  // Clear the buffer
+  offlineBuffer.delete(publicId);
+
+  if (valid.length > 0) {
+    console.log(`[Socket Server] Flushed ${valid.length} buffered messages to ${publicId}`);
+  }
+}
+
 /**
  * Broadcast online users list to all connected clients
  */
 function broadcastOnlineUsers(): void {
-  const walletAddresses = Array.from(onlineUsers.keys());
-  io.emit('users:online', walletAddresses);
+  const publicIds = Array.from(onlineUsers.keys());
+  io.emit('users:online', publicIds);
 }
 
 /**
@@ -186,12 +251,12 @@ io.on('connection', (socket: AuthenticatedSocket) => {
   /**
    * Authentication handler
    */
-  socket.on('authenticate', async (data: { walletAddress: string; signature: string; message: string }) => {
+  socket.on('authenticate', async (data: { publicId: string; signature: string; message: string }) => {
     try {
-      const { walletAddress, signature, message } = data;
+      const { publicId, signature, message } = data;
 
       // Validate inputs
-      if (!walletAddress || !signature || !message) {
+      if (!publicId || !signature || !message) {
         socket.emit('authenticated', { success: false, error: 'Missing authentication data' });
         return;
       }
@@ -210,28 +275,33 @@ io.on('connection', (socket: AuthenticatedSocket) => {
         }
       }
 
-      // Verify signature
-      const isValid = await verifyWalletSignature(walletAddress, signature, message);
+      // Look up user's public key from their publicId
+      const user = await prisma.user.findUnique({
+        where: { publicId },
+        select: { publicKey: true, isBlacklisted: true }
+      });
+
+      if (!user) {
+        socket.emit('authenticated', { success: false, error: 'User not found' });
+        return;
+      }
+
+      if (user.isBlacklisted) {
+        socket.emit('authenticated', { success: false, error: 'Account suspended' });
+        socket.disconnect(true);
+        return;
+      }
+
+      // Verify signature using NaCl
+      const isValid = await verifySignature(user.publicKey, signature, message);
 
       if (!isValid) {
         socket.emit('authenticated', { success: false, error: 'Invalid signature' });
         return;
       }
 
-      // Check if wallet is blacklisted
-      const user = await prisma.user.findUnique({
-        where: { walletAddress },
-        select: { isBlacklisted: true }
-      });
-
-      if (user?.isBlacklisted) {
-        socket.emit('authenticated', { success: false, error: 'Account suspended' });
-        socket.disconnect(true);
-        return;
-      }
-
-      // Check if wallet is already connected (disconnect old connection)
-      const existingUser = onlineUsers.get(walletAddress);
+      // Check if user is already connected (disconnect old connection)
+      const existingUser = onlineUsers.get(publicId);
       if (existingUser && existingUser.socketId !== socket.id) {
         const oldSocket = io.sockets.sockets.get(existingUser.socketId);
         if (oldSocket) {
@@ -241,13 +311,13 @@ io.on('connection', (socket: AuthenticatedSocket) => {
       }
 
       // Store authentication
-      socket.walletAddress = walletAddress;
+      socket.publicId = publicId;
       socket.authenticated = true;
-      socketToWallet.set(socket.id, walletAddress);
+      socketToUser.set(socket.id, publicId);
 
       // Add to online users
-      onlineUsers.set(walletAddress, {
-        walletAddress,
+      onlineUsers.set(publicId, {
+        publicId,
         socketId: socket.id,
         connectedAt: Date.now(),
         lastSeen: Date.now(),
@@ -257,10 +327,13 @@ io.on('connection', (socket: AuthenticatedSocket) => {
       socket.emit('authenticated', { success: true });
 
       // Broadcast user online
-      socket.broadcast.emit('user:online', walletAddress);
+      socket.broadcast.emit('user:online', publicId);
       broadcastOnlineUsers();
 
-      console.log(`[Socket Server] User authenticated: ${walletAddress}`);
+      // Deliver any buffered messages
+      flushOfflineBuffer(publicId, socket);
+
+      console.log(`[Socket Server] User authenticated: ${publicId}`);
     } catch (error) {
       console.error('[Socket Server] Authentication error:', error);
       socket.emit('authenticated', { success: false, error: 'Authentication failed' });
@@ -278,7 +351,7 @@ io.on('connection', (socket: AuthenticatedSocket) => {
 
     const roomId = getChannelRoomId(channelId);
     socket.join(roomId);
-    console.log(`[Socket Server] ${socket.walletAddress} joined channel: ${channelId}`);
+    console.log(`[Socket Server] ${socket.publicId} joined channel: ${channelId}`);
   });
 
   /**
@@ -290,38 +363,38 @@ io.on('connection', (socket: AuthenticatedSocket) => {
 
     // Remove from typing users
     const typing = typingUsers.get(roomId);
-    if (typing && socket.walletAddress) {
-      typing.delete(socket.walletAddress);
+    if (typing && socket.publicId) {
+      typing.delete(socket.publicId);
     }
   });
 
   /**
    * Join DM room
    */
-  socket.on('join:dm', (recipientWallet: string) => {
-    if (!socket.authenticated || !socket.walletAddress) {
+  socket.on('join:dm', (recipientId: string) => {
+    if (!socket.authenticated || !socket.publicId) {
       socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
       return;
     }
 
-    const roomId = getDMRoomId(socket.walletAddress, recipientWallet);
+    const roomId = getDMRoomId(socket.publicId, recipientId);
     socket.join(roomId);
-    console.log(`[Socket Server] ${socket.walletAddress} joined DM with: ${recipientWallet}`);
+    console.log(`[Socket Server] ${socket.publicId} joined DM with: ${recipientId}`);
   });
 
   /**
    * Leave DM room
    */
-  socket.on('leave:dm', (recipientWallet: string) => {
-    if (!socket.walletAddress) return;
+  socket.on('leave:dm', (recipientId: string) => {
+    if (!socket.publicId) return;
 
-    const roomId = getDMRoomId(socket.walletAddress, recipientWallet);
+    const roomId = getDMRoomId(socket.publicId, recipientId);
     socket.leave(roomId);
 
     // Remove from typing users
     const typing = typingUsers.get(roomId);
     if (typing) {
-      typing.delete(socket.walletAddress);
+      typing.delete(socket.publicId);
     }
   });
 
@@ -334,19 +407,19 @@ io.on('connection', (socket: AuthenticatedSocket) => {
     nonce: string;
     senderId: string;
   }) => {
-    if (!socket.authenticated || !socket.walletAddress) {
+    if (!socket.authenticated || !socket.publicId) {
       socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
       return;
     }
 
     // Rate limit check
-    if (!checkRateLimit(socket.walletAddress, 'message')) {
+    if (!checkRateLimit(socket.publicId, 'message')) {
       socket.emit('rate-limited', { retryAfter: RATE_LIMIT.windowMs });
       return;
     }
 
     // Verify sender matches authenticated user
-    if (data.senderId !== socket.walletAddress) {
+    if (data.senderId !== socket.publicId) {
       socket.emit('error', { code: 'INVALID_SENDER', message: 'Sender mismatch' });
       return;
     }
@@ -365,7 +438,7 @@ io.on('connection', (socket: AuthenticatedSocket) => {
     io.to(roomId).emit('message:channel', message);
 
     // Update last seen
-    const user = onlineUsers.get(socket.walletAddress);
+    const user = onlineUsers.get(socket.publicId);
     if (user) {
       user.lastSeen = Date.now();
     }
@@ -375,29 +448,29 @@ io.on('connection', (socket: AuthenticatedSocket) => {
    * Handle DM message (relay encrypted, never decrypt)
    */
   socket.on('message:dm', (data: {
-    recipientWallet: string;
+    recipientId: string;
     encrypted: string;
     nonce: string;
     senderId: string;
   }) => {
-    if (!socket.authenticated || !socket.walletAddress) {
+    if (!socket.authenticated || !socket.publicId) {
       socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
       return;
     }
 
     // Rate limit check
-    if (!checkRateLimit(socket.walletAddress, 'message')) {
+    if (!checkRateLimit(socket.publicId, 'message')) {
       socket.emit('rate-limited', { retryAfter: RATE_LIMIT.windowMs });
       return;
     }
 
     // Verify sender matches authenticated user
-    if (data.senderId !== socket.walletAddress) {
+    if (data.senderId !== socket.publicId) {
       socket.emit('error', { code: 'INVALID_SENDER', message: 'Sender mismatch' });
       return;
     }
 
-    const roomId = getDMRoomId(socket.walletAddress, data.recipientWallet);
+    const roomId = getDMRoomId(socket.publicId, data.recipientId);
     const message = {
       id: generateMessageId(),
       encrypted: data.encrypted,
@@ -409,8 +482,13 @@ io.on('connection', (socket: AuthenticatedSocket) => {
     // Send to DM room
     io.to(roomId).emit('message:dm', message);
 
+    // If recipient is offline, buffer for later delivery
+    if (!onlineUsers.has(data.recipientId)) {
+      bufferForOfflineUser(data.recipientId, 'dm', message);
+    }
+
     // Update last seen
-    const user = onlineUsers.get(socket.walletAddress);
+    const user = onlineUsers.get(socket.publicId);
     if (user) {
       user.lastSeen = Date.now();
     }
@@ -419,19 +497,19 @@ io.on('connection', (socket: AuthenticatedSocket) => {
   /**
    * P2P Signal: Offer
    */
-  socket.on('signal:offer', (data: { targetWallet: string; signal: P2PSignal }) => {
-    if (!socket.authenticated || !socket.walletAddress) {
+  socket.on('signal:offer', (data: { targetId: string; signal: P2PSignal }) => {
+    if (!socket.authenticated || !socket.publicId) {
       socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
       return;
     }
 
     // Rate limit check
-    if (!checkRateLimit(socket.walletAddress, 'signal')) {
+    if (!checkRateLimit(socket.publicId, 'signal')) {
       socket.emit('rate-limited', { retryAfter: RATE_LIMIT.windowMs });
       return;
     }
 
-    const targetUser = onlineUsers.get(data.targetWallet);
+    const targetUser = onlineUsers.get(data.targetId);
     if (!targetUser) {
       socket.emit('error', { code: 'USER_OFFLINE', message: 'Target user is not online' });
       return;
@@ -440,7 +518,7 @@ io.on('connection', (socket: AuthenticatedSocket) => {
     const targetSocket = io.sockets.sockets.get(targetUser.socketId);
     if (targetSocket) {
       targetSocket.emit('signal:offer', {
-        fromWallet: socket.walletAddress,
+        fromId: socket.publicId,
         signal: data.signal,
       });
     }
@@ -449,19 +527,19 @@ io.on('connection', (socket: AuthenticatedSocket) => {
   /**
    * P2P Signal: Answer
    */
-  socket.on('signal:answer', (data: { targetWallet: string; signal: P2PSignal }) => {
-    if (!socket.authenticated || !socket.walletAddress) {
+  socket.on('signal:answer', (data: { targetId: string; signal: P2PSignal }) => {
+    if (!socket.authenticated || !socket.publicId) {
       socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
       return;
     }
 
     // Rate limit check
-    if (!checkRateLimit(socket.walletAddress, 'signal')) {
+    if (!checkRateLimit(socket.publicId, 'signal')) {
       socket.emit('rate-limited', { retryAfter: RATE_LIMIT.windowMs });
       return;
     }
 
-    const targetUser = onlineUsers.get(data.targetWallet);
+    const targetUser = onlineUsers.get(data.targetId);
     if (!targetUser) {
       socket.emit('error', { code: 'USER_OFFLINE', message: 'Target user is not online' });
       return;
@@ -470,7 +548,7 @@ io.on('connection', (socket: AuthenticatedSocket) => {
     const targetSocket = io.sockets.sockets.get(targetUser.socketId);
     if (targetSocket) {
       targetSocket.emit('signal:answer', {
-        fromWallet: socket.walletAddress,
+        fromId: socket.publicId,
         signal: data.signal,
       });
     }
@@ -479,19 +557,19 @@ io.on('connection', (socket: AuthenticatedSocket) => {
   /**
    * P2P Signal: ICE Candidate
    */
-  socket.on('signal:ice', (data: { targetWallet: string; candidate: RTCIceCandidate }) => {
-    if (!socket.authenticated || !socket.walletAddress) {
+  socket.on('signal:ice', (data: { targetId: string; candidate: RTCIceCandidate }) => {
+    if (!socket.authenticated || !socket.publicId) {
       socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
       return;
     }
 
     // Rate limit check
-    if (!checkRateLimit(socket.walletAddress, 'signal')) {
+    if (!checkRateLimit(socket.publicId, 'signal')) {
       socket.emit('rate-limited', { retryAfter: RATE_LIMIT.windowMs });
       return;
     }
 
-    const targetUser = onlineUsers.get(data.targetWallet);
+    const targetUser = onlineUsers.get(data.targetId);
     if (!targetUser) {
       return; // Silently ignore if target is offline (ICE can fail gracefully)
     }
@@ -499,7 +577,7 @@ io.on('connection', (socket: AuthenticatedSocket) => {
     const targetSocket = io.sockets.sockets.get(targetUser.socketId);
     if (targetSocket) {
       targetSocket.emit('signal:ice', {
-        fromWallet: socket.walletAddress,
+        fromId: socket.publicId,
         candidate: data.candidate,
       });
     }
@@ -508,14 +586,14 @@ io.on('connection', (socket: AuthenticatedSocket) => {
   /**
    * Typing: Start
    */
-  socket.on('typing:start', (data: { channelId?: string; dmWallet?: string }) => {
-    if (!socket.authenticated || !socket.walletAddress) return;
+  socket.on('typing:start', (data: { channelId?: string; dmRecipientId?: string }) => {
+    if (!socket.authenticated || !socket.publicId) return;
 
     let roomId: string;
     if (data.channelId) {
       roomId = getChannelRoomId(data.channelId);
-    } else if (data.dmWallet) {
-      roomId = getDMRoomId(socket.walletAddress, data.dmWallet);
+    } else if (data.dmRecipientId) {
+      roomId = getDMRoomId(socket.publicId, data.dmRecipientId);
     } else {
       return;
     }
@@ -524,13 +602,13 @@ io.on('connection', (socket: AuthenticatedSocket) => {
     if (!typingUsers.has(roomId)) {
       typingUsers.set(roomId, new Set());
     }
-    typingUsers.get(roomId)!.add(socket.walletAddress);
+    typingUsers.get(roomId)!.add(socket.publicId);
 
     // Broadcast to room
     socket.to(roomId).emit('typing:update', {
       channelId: data.channelId,
-      dmWallet: data.dmWallet,
-      walletAddress: socket.walletAddress,
+      dmRecipientId: data.dmRecipientId,
+      publicId: socket.publicId,
       isTyping: true,
     });
   });
@@ -542,11 +620,11 @@ io.on('connection', (socket: AuthenticatedSocket) => {
   socket.on('reaction', (data: {
     messageId: string;
     channelId?: string;
-    dmWallet?: string;
+    dmRecipientId?: string;
     emoji: string;
     action: 'add' | 'remove';
   }) => {
-    if (!socket.authenticated || !socket.walletAddress) {
+    if (!socket.authenticated || !socket.publicId) {
       socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
       return;
     }
@@ -554,8 +632,8 @@ io.on('connection', (socket: AuthenticatedSocket) => {
     let roomId: string;
     if (data.channelId) {
       roomId = getChannelRoomId(data.channelId);
-    } else if (data.dmWallet) {
-      roomId = getDMRoomId(socket.walletAddress, data.dmWallet);
+    } else if (data.dmRecipientId) {
+      roomId = getDMRoomId(socket.publicId, data.dmRecipientId);
     } else {
       return;
     }
@@ -565,7 +643,7 @@ io.on('connection', (socket: AuthenticatedSocket) => {
       messageId: data.messageId,
       emoji: data.emoji,
       action: data.action,
-      userWallet: socket.walletAddress,
+      userId: socket.publicId,
       timestamp: Date.now(),
     });
   });
@@ -575,7 +653,7 @@ io.on('connection', (socket: AuthenticatedSocket) => {
    * Used by the server to push notifications to connected clients
    */
   socket.on('notification:send', (data: {
-    targetWallet: string;
+    targetId: string;
     notification: {
       id: string;
       type: string;
@@ -584,13 +662,13 @@ io.on('connection', (socket: AuthenticatedSocket) => {
       messageId?: string;
       channelId?: string;
       communityId?: string;
-      senderWallet?: string;
-      senderXHandle?: string;
+      senderId?: string;
+      senderHandle?: string;
     };
   }) => {
     // This event is typically emitted from server-side code
     // Find the target user's socket and send them the notification
-    const targetUser = onlineUsers.get(data.targetWallet);
+    const targetUser = onlineUsers.get(data.targetId);
     if (targetUser) {
       const targetSocket = io.sockets.sockets.get(targetUser.socketId);
       if (targetSocket) {
@@ -605,14 +683,14 @@ io.on('connection', (socket: AuthenticatedSocket) => {
   /**
    * Typing: Stop
    */
-  socket.on('typing:stop', (data: { channelId?: string; dmWallet?: string }) => {
-    if (!socket.authenticated || !socket.walletAddress) return;
+  socket.on('typing:stop', (data: { channelId?: string; dmRecipientId?: string }) => {
+    if (!socket.authenticated || !socket.publicId) return;
 
     let roomId: string;
     if (data.channelId) {
       roomId = getChannelRoomId(data.channelId);
-    } else if (data.dmWallet) {
-      roomId = getDMRoomId(socket.walletAddress, data.dmWallet);
+    } else if (data.dmRecipientId) {
+      roomId = getDMRoomId(socket.publicId, data.dmRecipientId);
     } else {
       return;
     }
@@ -620,14 +698,14 @@ io.on('connection', (socket: AuthenticatedSocket) => {
     // Remove from typing users
     const typing = typingUsers.get(roomId);
     if (typing) {
-      typing.delete(socket.walletAddress);
+      typing.delete(socket.publicId);
     }
 
     // Broadcast to room
     socket.to(roomId).emit('typing:update', {
       channelId: data.channelId,
-      dmWallet: data.dmWallet,
-      walletAddress: socket.walletAddress,
+      dmRecipientId: data.dmRecipientId,
+      publicId: socket.publicId,
       isTyping: false,
     });
   });
@@ -639,8 +717,8 @@ io.on('connection', (socket: AuthenticatedSocket) => {
     socket.emit('pong');
 
     // Update last seen
-    if (socket.walletAddress) {
-      const user = onlineUsers.get(socket.walletAddress);
+    if (socket.publicId) {
+      const user = onlineUsers.get(socket.publicId);
       if (user) {
         user.lastSeen = Date.now();
       }
@@ -653,29 +731,29 @@ io.on('connection', (socket: AuthenticatedSocket) => {
   socket.on('disconnect', (reason) => {
     console.log(`[Socket Server] Client disconnected: ${socket.id}, reason: ${reason}`);
 
-    const walletAddress = socketToWallet.get(socket.id);
-    if (walletAddress) {
+    const publicId = socketToUser.get(socket.id);
+    if (publicId) {
       // Remove from online users
-      onlineUsers.delete(walletAddress);
-      socketToWallet.delete(socket.id);
+      onlineUsers.delete(publicId);
+      socketToUser.delete(socket.id);
 
       // Remove from all typing sets
       typingUsers.forEach((users, roomId) => {
-        if (users.has(walletAddress)) {
-          users.delete(walletAddress);
+        if (users.has(publicId)) {
+          users.delete(publicId);
           // Broadcast typing stop
           io.to(roomId).emit('typing:update', {
-            walletAddress,
+            publicId,
             isTyping: false,
           });
         }
       });
 
       // Broadcast user offline
-      io.emit('user:offline', walletAddress);
+      io.emit('user:offline', publicId);
       broadcastOnlineUsers();
 
-      console.log(`[Socket Server] User disconnected: ${walletAddress}`);
+      console.log(`[Socket Server] User disconnected: ${publicId}`);
     }
   });
 
@@ -689,16 +767,16 @@ io.on('connection', (socket: AuthenticatedSocket) => {
   socket.on('call:initiate', (data: {
     callId: string;
     type: 'voice' | 'video';
-    targetWallet: string;
+    targetId: string;
     channelId?: string;
     communityId?: string;
   }) => {
-    if (!socket.authenticated || !socket.walletAddress) {
+    if (!socket.authenticated || !socket.publicId) {
       socket.emit('call:error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
       return;
     }
 
-    const targetUser = onlineUsers.get(data.targetWallet);
+    const targetUser = onlineUsers.get(data.targetId);
     if (!targetUser) {
       socket.emit('call:error', { code: 'USER_OFFLINE', message: 'Target user is not online' });
       return;
@@ -709,31 +787,31 @@ io.on('connection', (socket: AuthenticatedSocket) => {
       targetSocket.emit('call:incoming', {
         callId: data.callId,
         type: data.type,
-        callerId: socket.walletAddress,
+        callerId: socket.publicId,
         channelId: data.channelId,
         communityId: data.communityId,
         timestamp: Date.now(),
       });
-      console.log(`[Socket Server] Call initiated: ${socket.walletAddress} -> ${data.targetWallet}`);
+      console.log(`[Socket Server] Call initiated: ${socket.publicId} -> ${data.targetId}`);
     }
   });
 
   /**
    * Call: Accept an incoming call
    */
-  socket.on('call:accept', (data: { callId: string; initiatorWallet: string }) => {
-    if (!socket.authenticated || !socket.walletAddress) {
+  socket.on('call:accept', (data: { callId: string; initiatorId: string }) => {
+    if (!socket.authenticated || !socket.publicId) {
       socket.emit('call:error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
       return;
     }
 
-    const initiatorUser = onlineUsers.get(data.initiatorWallet);
+    const initiatorUser = onlineUsers.get(data.initiatorId);
     if (initiatorUser) {
       const initiatorSocket = io.sockets.sockets.get(initiatorUser.socketId);
       if (initiatorSocket) {
         initiatorSocket.emit('call:accepted', {
           callId: data.callId,
-          accepterId: socket.walletAddress,
+          accepterId: socket.publicId,
         });
         console.log(`[Socket Server] Call accepted: ${data.callId}`);
       }
@@ -743,19 +821,19 @@ io.on('connection', (socket: AuthenticatedSocket) => {
   /**
    * Call: Reject an incoming call
    */
-  socket.on('call:reject', (data: { callId: string; initiatorWallet: string; reason?: string }) => {
-    if (!socket.authenticated || !socket.walletAddress) {
+  socket.on('call:reject', (data: { callId: string; initiatorId: string; reason?: string }) => {
+    if (!socket.authenticated || !socket.publicId) {
       socket.emit('call:error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
       return;
     }
 
-    const initiatorUser = onlineUsers.get(data.initiatorWallet);
+    const initiatorUser = onlineUsers.get(data.initiatorId);
     if (initiatorUser) {
       const initiatorSocket = io.sockets.sockets.get(initiatorUser.socketId);
       if (initiatorSocket) {
         initiatorSocket.emit('call:rejected', {
           callId: data.callId,
-          rejecterId: socket.walletAddress,
+          rejecterId: socket.publicId,
           reason: data.reason,
         });
         console.log(`[Socket Server] Call rejected: ${data.callId}`);
@@ -767,7 +845,7 @@ io.on('connection', (socket: AuthenticatedSocket) => {
    * Call: End an active call
    */
   socket.on('call:end', (data: { callId: string; reason: string }) => {
-    if (!socket.authenticated || !socket.walletAddress) {
+    if (!socket.authenticated || !socket.publicId) {
       socket.emit('call:error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
       return;
     }
@@ -775,7 +853,7 @@ io.on('connection', (socket: AuthenticatedSocket) => {
     // Broadcast to all participants
     socket.broadcast.emit('call:ended', {
       callId: data.callId,
-      enderId: socket.walletAddress,
+      enderId: socket.publicId,
       reason: data.reason,
     });
     console.log(`[Socket Server] Call ended: ${data.callId}`);
@@ -790,7 +868,7 @@ io.on('connection', (socket: AuthenticatedSocket) => {
     mediaType: 'audio' | 'video' | 'screen';
     enabled: boolean;
   }) => {
-    if (!socket.authenticated || !socket.walletAddress) return;
+    if (!socket.authenticated || !socket.publicId) return;
     socket.broadcast.emit('call:media-toggle', data);
   });
 
@@ -798,7 +876,7 @@ io.on('connection', (socket: AuthenticatedSocket) => {
    * Call: Join a voice channel
    */
   socket.on('call:join-voice-channel', (data: { channelId: string }) => {
-    if (!socket.authenticated || !socket.walletAddress) {
+    if (!socket.authenticated || !socket.publicId) {
       socket.emit('call:error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
       return;
     }
@@ -809,7 +887,7 @@ io.on('connection', (socket: AuthenticatedSocket) => {
     io.to(roomId).emit('call:participant-joined', {
       callId: `voice-channel-${data.channelId}`,
       participant: {
-        peerId: socket.walletAddress,
+        peerId: socket.publicId,
         joinedAt: Date.now(),
         mediaState: { audioEnabled: true, videoEnabled: false, screenSharing: false, audioMuted: false },
         audioLevel: 0,
@@ -817,24 +895,24 @@ io.on('connection', (socket: AuthenticatedSocket) => {
         connectionQuality: { quality: 'good', packetLoss: 0, latency: 0, jitter: 0, bandwidth: 0 },
       },
     });
-    console.log(`[Socket Server] User ${socket.walletAddress} joined voice channel ${data.channelId}`);
+    console.log(`[Socket Server] User ${socket.publicId} joined voice channel ${data.channelId}`);
   });
 
   /**
    * Call: Leave a voice channel
    */
   socket.on('call:leave-voice-channel', (data: { channelId: string }) => {
-    if (!socket.authenticated || !socket.walletAddress) return;
+    if (!socket.authenticated || !socket.publicId) return;
 
     const roomId = `voice:${data.channelId}`;
 
     io.to(roomId).emit('call:participant-left', {
       callId: `voice-channel-${data.channelId}`,
-      peerId: socket.walletAddress,
+      peerId: socket.publicId,
     });
 
     socket.leave(roomId);
-    console.log(`[Socket Server] User ${socket.walletAddress} left voice channel ${data.channelId}`);
+    console.log(`[Socket Server] User ${socket.publicId} left voice channel ${data.channelId}`);
   });
 
   /**
@@ -850,9 +928,9 @@ io.on('connection', (socket: AuthenticatedSocket) => {
  */
 setInterval(() => {
   const now = Date.now();
-  rateLimits.forEach((entry, wallet) => {
+  rateLimits.forEach((entry, id) => {
     if (now - entry.windowStart > RATE_LIMIT.windowMs * 2) {
-      rateLimits.delete(wallet);
+      rateLimits.delete(id);
     }
   });
 }, RATE_LIMIT.windowMs);
@@ -867,6 +945,21 @@ setInterval(() => {
     }
   });
 }, 60000);
+
+/**
+ * Clean up expired buffered messages periodically
+ */
+setInterval(() => {
+  const now = Date.now();
+  offlineBuffer.forEach((buffer, publicId) => {
+    const valid = buffer.filter(m => m.expiresAt > now);
+    if (valid.length === 0) {
+      offlineBuffer.delete(publicId);
+    } else {
+      offlineBuffer.set(publicId, valid);
+    }
+  });
+}, 5 * 60 * 1000); // Every 5 minutes
 
 /**
  * Start the server

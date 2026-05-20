@@ -3,9 +3,6 @@ import localFont from 'next/font/local';
 import './globals.css';
 import { AppProviders } from '@/components/providers/AppProviders';
 
-// Import Solana wallet adapter styles
-import '@solana/wallet-adapter-react-ui/styles.css';
-
 const geistSans = localFont({
   src: './fonts/GeistVF.woff',
   variable: '--font-geist-sans',
@@ -19,18 +16,15 @@ const geistMono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: 'Void Chat - Private Web3 Messaging',
+  title: 'Void Chat - Private Messaging',
   description:
-    'Privacy-first Web3 messenger with end-to-end encryption, token-gated communities, and P2P messaging. Your wallet is your identity.',
+    'Privacy-first messenger with end-to-end encryption, communities, and P2P messaging. Zero-knowledge architecture.',
   keywords: [
-    'web3',
     'messenger',
-    'solana',
     'encrypted',
     'private',
-    'token-gated',
     'p2p',
-    'decentralized',
+    'zero-knowledge',
     'void-chat',
   ],
   authors: [{ name: 'Void Chat Team' }],
@@ -39,16 +33,16 @@ export const metadata: Metadata = {
     type: 'website',
     locale: 'en_US',
     url: 'https://voidchat.app',
-    title: 'Void Chat - Private Web3 Messaging',
+    title: 'Void Chat - Private Messaging',
     description:
-      'Privacy-first Web3 messenger with end-to-end encryption, token-gated communities, and P2P messaging.',
+      'Privacy-first messenger with end-to-end encryption, communities, and P2P messaging.',
     siteName: 'Void Chat',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Void Chat - Private Web3 Messaging',
+    title: 'Void Chat - Private Messaging',
     description:
-      'Privacy-first Web3 messenger with end-to-end encryption, token-gated communities, and P2P messaging.',
+      'Privacy-first messenger with end-to-end encryption, communities, and P2P messaging.',
     creator: '@voidchatapp',
   },
   icons: {

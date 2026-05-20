@@ -5,8 +5,8 @@ import React, { useMemo } from 'react';
 export type AvatarSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl';
 
 export interface AvatarProps {
-  /** Wallet address to generate gradient from */
-  walletAddress: string;
+  /** Public ID to generate gradient from */
+  publicId: string;
   /** Optional image URL to display instead of gradient */
   imageUrl?: string | null;
   /** Size variant */
@@ -40,8 +40,8 @@ const statusSizeClasses: Record<AvatarSize, string> = {
 };
 
 /**
- * Generate a deterministic gradient based on wallet address
- * Uses the wallet address hash to create consistent colors
+ * Generate a deterministic gradient based on public ID
+ * Uses the public ID hash to create consistent colors
  */
 function generateGradientFromAddress(address: string): {
   colors: [string, string];
@@ -78,7 +78,7 @@ function generateGradientFromAddress(address: string): {
 }
 
 /**
- * Get initials from wallet address (first and last 2 characters)
+ * Get initials from public ID (first 2 characters)
  */
 function getInitials(address: string): string {
   if (!address || address.length < 4) return '??';
@@ -86,7 +86,7 @@ function getInitials(address: string): string {
 }
 
 export function Avatar({
-  walletAddress,
+  publicId,
   imageUrl,
   size = 'md',
   alt,
@@ -96,13 +96,13 @@ export function Avatar({
   onClick,
 }: AvatarProps) {
   const gradient = useMemo(
-    () => generateGradientFromAddress(walletAddress),
-    [walletAddress]
+    () => generateGradientFromAddress(publicId),
+    [publicId]
   );
 
   const initials = useMemo(
-    () => getInitials(walletAddress),
-    [walletAddress]
+    () => getInitials(publicId),
+    [publicId]
   );
 
   const gradientStyle = useMemo(
@@ -133,14 +133,14 @@ export function Avatar({
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={imageUrl}
-          alt={alt || `Avatar for ${walletAddress}`}
+          alt={alt || `Avatar for ${publicId}`}
           className={`${sizeClass} rounded-full object-cover`}
         />
       ) : (
         <div
           className={`${sizeClass} rounded-full flex items-center justify-center font-semibold text-white select-none`}
           style={gradientStyle}
-          title={alt || walletAddress}
+          title={alt || publicId}
         >
           {initials}
         </div>

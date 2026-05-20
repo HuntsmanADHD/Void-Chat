@@ -17,9 +17,9 @@ export function Footer() {
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
           {/* Left side - Logo and copyright */}
           <div className="flex items-center gap-3">
-            <span className="text-lg font-bold text-white">Clawed</span>
+            <span className="text-lg font-bold text-white">Void Chat</span>
             <span className="text-gray-500 text-sm">
-              &copy; {currentYear} Clawed Messenger
+              &copy; {currentYear} Void Chat
             </span>
           </div>
 

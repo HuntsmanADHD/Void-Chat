@@ -1,0 +1,447 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Void Background Colors - Black to Grey scale */
+  --void-darkest: #000000;
+  --void-dark: #0a0a0a;
+  --void-bg: #111111;
+  --void-surface: #1a1a1a;
+  --void-elevated: #222222;
+  --void-hover: #2a2a2a;
+  --void-active: #333333;
+
+  /* Void Text Colors - White to Grey foggy */
+  --void-text-primary: #f5f5f5;
+  --void-text-secondary: #b0b0b0;
+  --void-text-muted: #707070;
+  --void-text-faint: #505050;
+
+  /* Void Accent - Subtle grey-white */
+  --void-accent: #808080;
+  --void-accent-light: #a0a0a0;
+  --void-accent-lighter: #c0c0c0;
+
+  /* Map to existing variable names for compatibility */
+  --discord-dark: var(--void-dark);
+  --discord-darker: var(--void-darkest);
+  --discord-sidebar: var(--void-surface);
+  --discord-bg: var(--void-bg);
+  --discord-light: var(--void-elevated);
+  --discord-hover: var(--void-hover);
+  --discord-active: var(--void-active);
+
+  --text-primary: var(--void-text-primary);
+  --text-secondary: var(--void-text-secondary);
+  --text-muted: var(--void-text-muted);
+  --text-link: var(--void-accent-lighter);
+
+  /* Keep accent colors but mute them */
+  --accent-primary: #606060;
+  --accent-success: #4a7c59;
+  --accent-warning: #8b7355;
+  --accent-danger: #8b4545;
+  --accent-gold: #9a8a6a;
+
+  /* Token/Void Chat branding - muted for void aesthetic */
+  --void-primary: #7a6b9e;
+  --void-secondary: #6b9b8a;
+
+  /* Status colors - muted for void aesthetic */
+  --status-online: #4a7c59;
+  --status-idle: #8b7355;
+  --status-dnd: #8b4545;
+  --status-offline: #505050;
+
+  /* Background */
+  --background: var(--discord-bg);
+  --foreground: var(--text-primary);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: 'gg sans', 'Noto Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  overflow: hidden;
+}
+
+/* Custom Scrollbar Styling - Void Theme */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--void-darkest);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--void-active);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--void-accent);
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--void-active) var(--void-darkest);
+}
+
+/* Thin scrollbar for sidebars */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: var(--void-hover);
+}
+
+/* Hide scrollbar but keep functionality */
+.scrollbar-hidden::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.scrollbar-hidden {
+  scrollbar-width: none;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+@layer components {
+  /* Message styling */
+  .message-container {
+    @apply relative px-4 py-1 hover:bg-[var(--void-hover)] transition-colors;
+  }
+
+  .message-container:hover .message-actions {
+    @apply opacity-100;
+  }
+
+  .message-content {
+    @apply text-[var(--void-text-secondary)] text-sm leading-relaxed break-words;
+  }
+
+  .message-content a {
+    @apply text-[var(--void-accent-lighter)] hover:underline;
+  }
+
+  .message-timestamp {
+    @apply text-[var(--void-text-muted)] text-xs ml-2;
+  }
+
+  .message-actions {
+    @apply absolute right-4 -top-4 bg-[var(--void-surface)] border border-[var(--void-active)] rounded-md flex items-center opacity-0 transition-opacity shadow-lg;
+  }
+
+  .message-action-btn {
+    @apply p-1.5 hover:bg-[var(--void-hover)] text-[var(--void-text-muted)] hover:text-[var(--void-text-primary)] transition-colors;
+  }
+
+  /* Channel/DM list item */
+  .channel-item {
+    @apply flex items-center gap-2 px-2 py-1.5 mx-2 rounded text-[var(--void-text-muted)] hover:text-[var(--void-text-secondary)] hover:bg-[var(--void-hover)] cursor-pointer transition-colors;
+  }
+
+  .channel-item.active {
+    @apply bg-[var(--void-active)] text-[var(--void-text-primary)];
+  }
+
+  /* Server/Community icon */
+  .server-icon {
+    @apply w-12 h-12 rounded-[24px] bg-[var(--void-bg)] hover:bg-[var(--void-active)] hover:rounded-[16px] flex items-center justify-center cursor-pointer transition-all duration-150;
+  }
+
+  .server-icon.active {
+    @apply rounded-[16px] bg-[var(--void-accent)];
+  }
+
+  .server-icon-indicator {
+    @apply absolute left-0 w-1 rounded-r bg-[var(--void-text-primary)] transition-all;
+  }
+
+  /* Member list item */
+  .member-item {
+    @apply flex items-center gap-3 px-2 py-1 mx-2 rounded hover:bg-[var(--void-hover)] cursor-pointer transition-colors;
+  }
+
+  /* Input styling */
+  .chat-input {
+    @apply w-full bg-[var(--void-elevated)] text-[var(--void-text-primary)] placeholder:text-[var(--void-text-muted)] rounded-lg px-4 py-3 outline-none resize-none border border-[var(--void-active)];
+  }
+
+  .chat-input:focus {
+    @apply ring-1 ring-[var(--void-accent)] border-[var(--void-accent)];
+  }
+
+  /* Button styling - Void grey gradients */
+  .btn-primary {
+    @apply bg-gradient-to-b from-[#555555] to-[#404040] hover:from-[#606060] hover:to-[#505050] text-[var(--void-text-primary)] font-medium px-4 py-2 rounded transition-all border border-[var(--void-active)] shadow-md;
+  }
+
+  .btn-secondary {
+    @apply bg-gradient-to-b from-[var(--void-elevated)] to-[var(--void-surface)] hover:from-[var(--void-active)] hover:to-[var(--void-hover)] text-[var(--void-text-secondary)] font-medium px-4 py-2 rounded transition-all border border-[var(--void-active)];
+  }
+
+  .btn-danger {
+    @apply bg-gradient-to-b from-[#6b3a3a] to-[#5a2e2e] hover:from-[#7a4545] hover:to-[#6a3838] text-[var(--void-text-primary)] font-medium px-4 py-2 rounded transition-all border border-[#8b4545];
+  }
+
+  .btn-success {
+    @apply bg-gradient-to-b from-[#3a5c47] to-[#2e4a3a] hover:from-[#456b54] hover:to-[#3a5c47] text-[var(--void-text-primary)] font-medium px-4 py-2 rounded transition-all border border-[#4a7c59];
+  }
+
+  /* Badge styling - Muted void colors */
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border;
+  }
+
+  .badge-gold {
+    @apply bg-[#3d3728]/60 text-[#c4b896] border-[#5a5040];
+  }
+
+  .badge-verified {
+    @apply bg-[#3d3550]/60 text-[#a89bc4] border-[#5a4d70];
+  }
+
+  .badge-warning {
+    @apply bg-[#3d3328]/60 text-[#c4a878] border-[#5a4830];
+  }
+
+  .badge-danger {
+    @apply bg-[#3d2828]/60 text-[#c48888] border-[#5a3535];
+  }
+
+  /* Tooltip */
+  .tooltip {
+    @apply absolute z-50 px-3 py-2 text-sm bg-[var(--void-darkest)] text-[var(--void-text-primary)] rounded-md shadow-lg whitespace-nowrap opacity-0 pointer-events-none transition-opacity border border-[var(--void-active)];
+  }
+
+  .tooltip.show {
+    @apply opacity-100;
+  }
+
+  /* Verified holder badge */
+  .verified-holder {
+    @apply inline-flex items-center gap-1 text-[#c4b896];
+  }
+
+  /* Strike indicator */
+  .strike-indicator {
+    @apply inline-flex items-center gap-1 text-[#c4a878];
+  }
+
+  /* Status dot */
+  .status-dot {
+    @apply absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-[var(--void-surface)];
+  }
+
+  .status-dot.online {
+    @apply bg-[var(--status-online)];
+  }
+
+  .status-dot.idle {
+    @apply bg-[var(--status-idle)];
+  }
+
+  .status-dot.dnd {
+    @apply bg-[var(--status-dnd)];
+  }
+
+  .status-dot.offline {
+    @apply bg-[var(--status-offline)];
+  }
+
+  /* Divider */
+  .divider {
+    @apply h-px bg-[var(--void-active)] mx-4 my-2;
+  }
+
+  /* Section header */
+  .section-header {
+    @apply flex items-center justify-between px-4 py-2 text-xs font-semibold uppercase text-[var(--void-text-muted)] hover:text-[var(--void-text-secondary)] cursor-pointer;
+  }
+
+  /* Modal backdrop */
+  .modal-backdrop {
+    @apply fixed inset-0 bg-black/80 flex items-center justify-center z-50;
+  }
+
+  .modal-content {
+    @apply bg-[var(--void-surface)] rounded-lg shadow-2xl max-w-md w-full mx-4 border border-[var(--void-active)];
+  }
+
+  /* Token balance display */
+  .token-balance {
+    @apply inline-flex items-center gap-1.5 px-2 py-1 rounded bg-[var(--void-dark)] text-[var(--void-secondary)] font-mono text-sm border border-[var(--void-active)];
+  }
+
+  /* Wallet address display */
+  .wallet-address {
+    @apply font-mono text-xs text-[var(--void-text-muted)] truncate;
+  }
+
+  /* X handle display */
+  .x-handle {
+    @apply text-[var(--void-accent-lighter)] text-sm hover:underline cursor-pointer;
+  }
+
+  /* Message group background for readability */
+  .message-group-bg {
+    @apply backdrop-blur-sm rounded-lg mx-2 my-1;
+    background-color: rgba(10, 10, 10, 0.6);
+    border: 1px solid rgba(26, 26, 26, 0.5);
+  }
+}
+
+/* Animation keyframes */
+@keyframes pulse-soft {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+@keyframes slide-in {
+  from {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes void-glow {
+  0%, 100% {
+    box-shadow: 0 0 20px rgba(128, 128, 128, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(128, 128, 128, 0.2);
+  }
+}
+
+@keyframes fog-drift {
+  0% {
+    opacity: 0.3;
+    transform: translateX(0);
+  }
+  50% {
+    opacity: 0.5;
+  }
+  100% {
+    opacity: 0.3;
+    transform: translateX(10px);
+  }
+}
+
+.animate-pulse-soft {
+  animation: pulse-soft 2s ease-in-out infinite;
+}
+
+.animate-slide-in {
+  animation: slide-in 0.2s ease-out;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.15s ease-out;
+}
+
+.animate-void-glow {
+  animation: void-glow 3s ease-in-out infinite;
+}
+
+.animate-fog-drift {
+  animation: fog-drift 8s ease-in-out infinite;
+}
+
+/* Landing page styles */
+.text-shadow-sm {
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.7);
+}
+
+.text-shadow-lg {
+  text-shadow: 0 4px 8px rgba(0, 0, 0, 0.9), 0 2px 4px rgba(0, 0, 0, 0.7);
+}
+
+.text-shadow-xl {
+  text-shadow: 0 6px 12px rgba(0, 0, 0, 1), 0 3px 6px rgba(0, 0, 0, 0.8);
+}
+
+/* Glass card - Void aesthetic with fog effect */
+.glass-card {
+  @apply backdrop-blur-lg rounded-xl;
+  background: linear-gradient(to bottom right, rgba(10, 10, 10, 0.8), rgba(0, 0, 0, 0.9));
+  border: 1px solid rgba(51, 51, 51, 0.5);
+  box-shadow:
+    0 4px 30px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.glass-card:hover {
+  background: linear-gradient(to bottom right, rgba(26, 26, 26, 0.7), rgba(10, 10, 10, 0.85));
+  border-color: rgba(128, 128, 128, 0.3);
+  box-shadow:
+    0 8px 40px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* Void-specific utility classes */
+.void-gradient-bg {
+  background: linear-gradient(180deg, var(--void-darkest) 0%, var(--void-bg) 50%, var(--void-surface) 100%);
+}
+
+.void-gradient-text {
+  background: linear-gradient(180deg, var(--void-text-primary) 0%, var(--void-text-secondary) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.void-border {
+  border: 1px solid var(--void-active);
+}
+
+.void-border-glow {
+  border: 1px solid var(--void-accent);
+  box-shadow: 0 0 10px rgba(128, 128, 128, 0.15);
+}
+
+/* Fog overlay effect for backgrounds */
+.fog-overlay::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 0%, rgba(128, 128, 128, 0.1) 0%, transparent 70%);
+  pointer-events: none;
+}

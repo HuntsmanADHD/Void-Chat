@@ -13,11 +13,10 @@ import {
   Menu,
 } from 'lucide-react';
 import { Avatar } from '../ui/Avatar';
-import { truncateWallet } from '@/lib/format';
+import { truncatePublicId as truncateId } from '@/lib/format';
 
 export interface HeaderUser {
-  walletAddress: string;
-  xHandle?: string | null;
+  publicId: string;
   imageUrl?: string | null;
   status?: 'online' | 'idle' | 'dnd' | 'offline';
 }
@@ -100,7 +99,7 @@ export function Header({
             {dmUser && (
               <div className="flex items-center gap-2 min-w-0">
                 <Avatar
-                  walletAddress={dmUser.walletAddress}
+                  publicId={dmUser.publicId}
                   imageUrl={dmUser.imageUrl}
                   size="xs"
                   status={dmUser.status}
@@ -109,9 +108,9 @@ export function Header({
                 <div className="min-w-0">
                   <h1
                     className="font-semibold text-[var(--text-primary)] truncate"
-                    title={dmUser.walletAddress}
+                    title={dmUser.publicId}
                   >
-                    {dmUser.xHandle ? `@${dmUser.xHandle}` : truncateWallet(dmUser.walletAddress)}
+                    {truncateId(dmUser.publicId)}
                   </h1>
                 </div>
               </div>

@@ -18,4 +18,12 @@ if (process.env.NODE_ENV !== 'production') {
   globalForPrisma.prisma = prisma;
 }
 
+// Graceful shutdown — close database connections on process exit
+process.on('SIGTERM', async () => {
+  await prisma.$disconnect();
+});
+process.on('SIGINT', async () => {
+  await prisma.$disconnect();
+});
+
 export default prisma;

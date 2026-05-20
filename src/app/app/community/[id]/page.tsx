@@ -5,7 +5,7 @@ import { useRouter, useParams } from 'next/navigation';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { ChatContainer, type ChatHeaderInfo } from '@/components/chat/ChatContainer';
 import type { MessageData } from '@/components/chat/Message';
-import { useWalletAuth } from '@/hooks/useWalletAuth';
+import { useAuth } from '@/hooks/useAuth';
 import { useEncryption } from '@/hooks/useEncryption';
 import { useRealtime, type OnMessageReceived } from '@/hooks/useRealtime';
 import type { Community, Channel, CurrentUser } from '@/components/layout/Sidebar';
@@ -19,7 +19,6 @@ interface CommunityDetail {
   icon?: string | null;
   description?: string;
   ownerId: string;
-  minHold: bigint;
   memberCount: number;
 }
 
@@ -46,11 +45,10 @@ export default function CommunityPage() {
   const communityId = params.id as string;
 
   const {
-    wallet,
-    isConnected,
+    publicId,
     isAuthenticated,
     session,
-  } = useWalletAuth();
+  } = useAuth();
   const { getOrCreateKeyPair, isInitialized, hasKeypair } = useEncryption();
 
   // State
@@ -61,7 +59,7 @@ export default function CommunityPage() {
   const [messages, setMessages] = useState<MessageData[]>([]);
   const [communities, setCommunities] = useState<Community[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  // Messages come from socket events only — no server-side storage
   const [selectedMember, setSelectedMember] = useState<UserProfileData | null>(null);
 
   // Channel creation state
@@ -83,18 +81,13 @@ export default function CommunityPage() {
         nonce: msgAny.nonce || '',
         senderId: message.senderId,
         sender: {
-          walletAddress: message.senderId,
-          xHandle: null,
-          xVerified: false,
-          tokenBalance: BigInt(0),
-          strikes: 0,
+          publicId: message.senderId,
         },
         channelId: message.channelId,
         createdAt: new Date(message.timestamp),
       };
       // Add deduplication check to prevent duplicate messages
       setMessages((prev) => {
-        // Check if message already exists
         if (prev.some(m => m.id === newMessage.id)) {
           return prev;
         }
@@ -113,12 +106,12 @@ export default function CommunityPage() {
     autoConnect: isAuthenticated,
   });
 
-  // Redirect if not connected
+  // Redirect if not authenticated
   useEffect(() => {
-    if (!isConnected) {
+    if (!isAuthenticated) {
       router.push('/');
     }
-  }, [isConnected, router]);
+  }, [isAuthenticated, router]);
 
   // Initialize encryption when authenticated
   useEffect(() => {
@@ -137,13 +130,12 @@ export default function CommunityPage() {
   // Fetch community details
   useEffect(() => {
     const fetchCommunity = async () => {
-      if (!isAuthenticated || !wallet || !communityId || !session) return;
+      if (!isAuthenticated || !publicId || !communityId || !session) return;
 
       // Build auth headers
       const authHeaders = {
-        'x-wallet-address': session.walletAddress,
-        'x-wallet-signature': session.signature,
-        'x-auth-message': session.message,
+        'x-public-id': session.publicId,
+        'x-signature': session.signature,
       };
 
       setIsLoading(true);
@@ -168,7 +160,6 @@ export default function CommunityPage() {
           description: communityData.description,
           icon: communityData.avatar,
           ownerId: communityData.ownerId,
-          minHold: BigInt(communityData.minTokenBalance || 0),
           memberCount: communityData.memberCount,
         });
 
@@ -197,13 +188,11 @@ export default function CommunityPage() {
 
         if (membersResponse.ok) {
           const membersData = await membersResponse.json();
-          const memberList: Member[] = membersData.members?.map((m: { walletAddress: string; xHandle?: string; xVerified?: boolean; role?: string; tokenBalance?: string }) => ({
-            walletAddress: m.walletAddress,
-            xHandle: m.xHandle || null,
-            xVerified: m.xVerified || false,
+          const memberList: Member[] = membersData.members?.map((m: { publicId: string; role?: string }) => ({
+            id: m.publicId,
+            publicId: m.publicId,
             role: m.role || 'MEMBER',
-            isOnline: isUserOnline(m.walletAddress),
-            tokenBalance: BigInt(m.tokenBalance || 0),
+            isOnline: isUserOnline(m.publicId),
           })) || [];
           setMembers(memberList);
         }
@@ -232,8 +221,7 @@ export default function CommunityPage() {
     };
 
     fetchCommunity();
-    // Removed isUserOnline from deps to prevent excessive re-fetches
-  }, [isAuthenticated, wallet, communityId, router, session]);
+  }, [isAuthenticated, publicId, communityId, router, session]);
 
   // Join/leave channel when active channel changes
   useEffect(() => {
@@ -246,50 +234,10 @@ export default function CommunityPage() {
     return undefined;
   }, [activeChannelId, isAuthenticated, joinChannel, leaveChannel]);
 
-  // Fetch messages when channel changes
+  // Clear messages when switching channels (messages arrive via socket only)
   useEffect(() => {
-    const fetchMessages = async () => {
-      if (!activeChannelId || !wallet || !session) return;
-
-      setIsLoadingMessages(true);
-      try {
-        const response = await fetch(`/api/channels/${activeChannelId}/messages`, {
-          headers: {
-            'x-wallet-address': session.walletAddress,
-            'x-wallet-signature': session.signature,
-            'x-auth-message': session.message,
-          },
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          const messageList: MessageData[] = data.messages?.map((m: { id: string; encryptedContent: string; nonce: string; senderWallet: string; senderXHandle?: string | null; channelId: string | null; createdAt: string }) => ({
-            id: m.id,
-            content: m.encryptedContent,
-            nonce: m.nonce,
-            senderId: m.senderWallet,
-            sender: {
-              walletAddress: m.senderWallet,
-              xHandle: m.senderXHandle || null,
-              xVerified: false,
-              tokenBalance: BigInt(0),
-              strikes: 0,
-            },
-            channelId: m.channelId,
-            createdAt: new Date(m.createdAt),
-          })) || [];
-          // Reverse to show oldest first (API returns newest first)
-          setMessages(messageList.reverse());
-        }
-      } catch (error) {
-        console.error('Failed to fetch messages:', error);
-      } finally {
-        setIsLoadingMessages(false);
-      }
-    };
-
-    fetchMessages();
-  }, [activeChannelId, wallet, session]);
+    setMessages([]);
+  }, [activeChannelId]);
 
   // Handle channel selection
   const handleSelectChannel = useCallback((channelId: string) => {
@@ -303,8 +251,8 @@ export default function CommunityPage() {
   }, [router]);
 
   // Handle DM selection
-  const handleSelectDM = useCallback((dmWallet: string) => {
-    router.push(`/app/dm/${dmWallet}`);
+  const handleSelectDM = useCallback((dmId: string) => {
+    router.push(`/app/dm/${dmId}`);
   }, [router]);
 
   // Handle switch to DMs
@@ -312,84 +260,27 @@ export default function CommunityPage() {
     router.push('/app');
   }, [router]);
 
-  // Handle message sent
-  const handleMessageSent = useCallback(async (message: { content: string; nonce: string }) => {
-    if (!activeChannelId || !wallet || !session) return;
-
-    try {
-      // Send to API to persist message
-      const response = await fetch(`/api/channels/${activeChannelId}/messages`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-wallet-address': session.walletAddress,
-          'x-wallet-signature': session.signature,
-          'x-auth-message': session.message,
-        },
-        body: JSON.stringify({
-          encryptedContent: message.content,
-          nonce: message.nonce,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Failed to send message:', errorData.error);
-        return;
-      }
-
-      const newMessage = await response.json();
-
-      // Add message to local state for immediate display
-      const msgData: MessageData = {
-        id: newMessage.id,
-        content: newMessage.encryptedContent,
-        nonce: newMessage.nonce,
-        senderId: newMessage.senderWallet,
-        sender: {
-          walletAddress: newMessage.senderWallet,
-          xHandle: newMessage.senderXHandle || null,
-          xVerified: false,
-          tokenBalance: BigInt(0),
-          strikes: 0,
-        },
-        channelId: newMessage.channelId,
-        createdAt: new Date(newMessage.createdAt),
-      };
-      // Add message with deduplication check (in case realtime already added it)
-      setMessages((prev) => {
-        if (prev.some(m => m.id === msgData.id)) {
-          return prev;
-        }
-        return [...prev, msgData];
-      });
-
-      // Also broadcast via realtime for other users
-      sendChannelMessage(activeChannelId, message.content, message.nonce);
-    } catch (error) {
-      console.error('Failed to send message:', error);
-    }
-  }, [activeChannelId, wallet, session, sendChannelMessage]);
+  // Handle message sent — relay via socket only, no server persistence
+  const handleMessageSent = useCallback((message: { content: string; nonce: string }) => {
+    if (!activeChannelId) return;
+    sendChannelMessage(activeChannelId, message.content, message.nonce);
+  }, [activeChannelId, sendChannelMessage]);
 
   // Handle member click - show profile modal
   const handleMemberClick = useCallback((member: Member) => {
     setSelectedMember({
       id: member.id,
-      walletAddress: member.walletAddress,
-      xHandle: member.xHandle,
-      xVerified: member.xVerified,
+      publicId: member.publicId,
       imageUrl: member.imageUrl,
       status: member.status,
       role: member.role,
-      tokenBalance: member.tokenBalance,
-      strikes: member.strikes,
       isOnline: member.isOnline,
     });
   }, []);
 
   // Handle start DM from profile modal
-  const handleStartDM = useCallback((memberWallet: string) => {
-    router.push(`/app/dm/${memberWallet}`);
+  const handleStartDM = useCallback((memberId: string) => {
+    router.push(`/app/dm/${memberId}`);
   }, [router]);
 
   // Close profile modal
@@ -433,7 +324,7 @@ export default function CommunityPage() {
 
   // Handle create channel
   const handleCreateChannel = useCallback(async (data: CreateChannelFormData) => {
-    if (!wallet || !communityId || !session) return;
+    if (!publicId || !communityId || !session) return;
 
     setIsCreatingChannel(true);
     setCreateChannelError(null);
@@ -443,9 +334,8 @@ export default function CommunityPage() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-wallet-address': session.walletAddress,
-          'x-wallet-signature': session.signature,
-          'x-auth-message': session.message,
+          'x-public-id': session.publicId,
+          'x-signature': session.signature,
         },
         body: JSON.stringify({
           name: data.name,
@@ -481,7 +371,7 @@ export default function CommunityPage() {
     } finally {
       setIsCreatingChannel(false);
     }
-  }, [wallet, communityId, session]);
+  }, [publicId, communityId, session]);
 
   // Handle toggle mute
   const handleToggleMute = useCallback(() => {
@@ -491,7 +381,6 @@ export default function CommunityPage() {
   // Handle toggle deafen
   const handleToggleDeafen = useCallback(() => {
     setIsDeafened((prev) => {
-      // If deafening, also mute
       if (!prev) {
         setIsMuted(true);
       }
@@ -501,8 +390,7 @@ export default function CommunityPage() {
 
   // Current user
   const currentUser: CurrentUser = {
-    walletAddress: wallet || '',
-    xHandle: null,
+    publicId: publicId || '',
     imageUrl: null,
     status: 'online',
     isMuted,
@@ -539,7 +427,7 @@ export default function CommunityPage() {
   } : undefined;
 
   // Loading state
-  if (!isConnected || isLoading) {
+  if (!isAuthenticated || isLoading) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-black">
         <div className="text-center">
@@ -562,8 +450,7 @@ export default function CommunityPage() {
       currentUser={currentUser}
       activeChannel={activeChannel}
       members={members}
-      communityOwnerWallet={community?.ownerId}
-      verifiedHolderThreshold={community?.minHold}
+      communityOwnerId={community?.ownerId}
       isDMView={false}
       onSelectCommunity={handleSelectCommunity}
       onSelectChannel={handleSelectChannel}
@@ -587,10 +474,10 @@ export default function CommunityPage() {
             channelId={activeChannelId}
             headerInfo={headerInfo}
             messages={messages}
-            isLoading={isLoadingMessages}
+            isLoading={false}
             onMessageSent={handleMessageSent}
             isTimedOut={false}
-            testMode={true} // TESTING: Enable test mode for development
+            testMode={true}
           />
       ) : (
         <div className="h-full flex items-center justify-center">
@@ -611,10 +498,9 @@ export default function CommunityPage() {
         isOpen={selectedMember !== null}
         onClose={handleCloseProfileModal}
         user={selectedMember}
-        verifiedHolderThreshold={community?.minHold}
-        ownerWallet={community?.ownerId}
+        ownerId={community?.ownerId}
         onStartDM={handleStartDM}
-        currentUserWallet={wallet || undefined}
+        currentUserId={publicId || undefined}
       />
 
       {/* Create Channel Modal */}

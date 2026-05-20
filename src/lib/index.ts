@@ -10,21 +10,17 @@ export {
   generateAuthToken,
   verifyAuthToken,
   authenticateRequest,
-  checkCommunityRole,
-  isCommunityOwner,
-  isCommunityAdmin,
   isCommunityMember,
-  checkMinTokenBalance,
-  updateUserTokenBalance,
   checkRateLimit,
   checkBlacklistStatus,
-  isValidSolanaAddress as isValidSolanaAddressAuth,
-  isValidXHandle as isValidXHandleAuth,
+  isValidPublicId,
+  isValidBase64,
   sanitizeInput,
   validatePagination,
   createErrorResponse,
   createSuccessResponse,
-  MIN_TOKEN_FOR_COMMUNITY_CREATE,
+  verifySignature,
+  validateAuthMessage,
 } from './auth';
 
 export type {
@@ -33,23 +29,10 @@ export type {
   TokenPayload,
 } from './auth';
 
-// Solana utilities
+// Format utilities
 export {
-  CLAWED_TOKEN_MINT,
-  AUTH_MESSAGE_PREFIX,
-  getConnection,
-  getClawedTokenBalance,
-  formatTokenBalance,
-  verifyWalletSignature,
-  generateAuthMessage,
-  parseAuthMessageTimestamp,
-  isAuthMessageValid,
-  formatWalletAddress,
-  isValidSolanaAddress,
-  checkMinimumTokenHold,
-  clearBalanceCache,
-  clearAllBalanceCache,
-} from './solana';
+  formatPublicId,
+} from './format';
 
 // Encryption utilities
 export {
@@ -88,56 +71,18 @@ export {
   clearAllKeys,
 } from './keyStore';
 
-// X/Twitter OAuth utilities
-export {
-  xAuthOptions,
-  isXAuthConfigured,
-  validateXAuthConfig,
-  sanitizeXHandle,
-  formatXHandle,
-  isValidXHandle,
-  getXProfileUrl,
-  getXAccountStatus,
-  linkXAccountToWallet,
-  unlinkXAccountFromWallet,
-} from './x-auth';
-
-export type {
-  XProfile,
-  XSession,
-  XToken,
-  XAccountStatus,
-  LinkXAccountRequest,
-  LinkXAccountResponse,
-  UnlinkXAccountResponse,
-} from './x-auth';
-
 // Moderation utilities
 export {
-  issueStrike,
-  checkUserStatus,
-  isUserTimedOut,
-  isUserBlacklisted,
-  isWalletBlacklisted,
-  getActiveStrikes,
-  appealStrike,
-  createReport,
-  getPendingReports,
-  dismissReport,
-  issueWarning,
-  canUserAct,
-  getRemainingTimeout,
-  formatTimeoutDuration,
-  getStrikeSeverity,
+  fileReport,
+  isUserBanned,
+  isPublicIdBanned,
+  getKickCount,
+  isKickedFromCommunity,
 } from './moderation';
 
 export type {
-  ModerationError,
   ModerationResult,
-  UserModerationStatus,
-  StrikeInfo,
-  IssueStrikeResult,
-  AppealResult,
+  ReportResult,
 } from './moderation';
 
 // P2P connection management

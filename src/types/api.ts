@@ -1,36 +1,47 @@
 /**
- * API Types for Clawed Messenger
+ * API Types for Void Chat
  * Defines request/response shapes for all API routes
  */
 
-import type { ReportCategory, ReportStatus, MembershipRole, ScanStatus, NotificationType } from '@prisma/client';
+import type { ReportCategory } from '@prisma/client';
+
+// Locally defined types (removed from Prisma schema during relay conversion)
+export type MembershipRole = 'MEMBER';
+
+export type ScanStatus = 'PENDING' | 'SCANNING' | 'CLEAN' | 'QUARANTINED' | 'ERROR';
+
+export type NotificationType =
+  | 'DM_RECEIVED'
+  | 'MENTION'
+  | 'REACTION'
+  | 'COMMUNITY_INVITE'
+  | 'COMMUNITY_KICKED'
+  | 'PLATFORM_BANNED'
+  | 'REPLY_RECEIVED';
 
 // =============================================================================
 // AUTH TYPES
 // =============================================================================
 
-export interface VerifyWalletRequest {
-  walletAddress: string;
+export interface VerifyAuthRequest {
+  publicId: string;
   signature: string;
   message: string;
-  publicKey: string; // TweetNaCl public key for E2E encryption
+  publicKey: string;
 }
 
-export interface VerifyWalletResponse {
-  success: boolean;
-  token?: string;
-  user?: {
-    walletAddress: string;
-    xHandle: string | null;
+export interface VerifyAuthResponse {
+  token: string;
+  user: {
+    id: string;
+    publicId: string;
     publicKey: string;
+    artHash: string;
   };
-  error?: string;
 }
 
 export interface BlacklistStatusResponse {
   isBlacklisted: boolean;
-  strikes: number;
-  timeoutUntil: string | null;
 }
 
 // =============================================================================
@@ -38,19 +49,17 @@ export interface BlacklistStatusResponse {
 // =============================================================================
 
 export interface UserProfileResponse {
-  walletAddress: string;
-  xHandle: string | null;
+  publicId: string;
   publicKey: string;
   createdAt: string;
 }
 
 export interface UpdateUserProfileRequest {
-  xHandle?: string;
   publicKey?: string;
 }
 
 export interface PublicKeyResponse {
-  walletAddress: string;
+  publicId: string;
   publicKey: string;
 }
 
@@ -63,9 +72,6 @@ export interface CommunityResponse {
   name: string;
   description: string | null;
   avatar: string | null;
-  ownerId: string;
-  ownerWallet: string;
-  minTokenBalance: string; // BigInt as string
   isPublic: boolean;
   memberCount: number;
   createdAt: string;
@@ -75,7 +81,6 @@ export interface CreateCommunityRequest {
   name: string;
   description?: string;
   avatar?: string;
-  minTokenBalance?: string; // BigInt as string
   isPublic?: boolean;
 }
 
@@ -83,7 +88,6 @@ export interface UpdateCommunityRequest {
   name?: string;
   description?: string;
   avatar?: string;
-  minTokenBalance?: string;
   isPublic?: boolean;
 }
 
@@ -100,8 +104,7 @@ export interface CommunityListResponse {
 // =============================================================================
 
 export interface MemberResponse {
-  walletAddress: string;
-  xHandle: string | null;
+  publicId: string;
   publicKey: string;
   role: MembershipRole;
   joinedAt: string;
@@ -113,7 +116,7 @@ export interface MemberListResponse {
 }
 
 export interface JoinCommunityRequest {
-  // No body needed - auth header provides wallet info
+  // No body needed - auth header provides identity info
 }
 
 export interface JoinCommunityResponse {
@@ -158,11 +161,10 @@ export interface MessageResponse {
   id: string;
   encryptedContent: string;
   nonce: string;
-  senderWallet: string;
-  senderXHandle: string | null;
+  senderPublicId: string;
   senderPublicKey: string;
   channelId: string | null;
-  recipientWallet: string | null;
+  recipientPublicId: string | null;
   isDirectMessage: boolean;
   createdAt: string;
 }
@@ -186,6 +188,7 @@ export interface MessageListResponse {
 
 export interface CreateReportRequest {
   reportedUserId: string;
+  communityId: string;
   messageId?: string;
   category: ReportCategory;
   description: string;
@@ -193,20 +196,22 @@ export interface CreateReportRequest {
 
 export interface CreateReportResponse {
   success: boolean;
-  reportId?: string;
+  reported?: boolean;
+  userKicked?: boolean;
+  userBanned?: boolean;
+  reportCount?: number;
+  threshold?: number;
   error?: string;
 }
 
 export interface ReportResponse {
   id: string;
-  reporterWallet: string;
-  reportedUserWallet: string;
+  reporterPublicId: string;
+  reportedUserPublicId: string;
+  communityId: string;
   messageId: string | null;
   category: ReportCategory;
   description: string;
-  status: ReportStatus;
-  reviewedAt: string | null;
-  reviewedByWallet: string | null;
   createdAt: string;
 }
 
@@ -216,21 +221,6 @@ export interface ReportListResponse {
   page: number;
   limit: number;
   hasMore: boolean;
-}
-
-export interface ReviewReportRequest {
-  status: ReportStatus;
-  issueStrike?: boolean;
-  strikeReason?: string;
-}
-
-export interface ReviewReportResponse {
-  success: boolean;
-  report?: ReportResponse;
-  strikeIssued?: boolean;
-  newStrikeCount?: number;
-  userBlacklisted?: boolean;
-  error?: string;
 }
 
 // =============================================================================
@@ -277,7 +267,7 @@ export interface UploadAttachmentRequest {
   // fileType: string
   // nonce: string
   // channelId?: string
-  // recipientWallet?: string
+  // recipientPublicId?: string
   // thumbnail?: File (optional)
   // thumbnailNonce?: string (optional)
 }
@@ -299,9 +289,6 @@ export interface MessageResponseWithAttachments extends MessageResponse {
   attachments?: AttachmentResponse[];
 }
 
-// Re-export ScanStatus for convenience
-export type { ScanStatus };
-
 // =============================================================================
 // NOTIFICATION TYPES
 // =============================================================================
@@ -316,8 +303,7 @@ export interface NotificationResponse {
   channelId: string | null;
   communityId: string | null;
   senderId: string | null;
-  senderWallet: string | null;
-  senderXHandle: string | null;
+  senderPublicId: string | null;
   createdAt: string;
 }
 
@@ -339,9 +325,6 @@ export interface MarkNotificationsReadResponse {
   updatedCount: number;
 }
 
-// Re-export NotificationType for convenience
-export type { NotificationType };
-
 // =============================================================================
 // SEARCH TYPES
 // =============================================================================
@@ -351,8 +334,7 @@ export type SearchResultType = 'user' | 'community' | 'channel' | 'message';
 export interface SearchUserResult {
   type: 'user';
   id: string;
-  walletAddress: string;
-  xHandle: string | null;
+  publicId: string;
   publicKey: string;
 }
 
@@ -381,8 +363,7 @@ export interface SearchMessageResult {
   channelId: string | null;
   channelName: string | null;
   communityName: string | null;
-  senderWallet: string;
-  senderXHandle: string | null;
+  senderPublicId: string;
   createdAt: string;
   // Note: Content is encrypted, so we can't search message content server-side
 }

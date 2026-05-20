@@ -15,7 +15,7 @@ export default function PrivacyPolicyPage() {
         <WarrantCanary />
         <div className="bg-gradient-to-r from-purple-900/50 to-pink-900/50 border border-purple-500/30 rounded-lg p-6 mb-8">
           <h2 className="text-xl font-semibold text-white mb-2">Our Privacy Philosophy</h2>
-          <p className="text-gray-300">Void Chat is built on the principle of minimal data collection. We believe your conversations are yours alone. We use end-to-end encryption, collect only what&apos;s technically necessary, and never sell or share your data with third parties.</p>
+          <p className="text-gray-300">Void Chat is built on the principle of minimal data collection. We believe your conversations are yours alone. We use end to end encryption, collect only what & and is technically necessary, and we will never sell or share your data with third parties.</p>
         </div>
         <div className="prose prose-invert prose-purple max-w-none space-y-8">
           <section>
@@ -26,15 +26,14 @@ export default function PrivacyPolicyPage() {
             <h2 className="text-2xl font-semibold text-white border-b border-gray-700 pb-2">2. Information We Collect</h2>
             <h3 className="text-xl font-medium text-white mt-6 mb-3">2.1 Information You Provide</h3>
             <ul className="list-disc list-inside text-gray-300 space-y-2 ml-4">
-              <li><strong>Wallet Address:</strong> Your Solana wallet public address, used as your unique identifier. This is public blockchain data.</li>
+              <li><strong>Public ID:</strong> Your human-readable public identifier, used as your unique identifier on the platform.</li>
               <li><strong>Encryption Public Key:</strong> Your TweetNaCl public key for end-to-end encryption. This is shared with other users to enable secure messaging.</li>
-              <li><strong>X/Twitter Handle (Optional):</strong> If you choose to link your X account, we store your X username for identity verification. This is voluntary and can be removed at any time.</li>
               <li><strong>Community Memberships:</strong> Records of which communities you join.</li>
             </ul>
             <h3 className="text-xl font-medium text-white mt-6 mb-3">2.2 Information We DO NOT Collect</h3>
             <ul className="list-disc list-inside text-gray-300 space-y-2 ml-4">
               <li><strong>Message Content:</strong> All messages are end-to-end encrypted. We cannot read, access, or decrypt your messages. Ever.</li>
-              <li><strong>Private Keys:</strong> We never have access to your wallet private keys or encryption secret keys.</li>
+              <li><strong>Private Keys:</strong> We never have access to your private keys or encryption secret keys.</li>
               <li><strong>Email Addresses:</strong> We do not collect or require email addresses.</li>
               <li><strong>Phone Numbers:</strong> We do not collect or require phone numbers.</li>
               <li><strong>Real Names:</strong> We do not require or collect your legal name.</li>
@@ -43,8 +42,7 @@ export default function PrivacyPolicyPage() {
             </ul>
             <h3 className="text-xl font-medium text-white mt-6 mb-3">2.3 Automatically Collected Data</h3>
             <ul className="list-disc list-inside text-gray-300 space-y-2 ml-4">
-              <li><strong>Message Metadata:</strong> Timestamps, sender/recipient wallet addresses, and community/channel identifiers needed for message routing.</li>
-              <li><strong>Token Balance:</strong> Your $CLAWED token balance, verified on-chain for community access requirements.</li>
+              <li><strong>Message Metadata:</strong> Timestamps, sender/recipient public IDs, and community/channel identifiers needed for message routing.</li>
               <li><strong>Moderation Records:</strong> Strike counts and moderation actions for platform safety.</li>
             </ul>
           </section>
@@ -52,7 +50,7 @@ export default function PrivacyPolicyPage() {
             <h2 className="text-2xl font-semibold text-white border-b border-gray-700 pb-2">3. End-to-End Encryption</h2>
             <p className="text-gray-300 leading-relaxed">Void Chat implements strong end-to-end encryption using TweetNaCl (Networking and Cryptography library):</p>
             <ul className="list-disc list-inside text-gray-300 space-y-2 ml-4">
-              <li><strong>Key Generation:</strong> Encryption keys are generated locally on your device and derived from your wallet signature.</li>
+              <li><strong>Key Generation:</strong> Encryption keys are generated locally on your device from your NaCl keypair.</li>
               <li><strong>Message Encryption:</strong> Messages are encrypted before leaving your device and can only be decrypted by the intended recipient.</li>
               <li><strong>No Backdoors:</strong> We have no technical capability to decrypt messages, even if compelled by law enforcement.</li>
               <li><strong>Peer-to-Peer:</strong> When possible, messages are sent directly between users without touching our servers.</li>
@@ -65,9 +63,8 @@ export default function PrivacyPolicyPage() {
             <h2 className="text-2xl font-semibold text-white border-b border-gray-700 pb-2">4. How We Use Your Information</h2>
             <p className="text-gray-300 leading-relaxed">We use collected information solely for:</p>
             <ul className="list-disc list-inside text-gray-300 space-y-2 ml-4">
-              <li>Authenticating your wallet and verifying your identity</li>
+              <li>Authenticating your keypair and verifying your identity</li>
               <li>Routing encrypted messages to intended recipients</li>
-              <li>Verifying token balances for community access</li>
               <li>Enabling the community moderation and strike system</li>
               <li>Maintaining platform security and preventing abuse</li>
             </ul>
@@ -84,9 +81,8 @@ export default function PrivacyPolicyPage() {
             <h2 className="text-2xl font-semibold text-white border-b border-gray-700 pb-2">5. Data Storage & Security</h2>
             <h3 className="text-xl font-medium text-white mt-6 mb-3">5.1 What&apos;s Stored Where</h3>
             <ul className="list-disc list-inside text-gray-300 space-y-2 ml-4">
-              <li><strong>On Your Device:</strong> Encryption keys (encrypted with your wallet signature), message cache, and local preferences.</li>
-              <li><strong>On Our Servers:</strong> Wallet addresses, public keys, community memberships, encrypted message blobs (unreadable to us), and moderation records.</li>
-              <li><strong>On Blockchain:</strong> Token balances and wallet addresses are public on the Solana blockchain.</li>
+              <li><strong>On Your Device:</strong> Encryption keys, message cache, and local preferences.</li>
+              <li><strong>On Our Servers:</strong> Public IDs, public keys, community memberships, encrypted message blobs (unreadable to us), and moderation records.</li>
             </ul>
             <h3 className="text-xl font-medium text-white mt-6 mb-3">5.2 Security Measures</h3>
             <ul className="list-disc list-inside text-gray-300 space-y-2 ml-4">
@@ -99,30 +95,23 @@ export default function PrivacyPolicyPage() {
           <section>
             <h2 className="text-2xl font-semibold text-white border-b border-gray-700 pb-2">6. Data Retention</h2>
             <ul className="list-disc list-inside text-gray-300 space-y-2 ml-4">
-              <li><strong>Account Data:</strong> Retained while your wallet is active on the platform.</li>
+              <li><strong>Account Data:</strong> Retained while your account is active on the platform.</li>
               <li><strong>Messages:</strong> Encrypted messages are retained for delivery and may be deleted after successful delivery in P2P mode.</li>
               <li><strong>Moderation Records:</strong> Strike history is retained permanently to enforce platform safety.</li>
-              <li><strong>Blacklist:</strong> Permanently banned wallet addresses are retained indefinitely to prevent ban evasion.</li>
+              <li><strong>Blacklist:</strong> Permanently banned public IDs are retained indefinitely to prevent ban evasion.</li>
             </ul>
           </section>
           <section>
             <h2 className="text-2xl font-semibold text-white border-b border-gray-700 pb-2">7. Third-Party Services</h2>
-            <p className="text-gray-300 leading-relaxed">Void Chat integrates with the following third-party services:</p>
-            <ul className="list-disc list-inside text-gray-300 space-y-2 ml-4">
-              <li><strong>Solana Blockchain:</strong> For wallet authentication and token balance verification. Blockchain data is public.</li>
-              <li><strong>X/Twitter (Optional):</strong> For optional identity verification. Only your public profile information is accessed if you choose to link.</li>
-              <li><strong>Helius (RPC Provider):</strong> For Solana blockchain queries. They may see wallet addresses making queries.</li>
-            </ul>
-            <p className="text-gray-300 leading-relaxed mt-4">We do not integrate with analytics services, advertising networks, or social tracking pixels.</p>
+            <p className="text-gray-300 leading-relaxed">Void Chat minimizes third-party dependencies. We do not integrate with analytics services, advertising networks, social tracking pixels, or blockchain services.</p>
           </section>
           <section>
             <h2 className="text-2xl font-semibold text-white border-b border-gray-700 pb-2">8. Your Rights & Choices</h2>
             <ul className="list-disc list-inside text-gray-300 space-y-2 ml-4">
               <li><strong>Access:</strong> You can view your stored data through the platform interface.</li>
-              <li><strong>Deletion:</strong> You can request deletion of your account data, though blockchain records and moderation history may persist.</li>
-              <li><strong>X Account Unlinking:</strong> You can unlink your X account at any time through settings.</li>
+              <li><strong>Deletion:</strong> You can request deletion of your account data, though moderation history may persist.</li>
               <li><strong>Export:</strong> Due to end-to-end encryption, you control your own message history on your device.</li>
-              <li><strong>Opt-out:</strong> You can stop using the platform at any time by disconnecting your wallet.</li>
+              <li><strong>Opt-out:</strong> You can stop using the platform at any time by signing out.</li>
             </ul>
           </section>
           <section>
@@ -130,7 +119,7 @@ export default function PrivacyPolicyPage() {
             <p className="text-gray-300 leading-relaxed">Due to our privacy-first architecture:</p>
             <ul className="list-disc list-inside text-gray-300 space-y-2 ml-4">
               <li><strong>Message Content:</strong> We cannot provide message content as it is end-to-end encrypted and we do not hold decryption keys.</li>
-              <li><strong>Metadata:</strong> We may be compelled to provide metadata (wallet addresses, timestamps, community memberships) in response to valid legal process.</li>
+              <li><strong>Metadata:</strong> We may be compelled to provide metadata (public IDs, timestamps, community memberships) in response to valid legal process.</li>
               <li><strong>No Mass Surveillance:</strong> We do not participate in mass surveillance programs or provide bulk data access.</li>
             </ul>
             <p className="text-gray-300 leading-relaxed mt-4">See our <Link href="#warrant-canary" className="text-purple-400 hover:text-purple-300">Warrant Canary</Link> for transparency about legal requests we have NOT received.</p>
@@ -153,7 +142,7 @@ export default function PrivacyPolicyPage() {
             <ul className="list-disc list-inside text-gray-300 space-y-2 ml-4">
               <li>Community moderators for content-related issues</li>
               <li>Platform settings for managing your own data</li>
-              <li>Disconnecting your wallet to cease data collection</li>
+              <li>Signing out to cease data collection</li>
             </ul>
             <p className="text-gray-300 leading-relaxed mt-4">This community-based approach is fundamental to our decentralized design and ensures no single point of control over user data.</p>
           </section>

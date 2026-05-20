@@ -1,5 +1,5 @@
 /**
- * P2P Connection Management for Clawed Messenger
+ * P2P Connection Management for Void Chat
  * Uses simple-peer for WebRTC connections with automatic reconnection
  *
  * Features:
@@ -66,7 +66,7 @@ interface PeerData {
 export class P2PManager {
   private peers: Map<string, PeerData> = new Map();
   private config: P2PConfig;
-  private localWallet: string;
+  private localPublicId: string;
   private destroyed: boolean = false;
   private reconnectTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private pendingConnections: Set<string> = new Set(); // Track peers being connected to prevent race conditions
@@ -77,8 +77,8 @@ export class P2PManager {
   private onSignal: OnSignalCallback | null = null;
   private onError: OnErrorCallback | null = null;
 
-  constructor(localWallet: string, config: Partial<P2PConfig> = {}) {
-    this.localWallet = localWallet;
+  constructor(localPublicId: string, config: Partial<P2PConfig> = {}) {
+    this.localPublicId = localPublicId;
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
@@ -112,7 +112,7 @@ export class P2PManager {
 
   /**
    * Create a new peer connection
-   * @param peerId - Wallet address of the remote peer
+   * @param peerId - publicId of the remote peer
    * @param initiator - Whether this peer should initiate the connection
    * @returns The PeerConnection info
    */
@@ -230,7 +230,7 @@ export class P2PManager {
 
   /**
    * Connect to a peer using received signal data
-   * @param peerId - Wallet address of the remote peer
+   * @param peerId - publicId of the remote peer
    * @param signal - Signal data received via Socket.io
    */
   connectToPeer(peerId: string, signal: SignalData): void {
@@ -276,7 +276,7 @@ export class P2PManager {
 
   /**
    * Send a message to a peer
-   * @param peerId - Wallet address of the recipient
+   * @param peerId - publicId of the recipient
    * @param message - P2P message to send
    * @returns true if sent successfully, false otherwise
    */
@@ -311,7 +311,7 @@ export class P2PManager {
     const message: P2PMessage = {
       id: `ping-${Date.now()}`,
       type: 'ping',
-      senderId: this.localWallet,
+      senderId: this.localPublicId,
       recipientId: peerId,
       timestamp: Date.now(),
     };
@@ -325,7 +325,7 @@ export class P2PManager {
     const message: P2PMessage = {
       id: `pong-${Date.now()}`,
       type: 'pong',
-      senderId: this.localWallet,
+      senderId: this.localPublicId,
       recipientId: peerId,
       timestamp: Date.now(),
     };
@@ -465,6 +465,7 @@ export class P2PManager {
     this.stopPingInterval(peerId);
 
     try {
+      peerData.peer.removeAllListeners();
       peerData.peer.destroy();
     } catch (error) {
       console.error(`[P2P] Error destroying peer ${peerId}:`, error);
@@ -540,13 +541,13 @@ let p2pManagerInstance: P2PManager | null = null;
 /**
  * Get or create the P2P manager singleton
  */
-export function getP2PManager(localWallet: string, config?: Partial<P2PConfig>): P2PManager {
-  if (!p2pManagerInstance || p2pManagerInstance['localWallet'] !== localWallet) {
-    // Destroy existing instance if wallet changed
+export function getP2PManager(localPublicId: string, config?: Partial<P2PConfig>): P2PManager {
+  if (!p2pManagerInstance || p2pManagerInstance['localPublicId'] !== localPublicId) {
+    // Destroy existing instance if publicId changed
     if (p2pManagerInstance) {
       p2pManagerInstance.destroy();
     }
-    p2pManagerInstance = new P2PManager(localWallet, config);
+    p2pManagerInstance = new P2PManager(localPublicId, config);
   }
   return p2pManagerInstance;
 }

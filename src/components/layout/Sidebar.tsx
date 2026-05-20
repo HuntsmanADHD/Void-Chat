@@ -16,7 +16,7 @@ import {
   X,
 } from 'lucide-react';
 import { Avatar } from '../ui/Avatar';
-import { truncateWallet } from '@/lib/format';
+import { truncatePublicId as truncateId } from '@/lib/format';
 
 export interface Community {
   id: string;
@@ -36,8 +36,7 @@ export interface Channel {
 
 export interface DirectMessage {
   id: string;
-  recipientWallet: string;
-  recipientXHandle?: string | null;
+  recipientId: string;
   recipientImageUrl?: string | null;
   status?: 'online' | 'idle' | 'dnd' | 'offline';
   unreadCount?: number;
@@ -45,8 +44,7 @@ export interface DirectMessage {
 }
 
 export interface CurrentUser {
-  walletAddress: string;
-  xHandle?: string | null;
+  publicId: string;
   imageUrl?: string | null;
   status?: 'online' | 'idle' | 'dnd' | 'offline';
   isMuted?: boolean;
@@ -120,7 +118,7 @@ export const Sidebar = React.memo(function Sidebar({
     <div className="flex h-full">
       {/* Server/Community list - narrow strip with void gradient */}
       <div className="w-[72px] bg-gradient-to-b from-black via-zinc-950 to-black flex flex-col items-center py-3 gap-2 min-h-0 overflow-y-auto scrollbar-hidden border-r border-zinc-800/30">
-        {/* Home/DMs button - Clawed Logo */}
+        {/* Home/DMs button - Void Chat Logo */}
         <div className="relative group">
           <div
             className={`server-icon ${isDMView ? 'active' : ''} overflow-hidden`}
@@ -137,7 +135,7 @@ export const Sidebar = React.memo(function Sidebar({
           >
             <Image
               src="/images/logo.png"
-              alt="Clawed"
+              alt="Void Chat"
               width={48}
               height={48}
               className="w-full h-full object-cover"
@@ -295,7 +293,7 @@ export const Sidebar = React.memo(function Sidebar({
                       tabIndex={0}
                     >
                       <Avatar
-                        walletAddress={dm.recipientWallet}
+                        publicId={dm.recipientId}
                         imageUrl={dm.recipientImageUrl}
                         size="sm"
                         status={dm.status}
@@ -304,11 +302,9 @@ export const Sidebar = React.memo(function Sidebar({
                       <div className="flex-1 min-w-0">
                         <span
                           className="block truncate text-sm"
-                          title={dm.recipientWallet}
+                          title={dm.recipientId}
                         >
-                          {dm.recipientXHandle
-                            ? `@${dm.recipientXHandle}`
-                            : truncateWallet(dm.recipientWallet)}
+                          {truncateId(dm.recipientId)}
                         </span>
                       </div>
                       {dm.unreadCount && dm.unreadCount > 0 && (
@@ -418,7 +414,7 @@ export const Sidebar = React.memo(function Sidebar({
         <div className="h-[52px] bg-gradient-to-r from-black via-zinc-950 to-black flex items-center px-2 gap-2 border-t border-zinc-800/50">
           <div className="flex items-center gap-2 flex-1 min-w-0 p-1 rounded hover:bg-[var(--discord-hover)] cursor-pointer">
             <Avatar
-              walletAddress={currentUser.walletAddress}
+              publicId={currentUser.publicId}
               imageUrl={currentUser.imageUrl}
               size="sm"
               status={currentUser.status}
@@ -427,11 +423,9 @@ export const Sidebar = React.memo(function Sidebar({
             <div className="flex-1 min-w-0">
               <p
                 className="text-sm font-medium text-[var(--text-primary)] truncate"
-                title={currentUser.walletAddress}
+                title={currentUser.publicId}
               >
-                {currentUser.xHandle
-                  ? `@${currentUser.xHandle}`
-                  : truncateWallet(currentUser.walletAddress)}
+                {truncateId(currentUser.publicId)}
               </p>
               <p className="text-xs text-[var(--text-muted)] truncate">
                 {currentUser.status === 'online' ? 'Online' : currentUser.status}

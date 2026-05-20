@@ -1,63 +1,48 @@
 /**
  * POST /api/auth/verify
- * Verify wallet signature and authenticate user
+ * Verify signature and authenticate user
  *
  * Request body:
  * {
- *   walletAddress: string,
- *   signature: string,
- *   message: string,
- *   publicKey: string (TweetNaCl public key for E2E encryption)
+ *   publicKey: string (base58-encoded NaCl signing public key)
+ *   signature: string (base64-encoded detached signature)
+ *   message: string (auth message with timestamp)
  * }
  *
- * Response:
- * {
- *   success: boolean,
- *   token?: string,
- *   user?: UserData,
- *   error?: string
- * }
+ * The user logs in with their private key — we derive the public key client-side
+ * and look up the account by publicKey. No publicId needed at login time.
  */
 
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import bs58 from 'bs58';
 import {
-  verifyWalletSignature,
+  verifySignature,
   validateAuthMessage,
   generateAuthToken,
-  isValidSolanaAddress,
   checkRateLimit,
   createErrorResponse,
   createSuccessResponse,
   OPTIONS,
 } from '@/lib/auth';
-import { getClawedTokenBalance } from '@/lib/solana';
-import { isValidPublicKey } from '@/lib/encryption';
-import type { VerifyWalletRequest, VerifyWalletResponse } from '@/types/api';
 
 export { OPTIONS };
 
 export async function POST(req: NextRequest): Promise<Response> {
   try {
-    // Parse request body
-    const body = await req.json() as VerifyWalletRequest;
-    const { walletAddress, signature, message, publicKey } = body;
+    const body = await req.json();
+    const { publicKey, signature, message } = body;
 
     // Validate required fields
-    if (!walletAddress || !signature || !message || !publicKey) {
+    if (!publicKey || !signature || !message) {
       return createErrorResponse(
-        'Missing required fields: walletAddress, signature, message, publicKey',
+        'Missing required fields: publicKey, signature, message',
         400
       );
     }
 
-    // Validate wallet address format
-    if (!isValidSolanaAddress(walletAddress)) {
-      return createErrorResponse('Invalid wallet address format', 400);
-    }
-
-    // Check rate limit
-    const rateLimit = checkRateLimit(walletAddress);
+    // Rate limit by publicKey
+    const rateLimit = checkRateLimit(`verify:${publicKey}`);
     if (!rateLimit.allowed) {
       return createErrorResponse(
         `Rate limit exceeded. Retry after ${rateLimit.retryAfter} seconds`,
@@ -68,81 +53,70 @@ export async function POST(req: NextRequest): Promise<Response> {
     // Validate auth message format and timestamp
     if (!validateAuthMessage(message)) {
       return createErrorResponse(
-        'Invalid or expired authentication message. Please request a new message.',
+        'Invalid or expired authentication message. Please try again.',
         401
       );
     }
 
-    // Verify wallet signature
-    if (!verifyWalletSignature(message, signature, walletAddress)) {
+    // Decode the public key from base58 to Uint8Array
+    let publicKeyBytes: Uint8Array;
+    try {
+      publicKeyBytes = bs58.decode(publicKey);
+      if (publicKeyBytes.length !== 32) {
+        return createErrorResponse('Invalid public key length', 400);
+      }
+    } catch {
+      return createErrorResponse('Invalid public key format', 400);
+    }
+
+    // Decode the signature from base64 to Uint8Array
+    let signatureBytes: Uint8Array;
+    try {
+      signatureBytes = new Uint8Array(Buffer.from(signature, 'base64'));
+      if (signatureBytes.length !== 64) {
+        return createErrorResponse('Invalid signature length', 400);
+      }
+    } catch {
+      return createErrorResponse('Invalid signature format', 400);
+    }
+
+    // Verify NaCl signature
+    if (!verifySignature(message, signatureBytes, publicKeyBytes)) {
       return createErrorResponse('Invalid signature', 401);
     }
 
-    // Validate TweetNaCl public key
-    if (!isValidPublicKey(publicKey)) {
-      return createErrorResponse('Invalid encryption public key format', 400);
-    }
-
-    // Check if user exists
-    let user = await prisma.user.findUnique({
-      where: { walletAddress },
+    // Look up user by publicKey
+    const user = await prisma.user.findFirst({
+      where: { publicKey },
     });
 
-    // Fetch current token balance
-    const tokenBalance = await getClawedTokenBalance(walletAddress);
+    if (!user || !user.id || !user.publicId) {
+      return createErrorResponse(
+        !user ? 'Account not found. Please create an account first.' : 'Invalid user data',
+        !user ? 404 : 500
+      );
+    }
 
-    if (user) {
-      // Check if user is blacklisted
-      if (user.isBlacklisted) {
-        return createErrorResponse(
-          'This wallet has been permanently banned from Clawed Messenger',
-          403
-        );
-      }
-
-      // Check if user is in timeout
-      if (user.timeoutUntil && user.timeoutUntil > new Date()) {
-        return createErrorResponse(
-          `Account is in timeout until ${user.timeoutUntil.toISOString()}`,
-          403
-        );
-      }
-
-      // Update existing user
-      user = await prisma.user.update({
-        where: { walletAddress },
-        data: {
-          publicKey, // Update encryption public key (user may have regenerated)
-          tokenBalance,
-          updatedAt: new Date(),
-        },
-      });
-    } else {
-      // Create new user
-      user = await prisma.user.create({
-        data: {
-          walletAddress,
-          publicKey,
-          tokenBalance,
-        },
-      });
+    // Check if user is blacklisted
+    if (user.isBlacklisted) {
+      return createErrorResponse(
+        'This account has been permanently banned from Void Chat',
+        403
+      );
     }
 
     // Generate session token
-    const token = generateAuthToken(user.id, walletAddress);
+    const token = generateAuthToken(user.id, user.publicId);
 
-    // Build response - only expose necessary public data
-    const response: VerifyWalletResponse = {
+    return createSuccessResponse({
       success: true,
       token,
       user: {
-        walletAddress: user.walletAddress,
-        xHandle: user.xHandle,
+        publicId: user.publicId,
         publicKey: user.publicKey,
+        artHash: user.artHash,
       },
-    };
-
-    return createSuccessResponse(response);
+    });
   } catch (error) {
     console.error('[API] /auth/verify error:', error);
 

@@ -16,23 +16,19 @@ export interface CommunityData {
   memberCount: number;
   /** Online member count */
   onlineCount?: number;
-  /** Minimum token requirement to join (raw value with decimals) */
-  minHold: bigint;
   /** Whether the current user is a member */
   isMember?: boolean;
   /** Whether the community is verified */
   isVerified?: boolean;
   /** Community tags */
   tags?: string[];
-  /** Owner wallet address */
-  ownerWallet?: string;
+  /** Owner public ID */
+  ownerId?: string;
 }
 
 export interface CommunityCardProps {
   /** Community data */
   community: CommunityData;
-  /** Current user's token balance */
-  userTokenBalance?: bigint;
   /** Callback when join button is clicked */
   onJoin?: (communityId: string) => void;
   /** Callback when card is clicked */
@@ -43,27 +39,6 @@ export interface CommunityCardProps {
   size?: 'sm' | 'md' | 'lg';
   /** Additional class names */
   className?: string;
-}
-
-/**
- * Format token amount with proper decimals
- * Assumes 6 decimals for $CLAWED
- */
-function formatTokenAmount(amount: bigint): string {
-  const DECIMALS = 6;
-  const divisor = BigInt(10 ** DECIMALS);
-  const whole = amount / divisor;
-  const decimal = amount % divisor;
-
-  if (whole >= BigInt(1_000_000)) {
-    return `${Number(whole) / 1_000_000}M`;
-  } else if (whole >= BigInt(1_000)) {
-    return `${Number(whole) / 1_000}K`;
-  } else if (decimal > BigInt(0)) {
-    return `${whole}.${decimal.toString().padStart(DECIMALS, '0').slice(0, 2)}`;
-  }
-
-  return whole.toString();
 }
 
 /**
@@ -117,67 +92,18 @@ function VerifiedBadge() {
 }
 
 /**
- * Token requirement badge
- */
-function TokenRequirement({
-  minHold,
-  userBalance,
-  size = 'md',
-}: {
-  minHold: bigint;
-  userBalance?: bigint;
-  size?: 'sm' | 'md' | 'lg';
-}) {
-  const hasEnough = userBalance !== undefined && userBalance >= minHold;
-  const formattedAmount = formatTokenAmount(minHold);
-
-  if (minHold === BigInt(0)) {
-    return (
-      <span className={`inline-flex items-center gap-1 ${size === 'sm' ? 'text-xs' : 'text-sm'} text-emerald-400`}>
-        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-          <path
-            fillRule="evenodd"
-            d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-            clipRule="evenodd"
-          />
-        </svg>
-        Free to join
-      </span>
-    );
-  }
-
-  return (
-    <span
-      className={`inline-flex items-center gap-1 ${size === 'sm' ? 'text-xs' : 'text-sm'} ${
-        hasEnough ? 'text-emerald-400' : 'text-yellow-400'
-      }`}
-    >
-      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-        <path d="M10 2a8 8 0 100 16 8 8 0 000-16zM8 12a2 2 0 100-4 2 2 0 000 4zm4.5-2a1.5 1.5 0 100-3 1.5 1.5 0 000 3z" />
-      </svg>
-      {formattedAmount} $CLAWED
-      {!hasEnough && userBalance !== undefined && (
-        <span className="text-zinc-500">(need more)</span>
-      )}
-    </span>
-  );
-}
-
-/**
- * Community card component for Clawed Messenger
+ * Community card component for Void Chat
  *
  * Features:
  * - Community icon with gradient fallback
  * - Name and description
  * - Member count with online indicator
- * - Token requirement badge
- * - Join button with eligibility check
+ * - Join button
  * - Verified community badge
  * - Tags
  */
 export const CommunityCard = React.memo(function CommunityCard({
   community,
-  userTokenBalance,
   onJoin,
   onClick,
   isJoining = false,
@@ -185,11 +111,8 @@ export const CommunityCard = React.memo(function CommunityCard({
   className = '',
 }: CommunityCardProps) {
   const canJoin = useMemo(() => {
-    if (community.isMember) return false;
-    if (community.minHold === BigInt(0)) return true;
-    if (userTokenBalance === undefined) return false;
-    return userTokenBalance >= community.minHold;
-  }, [community.isMember, community.minHold, userTokenBalance]);
+    return !community.isMember;
+  }, [community.isMember]);
 
   const placeholderGradient = useMemo(
     () => generateGradient(community.id),
@@ -299,13 +222,18 @@ export const CommunityCard = React.memo(function CommunityCard({
               )}
             </div>
 
-            {/* Token requirement */}
+            {/* Free to join badge */}
             <div className="mt-2">
-              <TokenRequirement
-                minHold={community.minHold}
-                userBalance={userTokenBalance}
-                size={size}
-              />
+              <span className={`inline-flex items-center gap-1 ${size === 'sm' ? 'text-xs' : 'text-sm'} text-emerald-400`}>
+                <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                  <path
+                    fillRule="evenodd"
+                    d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+                Free to join
+              </span>
             </div>
 
             {/* Tags */}
@@ -360,12 +288,8 @@ export const CommunityCard = React.memo(function CommunityCard({
                   </svg>
                   Joining...
                 </span>
-              ) : canJoin ? (
-                'Join Community'
-              ) : userTokenBalance === undefined ? (
-                'Connect wallet to join'
               ) : (
-                `Need ${formatTokenAmount(community.minHold)} $CLAWED`
+                'Join Community'
               )}
             </button>
           </div>

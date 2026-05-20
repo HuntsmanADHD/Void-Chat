@@ -2,9 +2,18 @@
 
 # dependencies
 /node_modules
+**/node_modules/
 /.pnp
+.pnp.*
 .pnp.js
-.yarn/install-state.gz
+
+# yarn 4 (Berry) — commit releases/plugins/patches, ignore cache/state
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
 
 # testing
 /coverage
@@ -15,9 +24,14 @@
 
 # production
 /build
+**/dist/
+
+# tauri
+**/src-tauri/target/
 
 # misc
 .DS_Store
+.directory
 *.pem
 
 # debug

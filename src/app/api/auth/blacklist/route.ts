@@ -1,49 +1,43 @@
 /**
- * GET /api/auth/blacklist?wallet=ADDRESS
- * Check blacklist status for a wallet address
+ * GET /api/auth/blacklist?id=PUBLIC_ID
+ * Check blacklist status for a user
  *
  * Query params:
- * - wallet: Solana wallet address
+ * - id: User's public ID
  *
  * Response:
  * {
- *   isBlacklisted: boolean,
- *   strikes: number,
- *   timeoutUntil: string | null
+ *   isBlacklisted: boolean
  * }
  */
 
 import { NextRequest } from 'next/server';
 import {
   checkBlacklistStatus,
-  isValidSolanaAddress,
+  isValidPublicId,
   checkRateLimit,
   createErrorResponse,
   createSuccessResponse,
   OPTIONS,
 } from '@/lib/auth';
 
-// Re-export OPTIONS for CORS preflight
 export { OPTIONS };
-import type { BlacklistStatusResponse } from '@/types/api';
 
 export async function GET(req: NextRequest): Promise<Response> {
   try {
-    // Get wallet address from query params
     const { searchParams } = new URL(req.url);
-    const walletAddress = searchParams.get('wallet');
+    const publicId = searchParams.get('id');
 
-    // Validate wallet parameter
-    if (!walletAddress) {
-      return createErrorResponse('Missing required query parameter: wallet', 400);
+    if (!publicId) {
+      return createErrorResponse('Missing required query parameter: id', 400);
     }
 
-    if (!isValidSolanaAddress(walletAddress)) {
-      return createErrorResponse('Invalid wallet address format', 400);
+    if (!isValidPublicId(publicId)) {
+      return createErrorResponse('Invalid public ID format', 400);
     }
 
     // Check rate limit
-    const rateLimit = checkRateLimit(walletAddress);
+    const rateLimit = checkRateLimit(publicId);
     if (!rateLimit.allowed) {
       return createErrorResponse(
         `Rate limit exceeded. Retry after ${rateLimit.retryAfter} seconds`,
@@ -52,16 +46,11 @@ export async function GET(req: NextRequest): Promise<Response> {
     }
 
     // Check blacklist status
-    const status = await checkBlacklistStatus(walletAddress);
+    const status = await checkBlacklistStatus(publicId);
 
-    // Build response
-    const response: BlacklistStatusResponse = {
+    return createSuccessResponse({
       isBlacklisted: status.isBlacklisted,
-      strikes: status.strikes,
-      timeoutUntil: status.timeoutUntil?.toISOString() ?? null,
-    };
-
-    return createSuccessResponse(response);
+    });
   } catch (error) {
     console.error('[API] /auth/blacklist error:', error);
     return createErrorResponse('Internal server error', 500);

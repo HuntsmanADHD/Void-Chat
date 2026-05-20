@@ -1,5 +1,5 @@
 /**
- * Key Store - Manages encryption keys for Clawed Messenger
+ * Key Store - Manages encryption keys for Void Chat
  *
  * Handles:
  * - Caching public keys for other users
@@ -24,12 +24,12 @@ import {
   isValidPublicKey,
 } from './encryption';
 
-// Cache TTL: 5 minutes (matches token balance cache)
+// Cache TTL: 5 minutes
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 // localStorage keys
-const PUBLIC_KEY_CACHE_KEY = 'clawed_public_key_cache';
-const CHANNEL_KEYS_KEY = 'clawed_channel_keys';
+const PUBLIC_KEY_CACHE_KEY = 'void_public_key_cache';
+const CHANNEL_KEYS_KEY = 'void_channel_keys';
 
 /**
  * In-memory cache for faster access
@@ -67,7 +67,7 @@ function loadCacheFromStorage(): void {
       entries.forEach((entry) => {
         // Validate entry structure before using it
         if (!entry || typeof entry !== 'object' ||
-            !entry.walletAddress || !entry.publicKey ||
+            !entry.publicId || !entry.publicKey ||
             typeof entry.fetchedAt !== 'number') {
           console.warn('[KeyStore] Skipping invalid cache entry');
           return;
@@ -75,7 +75,7 @@ function loadCacheFromStorage(): void {
 
         // Only load entries that haven't expired
         if (now - entry.fetchedAt < CACHE_TTL_MS) {
-          memoryCache.set(entry.walletAddress, entry);
+          memoryCache.set(entry.publicId, entry);
         }
       });
     }
@@ -113,14 +113,14 @@ export function initializeKeyStore(): void {
 }
 
 /**
- * Get a cached public key for a wallet address
+ * Get a cached public key for a publicId
  *
- * @param walletAddress - Solana wallet address
+ * @param publicId - User's public ID
  * @returns Cached public key or null if not found/expired
  */
-export function getCachedPublicKey(walletAddress: string): string | null {
+export function getCachedPublicKey(publicId: string): string | null {
   // Check memory cache first
-  const cached = memoryCache.get(walletAddress);
+  const cached = memoryCache.get(publicId);
 
   if (cached) {
     // Check if cache entry is still valid
@@ -128,41 +128,41 @@ export function getCachedPublicKey(walletAddress: string): string | null {
       return cached.publicKey;
     }
     // Remove expired entry
-    memoryCache.delete(walletAddress);
+    memoryCache.delete(publicId);
   }
 
   return null;
 }
 
 /**
- * Cache a public key for a wallet address
+ * Cache a public key for a publicId
  *
- * @param walletAddress - Solana wallet address
+ * @param publicId - User's public ID
  * @param publicKey - Base64-encoded public key
  */
-export function cachePublicKey(walletAddress: string, publicKey: string): void {
+export function cachePublicKey(publicId: string, publicKey: string): void {
   if (!isValidPublicKey(publicKey)) {
     console.error('[KeyStore] Attempted to cache invalid public key');
     return;
   }
 
   const entry: PublicKeyCache = {
-    walletAddress,
+    publicId,
     publicKey,
     fetchedAt: Date.now(),
   };
 
-  memoryCache.set(walletAddress, entry);
+  memoryCache.set(publicId, entry);
   saveCacheToStorage();
 }
 
 /**
  * Remove a public key from cache
  *
- * @param walletAddress - Solana wallet address
+ * @param publicId - User's public ID
  */
-export function removeCachedPublicKey(walletAddress: string): void {
-  memoryCache.delete(walletAddress);
+export function removeCachedPublicKey(publicId: string): void {
+  memoryCache.delete(publicId);
   saveCacheToStorage();
 }
 
@@ -179,18 +179,18 @@ export function clearPublicKeyCache(): void {
 /**
  * Fetch a user's public key from the API
  *
- * @param walletAddress - Solana wallet address
+ * @param publicId - User's public ID
  * @returns Public key or null if not found
  */
 export async function fetchPublicKey(
-  walletAddress: string
+  publicId: string
 ): Promise<string | null> {
   try {
-    const response = await fetch(`/api/users/${walletAddress}/public-key`);
+    const response = await fetch(`/api/users/${publicId}/public-key`);
 
     if (!response.ok) {
       if (response.status === 404) {
-        console.warn(`[KeyStore] No public key found for wallet: ${walletAddress}`);
+        console.warn(`[KeyStore] No public key found for user: ${publicId}`);
         return null;
       }
       throw new Error(`API error: ${response.status}`);
@@ -204,7 +204,7 @@ export async function fetchPublicKey(
     }
 
     // Cache the fetched key
-    cachePublicKey(walletAddress, data.publicKey);
+    cachePublicKey(publicId, data.publicKey);
 
     return data.publicKey;
   } catch (error) {
@@ -216,41 +216,41 @@ export async function fetchPublicKey(
 /**
  * Get a public key, using cache first, then fetching from API
  *
- * @param walletAddress - Solana wallet address
+ * @param publicId - User's public ID
  * @returns Public key or null if not found
  */
 export async function getPublicKey(
-  walletAddress: string
+  publicId: string
 ): Promise<string | null> {
   // Try cache first
-  const cached = getCachedPublicKey(walletAddress);
+  const cached = getCachedPublicKey(publicId);
   if (cached) {
     return cached;
   }
 
   // Fetch from API
-  return fetchPublicKey(walletAddress);
+  return fetchPublicKey(publicId);
 }
 
 /**
- * Batch fetch public keys for multiple wallet addresses
+ * Batch fetch public keys for multiple public IDs
  *
- * @param walletAddresses - Array of Solana wallet addresses
- * @returns Map of wallet address to public key
+ * @param publicIds - Array of user public IDs
+ * @returns Map of publicId to public key
  */
 export async function getPublicKeys(
-  walletAddresses: string[]
+  publicIds: string[]
 ): Promise<Map<string, string>> {
   const result = new Map<string, string>();
   const toFetch: string[] = [];
 
   // Check cache first
-  for (const address of walletAddresses) {
-    const cached = getCachedPublicKey(address);
+  for (const id of publicIds) {
+    const cached = getCachedPublicKey(id);
     if (cached) {
-      result.set(address, cached);
+      result.set(id, cached);
     } else {
-      toFetch.push(address);
+      toFetch.push(id);
     }
   }
 
@@ -260,16 +260,16 @@ export async function getPublicKeys(
       const response = await fetch('/api/users/public-keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ walletAddresses: toFetch }),
+        body: JSON.stringify({ publicIds: toFetch }),
       });
 
       if (response.ok) {
         const data: UserKeyInfo[] = await response.json();
 
         for (const user of data) {
-          if (user.publicKey && isValidPublicKey(user.publicKey)) {
-            cachePublicKey(user.walletAddress, user.publicKey);
-            result.set(user.walletAddress, user.publicKey);
+          if (user.publicId && user.publicKey && isValidPublicKey(user.publicKey)) {
+            cachePublicKey(user.publicId, user.publicKey);
+            result.set(user.publicId, user.publicKey);
           }
         }
       }
@@ -323,13 +323,8 @@ function getStoredChannelKeys(): ChannelKeyEntry[] {
 
     return validKeys as ChannelKeyEntry[];
   } catch (error) {
-    console.error('[KeyStore] Failed to load channel keys:', error);
-    // Clear corrupted data
-    try {
-      localStorage.removeItem(CHANNEL_KEYS_KEY);
-    } catch {
-      // Ignore cleanup errors
-    }
+    console.error('[KeyStore] Failed to load channel keys, clearing corrupted data:', error);
+    try { localStorage.removeItem(CHANNEL_KEYS_KEY); } catch {}
     return [];
   }
 }

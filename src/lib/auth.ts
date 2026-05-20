@@ -1,23 +1,19 @@
 /**
  * Authentication Utilities for Void Chat API Routes
- * Handles wallet signature verification, session management, and authorization
+ * Handles NaCl signature verification, session management, and authorization
  */
 
 import { NextRequest } from 'next/server';
-import { sign } from 'tweetnacl';
-import bs58 from 'bs58';
 import nacl from 'tweetnacl';
 import crypto from 'crypto';
 import { prisma } from './prisma';
-import { getClawedTokenBalance } from './solana';
-import type { User, MembershipRole } from '@prisma/client';
 
 // =============================================================================
 // CONSTANTS
 // =============================================================================
 
 /**
- * JWT-like token structure (simplified for wallet-based auth)
+ * JWT-like token structure (simplified for identity-based auth)
  * In production, consider using proper JWT with refresh tokens
  */
 function getTokenSecret(): string {
@@ -31,11 +27,6 @@ function getTokenSecret(): string {
   return secret;
 }
 const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-/**
- * Minimum token balance required to create communities (1000 $CLAWED with 6 decimals)
- */
-export const MIN_TOKEN_FOR_COMMUNITY_CREATE = BigInt(1000 * 1_000_000);
 
 /**
  * Rate limiting configuration
@@ -52,13 +43,9 @@ const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
 
 export interface AuthenticatedUser {
   id: string;
-  walletAddress: string;
-  xHandle: string | null;
+  publicId: string;
   publicKey: string;
-  tokenBalance: bigint;
-  strikes: number;
   isBlacklisted: boolean;
-  timeoutUntil: Date | null;
 }
 
 export interface AuthResult {
@@ -69,7 +56,7 @@ export interface AuthResult {
 }
 
 export interface TokenPayload {
-  walletAddress: string;
+  publicId: string;
   userId: string;
   issuedAt: number;
   expiresAt: number;
@@ -82,10 +69,10 @@ export interface TokenPayload {
 /**
  * Generate a secure authentication token using HMAC-SHA256
  */
-export function generateAuthToken(userId: string, walletAddress: string): string {
+export function generateAuthToken(userId: string, publicId: string): string {
   const payload: TokenPayload = {
     userId,
-    walletAddress,
+    publicId,
     issuedAt: Date.now(),
     expiresAt: Date.now() + TOKEN_EXPIRY_MS,
   };
@@ -158,23 +145,20 @@ export function verifyAuthToken(token: string): TokenPayload | null {
 }
 
 // =============================================================================
-// WALLET SIGNATURE VERIFICATION
+// SIGNATURE VERIFICATION
 // =============================================================================
 
 /**
- * Verify a wallet signature for authentication
+ * Verify a NaCl detached signature
  */
-export function verifyWalletSignature(
+export function verifySignature(
   message: string,
-  signature: string,
-  walletAddress: string
+  signature: Uint8Array,
+  publicKey: Uint8Array
 ): boolean {
   try {
     const messageBytes = new TextEncoder().encode(message);
-    const signatureBytes = bs58.decode(signature);
-    const publicKeyBytes = bs58.decode(walletAddress);
-
-    return sign.detached.verify(messageBytes, signatureBytes, publicKeyBytes);
+    return nacl.sign.detached.verify(messageBytes, signature, publicKey);
   } catch (error) {
     console.error('[Auth] Signature verification failed:', error);
     return false;
@@ -183,27 +167,47 @@ export function verifyWalletSignature(
 
 /**
  * Validate the authentication message format and timestamp
- * Message format: "Sign this message to authenticate with Void Chat.\n\nThis will not trigger a blockchain transaction or cost any gas fees.\n\nTimestamp: {timestamp}"
+ * Message format: "Void Chat Login\ntimestamp: {number}"
+ * Timestamp must be within 5 minutes
  */
-export function validateAuthMessage(message: string): boolean {
-  const prefix = 'Sign this message to authenticate with Void Chat.';
+export function validateAuthMessage(message: string): { timestamp: number } | null {
+  const prefix = 'Void Chat Login\ntimestamp: ';
 
   if (!message.startsWith(prefix)) {
-    return false;
+    return null;
   }
 
-  // Extract timestamp
-  const timestampMatch = message.match(/Timestamp:\s*(\d+)/);
-  if (!timestampMatch) {
-    return false;
+  const timestampStr = message.slice(prefix.length).trim();
+  const timestamp = parseInt(timestampStr, 10);
+
+  if (isNaN(timestamp)) {
+    return null;
   }
 
-  const timestamp = parseInt(timestampMatch[1], 10);
   const now = Date.now();
   const fiveMinutes = 5 * 60 * 1000;
 
   // Message must be within 5 minutes
-  return Math.abs(now - timestamp) < fiveMinutes;
+  if (Math.abs(now - timestamp) >= fiveMinutes) {
+    return null;
+  }
+
+  return { timestamp };
+}
+
+// =============================================================================
+// PUBLIC ID VALIDATION
+// =============================================================================
+
+/**
+ * Validate the format of a public ID
+ * Alphanumeric (plus _ and -), 3-32 chars
+ */
+export function isValidPublicId(publicId: string): boolean {
+  if (!publicId || publicId.length < 3 || publicId.length > 32) {
+    return false;
+  }
+  return /^[a-zA-Z0-9_-]+$/.test(publicId);
 }
 
 // =============================================================================
@@ -321,12 +325,12 @@ export async function authenticateRequest(
   }
 
   // Fall back to signature-based auth
-  const walletAddress = req.headers.get('x-wallet-address');
-  const signature = req.headers.get('x-wallet-signature');
+  const publicId = req.headers.get('x-public-id');
+  const signatureHeader = req.headers.get('x-signature');
   const message = req.headers.get('x-auth-message');
 
-  if (walletAddress && signature && message) {
-    return authenticateWithSignature(walletAddress, signature, message);
+  if (publicId && signatureHeader && message) {
+    return authenticateWithSignature(publicId, signatureHeader, message);
   }
 
   return {
@@ -372,36 +376,23 @@ async function authenticateWithToken(token: string): Promise<AuthResult> {
     };
   }
 
-  // Check timeout status
-  if (user.timeoutUntil && user.timeoutUntil > new Date()) {
-    return {
-      success: false,
-      error: `Account is in timeout until ${user.timeoutUntil.toISOString()}`,
-      statusCode: 403,
-    };
-  }
-
   return {
     success: true,
     user: {
       id: user.id,
-      walletAddress: user.walletAddress,
-      xHandle: user.xHandle,
+      publicId: user.publicId,
       publicKey: user.publicKey,
-      tokenBalance: user.tokenBalance,
-      strikes: user.strikes,
       isBlacklisted: user.isBlacklisted,
-      timeoutUntil: user.timeoutUntil,
     },
   };
 }
 
 /**
- * Authenticate using wallet signature
+ * Authenticate using NaCl signature
  */
 async function authenticateWithSignature(
-  walletAddress: string,
-  signature: string,
+  publicId: string,
+  signatureBase64: string,
   message: string
 ): Promise<AuthResult> {
   // Validate message format and timestamp
@@ -413,24 +404,27 @@ async function authenticateWithSignature(
     };
   }
 
-  // Verify signature
-  if (!verifyWalletSignature(message, signature, walletAddress)) {
-    return {
-      success: false,
-      error: 'Invalid signature',
-      statusCode: 401,
-    };
-  }
-
-  // Fetch user from database
+  // Fetch user to get their public key
   const user = await prisma.user.findUnique({
-    where: { walletAddress },
+    where: { publicId },
   });
 
   if (!user) {
     return {
       success: false,
       error: 'User not registered',
+      statusCode: 401,
+    };
+  }
+
+  // Verify signature using the user's stored public key
+  const signatureBytes = new Uint8Array(Buffer.from(signatureBase64, 'base64'));
+  const publicKeyBytes = new Uint8Array(Buffer.from(user.publicKey, 'base64'));
+
+  if (!verifySignature(message, signatureBytes, publicKeyBytes)) {
+    return {
+      success: false,
+      error: 'Invalid signature',
       statusCode: 401,
     };
   }
@@ -444,26 +438,13 @@ async function authenticateWithSignature(
     };
   }
 
-  // Check timeout status
-  if (user.timeoutUntil && user.timeoutUntil > new Date()) {
-    return {
-      success: false,
-      error: `Account is in timeout until ${user.timeoutUntil.toISOString()}`,
-      statusCode: 403,
-    };
-  }
-
   return {
     success: true,
     user: {
       id: user.id,
-      walletAddress: user.walletAddress,
-      xHandle: user.xHandle,
+      publicId: user.publicId,
       publicKey: user.publicKey,
-      tokenBalance: user.tokenBalance,
-      strikes: user.strikes,
       isBlacklisted: user.isBlacklisted,
-      timeoutUntil: user.timeoutUntil,
     },
   };
 }
@@ -471,55 +452,6 @@ async function authenticateWithSignature(
 // =============================================================================
 // AUTHORIZATION HELPERS
 // =============================================================================
-
-/**
- * Check if user has required role in a community
- */
-export async function checkCommunityRole(
-  userId: string,
-  communityId: string,
-  requiredRoles: MembershipRole[]
-): Promise<boolean> {
-  const membership = await prisma.membership.findUnique({
-    where: {
-      userId_communityId: {
-        userId,
-        communityId,
-      },
-    },
-  });
-
-  if (!membership) {
-    return false;
-  }
-
-  return requiredRoles.includes(membership.role);
-}
-
-/**
- * Check if user is community owner
- */
-export async function isCommunityOwner(
-  userId: string,
-  communityId: string
-): Promise<boolean> {
-  const community = await prisma.community.findUnique({
-    where: { id: communityId },
-    select: { ownerId: true },
-  });
-
-  return community?.ownerId === userId;
-}
-
-/**
- * Check if user is community admin or owner
- */
-export async function isCommunityAdmin(
-  userId: string,
-  communityId: string
-): Promise<boolean> {
-  return checkCommunityRole(userId, communityId, ['OWNER', 'ADMIN']);
-}
 
 /**
  * Check if user is community member
@@ -540,41 +472,16 @@ export async function isCommunityMember(
   return !!membership;
 }
 
-/**
- * Check if user meets minimum token requirement
- */
-export async function checkMinTokenBalance(
-  walletAddress: string,
-  minRequired: bigint
-): Promise<boolean> {
-  const balance = await getClawedTokenBalance(walletAddress);
-  return balance >= minRequired;
-}
-
-/**
- * Update user's cached token balance
- */
-export async function updateUserTokenBalance(user: User): Promise<bigint> {
-  const balance = await getClawedTokenBalance(user.walletAddress);
-
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { tokenBalance: balance },
-  });
-
-  return balance;
-}
-
 // =============================================================================
 // RATE LIMITING
 // =============================================================================
 
 /**
- * Check rate limit for a wallet address
+ * Check rate limit for a public ID
  */
-export function checkRateLimit(walletAddress: string): { allowed: boolean; retryAfter?: number } {
+export function checkRateLimit(publicId: string): { allowed: boolean; retryAfter?: number } {
   const now = Date.now();
-  const key = walletAddress.toLowerCase();
+  const key = publicId.toLowerCase();
 
   const record = rateLimitStore.get(key);
 
@@ -603,144 +510,35 @@ export function checkRateLimit(walletAddress: string): { allowed: boolean; retry
 // =============================================================================
 
 /**
- * Check if a wallet is blacklisted or timed out
+ * Check if a user is blacklisted by publicId
  */
-export async function checkBlacklistStatus(walletAddress: string): Promise<{
+export async function checkBlacklistStatus(publicId: string): Promise<{
   isBlacklisted: boolean;
-  strikes: number;
-  timeoutUntil: Date | null;
   canPerformActions: boolean;
 }> {
   const user = await prisma.user.findUnique({
-    where: { walletAddress },
+    where: { publicId },
     select: {
       isBlacklisted: true,
-      strikes: true,
-      timeoutUntil: true,
     },
   });
 
   if (!user) {
     return {
       isBlacklisted: false,
-      strikes: 0,
-      timeoutUntil: null,
       canPerformActions: true, // New users can perform actions
     };
   }
 
-  const isTimedOut = user.timeoutUntil && user.timeoutUntil > new Date();
-
   return {
     isBlacklisted: user.isBlacklisted,
-    strikes: user.strikes,
-    timeoutUntil: user.timeoutUntil,
-    canPerformActions: !user.isBlacklisted && !isTimedOut,
-  };
-}
-
-/**
- * Issue a strike to a user
- * Strike 1: 24hr timeout
- * Strike 2: 7-day timeout
- * Strike 3: Permanent blacklist
- */
-export async function issueStrike(
-  userId: string,
-  reportId: string,
-  reason: string
-): Promise<{
-  newStrikeCount: number;
-  isBlacklisted: boolean;
-  timeoutUntil: Date | null;
-}> {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-  });
-
-  if (!user) {
-    throw new Error('User not found');
-  }
-
-  const newStrikeCount = user.strikes + 1;
-  let isBlacklisted = false;
-  let timeoutUntil: Date | null = null;
-  let strikeExpiresAt: Date | null = null;
-
-  const now = new Date();
-
-  switch (newStrikeCount) {
-    case 1:
-      // 24-hour timeout
-      timeoutUntil = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-      strikeExpiresAt = timeoutUntil;
-      break;
-    case 2:
-      // 7-day timeout
-      timeoutUntil = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-      strikeExpiresAt = timeoutUntil;
-      break;
-    case 3:
-    default:
-      // Permanent blacklist
-      isBlacklisted = true;
-      break;
-  }
-
-  // Update user and create strike record in a transaction
-  await prisma.$transaction([
-    prisma.user.update({
-      where: { id: userId },
-      data: {
-        strikes: newStrikeCount,
-        isBlacklisted,
-        blacklistedAt: isBlacklisted ? now : null,
-        timeoutUntil,
-      },
-    }),
-    prisma.strike.create({
-      data: {
-        userId,
-        reportId,
-        strikeNumber: newStrikeCount,
-        reason,
-        expiresAt: strikeExpiresAt,
-      },
-    }),
-  ]);
-
-  return {
-    newStrikeCount,
-    isBlacklisted,
-    timeoutUntil,
+    canPerformActions: !user.isBlacklisted,
   };
 }
 
 // =============================================================================
 // INPUT VALIDATION
 // =============================================================================
-
-/**
- * Validate Solana wallet address format
- */
-export function isValidSolanaAddress(address: string): boolean {
-  try {
-    // Base58 check and length validation
-    const decoded = bs58.decode(address);
-    return decoded.length === 32;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Validate X/Twitter handle format
- */
-export function isValidXHandle(handle: string): boolean {
-  // X handles: 4-15 characters, alphanumeric and underscores
-  const xHandleRegex = /^[A-Za-z0-9_]{4,15}$/;
-  return xHandleRegex.test(handle);
-}
 
 /**
  * Validate base64 encoded string
@@ -767,15 +565,17 @@ export function isValidBase64(str: string): boolean {
 }
 
 /**
- * Sanitize string input to prevent XSS
+ * Sanitize string input for safe storage.
+ *
+ * Only strips null bytes and trims whitespace. HTML entity encoding should
+ * happen at render time on the frontend, NOT at storage time — encoding here
+ * corrupts URLs, names with apostrophes, and other legitimate data.
  */
-export function sanitizeInput(input: string): string {
+export function sanitizeInput(input: string, maxLength = 1000): string {
   return input
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;')
-    .replace(/\//g, '&#x2F;');
+    .replace(/\0/g, '')  // Remove null bytes
+    .trim()
+    .slice(0, maxLength);
 }
 
 /**
@@ -861,36 +661,51 @@ export function createSuccessResponse<T>(data: T, statusCode: number = 200): Res
 // =============================================================================
 
 /**
- * Standard CORS headers for API routes
+ * Allowed CORS origins from environment variable.
+ * Falls back to common local dev origins if not set.
  */
-export const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Wallet-Address, X-Wallet-Signature, X-Auth-Message',
-  'Access-Control-Max-Age': '86400', // 24 hours
-} as const;
+const ALLOWED_ORIGINS: string[] = (
+  process.env.ALLOWED_ORIGINS ||
+  'http://localhost:1420,http://localhost:3000,http://localhost:5173,tauri://localhost,https://tauri.localhost'
+).split(',').map(o => o.trim()).filter(Boolean);
+
+/**
+ * Check if a given origin is in the allowlist.
+ */
+function isAllowedOrigin(origin: string | null): string | null {
+  if (!origin) return null;
+  return ALLOWED_ORIGINS.includes(origin) ? origin : null;
+}
+
+/**
+ * Build CORS headers for a specific request origin.
+ * Returns the origin (if allowed) instead of wildcard '*'.
+ */
+export function getCORSHeaders(requestOrigin: string | null): Record<string, string> {
+  const allowedOrigin = isAllowedOrigin(requestOrigin);
+  const headers: Record<string, string> = {
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Public-Id, X-Signature, X-Auth-Message',
+    'Access-Control-Max-Age': '86400', // 24 hours
+    'Vary': 'Origin',
+  };
+  if (allowedOrigin) {
+    headers['Access-Control-Allow-Origin'] = allowedOrigin;
+  }
+  return headers;
+}
+
+/**
+ * Standard CORS headers for API routes (kept for backward compat, uses first allowed origin).
+ * Prefer getCORSHeaders(origin) when you have access to the request origin.
+ */
+export const CORS_HEADERS = getCORSHeaders(ALLOWED_ORIGINS[0] || null);
 
 /**
  * Create CORS preflight response for OPTIONS requests
- *
- * @param methods - Allowed HTTP methods (default: all common methods)
- * @returns Response with CORS headers
- *
- * @example
- * ```ts
- * // In API route file:
- * export { createCORSResponse as OPTIONS } from '@/lib/auth';
- *
- * // Or with specific methods:
- * export async function OPTIONS() {
- *   return createCORSResponse(['GET', 'POST']);
- * }
- * ```
  */
-export function createCORSResponse(methods?: string[]): Response {
-  const headers: Record<string, string> = {
-    ...CORS_HEADERS,
-  };
+export function createCORSResponse(methods?: string[], requestOrigin?: string | null): Response {
+  const headers = getCORSHeaders(requestOrigin ?? null);
 
   if (methods) {
     headers['Access-Control-Allow-Methods'] = [...methods, 'OPTIONS'].join(', ');
@@ -906,6 +721,7 @@ export function createCORSResponse(methods?: string[]): Response {
  * Pre-configured CORS OPTIONS handler
  * Can be directly exported from API routes
  */
-export async function OPTIONS(): Promise<Response> {
-  return createCORSResponse();
+export async function OPTIONS(req?: Request): Promise<Response> {
+  const origin = req?.headers?.get?.('origin') ?? null;
+  return createCORSResponse(undefined, origin);
 }
