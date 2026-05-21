@@ -78,7 +78,6 @@ export const AppLayout = React.memo(function AppLayout({
   activeDMUser,
   isDMView = false,
   communityOwnerId,
-  communityOwnerId,
   notificationCount = 0,
   children,
   onSelectCommunity,
@@ -211,7 +210,6 @@ export const AppLayout = React.memo(function AppLayout({
             {memberListVisible && (
               <MemberList
                 members={members}
-                ownerId={communityOwnerId}
                 ownerId={communityOwnerId}
                 onMemberClick={onMemberClick}
                 isDM={isDMView}

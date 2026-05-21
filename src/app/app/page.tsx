@@ -6,7 +6,7 @@ import { Plus, Users, MessageCircle, Sparkles } from 'lucide-react';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { CommunityCard, type CommunityData } from '@/components/community/CommunityCard';
 import { CreateCommunityModal, type CreateCommunityFormData } from '@/components/community/CreateCommunityModal';
-import { useAuth } from '@/hooks/useAuth';
+import { useSession } from '@/hooks/useSession';
 import { useEncryption } from '@/hooks/useEncryption';
 import { useRealtime } from '@/hooks/useRealtime';
 import { useApi } from '@/hooks/useApi';
@@ -72,7 +72,10 @@ const RecentDMsSection = React.memo(function RecentDMsSection({ dms, onSelectDM 
 
 export default function AppDashboard() {
   const router = useRouter();
-  const { publicId, isAuthenticated, isBlacklisted } = useAuth();
+  const { session, isReady } = useSession();
+  const publicId = session?.signingPublicKey ?? '';
+  const isAuthenticated = isReady;
+  const isBlacklisted = false;
   const { getOrCreateKeyPair, isInitialized } = useEncryption();
   const { isUserOnline } = useRealtime({ autoConnect: isAuthenticated });
   const api = useApi();

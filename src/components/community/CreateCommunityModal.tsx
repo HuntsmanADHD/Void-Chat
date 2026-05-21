@@ -1,8 +1,13 @@
 'use client';
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { createCommunityFormSchema } from '@/lib/validation-client';
-import type { z } from 'zod';
+import { z } from 'zod';
+
+const createCommunityFormSchema = z.object({
+  name: z.string().min(2).max(64).regex(/^[a-zA-Z0-9 _-]+$/),
+  description: z.string().max(500).optional(),
+  isPrivate: z.boolean().optional(),
+});
 
 export interface CreateCommunityFormData {
   name: string;

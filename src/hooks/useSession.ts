@@ -19,13 +19,18 @@ interface StoredKeys {
 function generateSession(displayName: string): Session {
   const signingKeypair = nacl.sign.keyPair();
   const boxKeypair = nacl.box.keyPair();
+  const signingPublicKey = bs58.encode(signingKeypair.publicKey);
+  const boxPublicKey = bs58.encode(boxKeypair.publicKey);
   return {
-    signingPublicKey: bs58.encode(signingKeypair.publicKey),
+    signingPublicKey,
     signingSecretKey: signingKeypair.secretKey,
-    boxPublicKey: bs58.encode(boxKeypair.publicKey),
+    boxPublicKey,
     boxSecretKey: boxKeypair.secretKey,
     displayName,
     createdAt: Date.now(),
+    publicId: signingPublicKey,
+    publicKey: boxPublicKey,
+    signature: '',
   };
 }
 
@@ -52,6 +57,9 @@ function loadStoredSession(displayName: string): Session | null {
       boxSecretKey: bs58.decode(stored.boxSecretKey),
       displayName,
       createdAt: stored.createdAt,
+      publicId: stored.signingPublicKey,
+      publicKey: stored.boxPublicKey,
+      signature: '',
     };
   } catch {
     sessionStorage.removeItem(SESSION_KEYS_STORAGE);

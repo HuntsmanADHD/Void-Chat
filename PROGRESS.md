@@ -130,6 +130,66 @@ Across the Platform:
 
 ---
 
+## Phase 0 — Ephemeral Pivot (IN PROGRESS)
+
+Decision (2026-05-21): pivot to a fully ephemeral identity model. No accounts,
+no persistent users, no moderation. Open a tab → fresh keypair. Close tab →
+gone. Server is a community/channel directory; everything else is client-side.
+
+**Completed in this phase (branch: `rework/ephemeral-pivot`):**
+
+- Schema reduced to `Community` + `Channel` only. Dropped `User`,
+  `Membership`, `Report`, `CommunityKick`, `Vouch`, `ReportCategory`.
+- All `/api/auth/*`, `/api/users/*`, `/api/reports/*`, `/api/admin/*`,
+  `/api/appeals/*`, `/api/search`, `/api/communities/[id]/members` routes
+  deleted.
+- Three surviving routes (GET/POST `/communities`, GET `/communities/[id]`,
+  GET/POST `/communities/[id]/channels`) rewritten with no auth, IP-keyed
+  rate limiting for writes.
+- `src/lib/auth.ts` gutted to minimal API utilities (CORS, IP rate limit,
+  input sanitization, response shaping). Kept the filename to avoid churn.
+- `src/lib/index.ts` slimmed to just the things still exported.
+- New `useSession` hook (`src/hooks/useSession.ts`) generates ephemeral
+  ed25519 + Curve25519 keypairs on mount, persists keys to sessionStorage
+  only, persists display name to localStorage. Includes legacy compat
+  fields (`publicId`, `publicKey`, `signature`) so old pages compile.
+- Call/voice subsystem (useCall, useP2P, src/components/call/, src/lib/p2p.ts,
+  src/types/p2p.ts, src/types/call.ts) — deleted entirely. ~1500 lines.
+  Can be added back as v2 feature.
+- Dead lib files deleted: keyStore.ts, validation.ts, validation-client.ts,
+  notifications.ts, socket.ts, useNotifications, useFileUpload.
+- 7 useAuth consumers swapped to useSession.
+- `useEncryption` and `useRealtime` rewritten as stubs with legacy-compat
+  method surface so consumers compile without a real protocol yet.
+- `SearchModal` and `AttachmentDisplay` stubbed to render null
+  (features don't exist without users / server file storage).
+- tsconfig scoped to `src/` only (was including `client/` and `server/src/`).
+- **`yarn tsc --noEmit` passes with 0 errors.**
+
+**What's stubbed and waiting for the next phase:**
+
+- The real `useRealtime` per-session-DH protocol: server roster, channel
+  join broadcasts roster, fan-out sender encrypts to each member's
+  `boxPublicKey`, server relays per-recipient ciphertext.
+- The real `useEncryption` with `nacl.box` per-recipient encryption and
+  DH-based DM encryption.
+- `server/socket-server.ts` — currently has a no-op `user` stub. Needs full
+  rewrite to in-memory roster + per-recipient channel relay.
+- Client-side IndexedDB message store (`src/lib/messageStore.ts`).
+- Landing + app page rewrites for sessionless entry (currently the pages
+  redirect to login/etc on old flows).
+- README rewrite to match the ephemeral model.
+
+**Known limitations the user explicitly accepted (not bugs):**
+
+- Channel messages are O(N) bandwidth (N = recipients per channel).
+- New joiners see zero history (per-device storage only).
+- Display names are spoofable and unfightable (no identity).
+- Open community creation can be spammed (only IP rate-limited).
+- DMs don't persist across sessions for either party.
+
+---
+
 ## Phase 3 — Solana Removal & Identity Migration (COMPLETED)
 
 All Solana wallet integration has been stripped. Identity is now self-custodied

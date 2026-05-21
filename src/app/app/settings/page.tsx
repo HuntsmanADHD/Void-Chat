@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Key, Shield, AlertTriangle, Copy, Check, RefreshCw, ExternalLink, LogOut } from 'lucide-react';
-import { useAuth } from '@/hooks/useAuth';
+import { useSession } from '@/hooks/useSession';
 import { useEncryption } from '@/hooks/useEncryption';
 
 function SettingsSection({ title, description, icon: Icon, children }: { title: string; description?: string; icon: React.ElementType; children: React.ReactNode }) {
@@ -36,7 +36,11 @@ function InfoRow({ label, value, copyable = false, monospace = false }: { label:
 
 export default function SettingsPage() {
   const router = useRouter();
-  const { publicId, isAuthenticated, isBlacklisted, logout } = useAuth();
+  const { session, isReady } = useSession();
+  const publicId = session?.signingPublicKey ?? '';
+  const isAuthenticated = isReady;
+  const isBlacklisted = false;
+  const logout = () => {};
   const { isInitialized, hasKeypair, publicKey, getOrCreateKeyPair, clearKeyPair } = useEncryption();
   const [isRegeneratingKeys, setIsRegeneratingKeys] = useState(false);
   const [showKeyWarning, setShowKeyWarning] = useState(false);

@@ -5,7 +5,16 @@
 
 import nacl from 'tweetnacl';
 import { encodeBase64, decodeBase64, encodeUTF8, decodeUTF8 } from 'tweetnacl-util';
-import type { KeyPair, EncryptedMessage } from '@/types/encryption';
+
+export interface KeyPair {
+  publicKey: string;
+  secretKey: string;
+}
+
+export interface EncryptedMessage {
+  encrypted: string;
+  nonce: string;
+}
 
 export function generateKeyPair(): KeyPair | null {
   try {

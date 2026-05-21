@@ -22,6 +22,12 @@ export interface Session {
   displayName: string;
   /** When this session was created (epoch ms). */
   createdAt: number;
+  /** Compat alias for legacy code paths. Same as signingPublicKey. */
+  publicId: string;
+  /** Compat alias for legacy code paths. Same as boxPublicKey. */
+  publicKey: string;
+  /** Compat: legacy auth signature field. Empty string in ephemeral model. */
+  signature: string;
 }
 
 /** Wire format for a session announcement (what's sent to the server on join). */
