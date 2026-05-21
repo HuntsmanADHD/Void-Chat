@@ -1,22 +1,20 @@
 /**
  * /api/communities/[id]/channels
- * Channel operations within a community
  *
- * GET: List channels in community
- * POST: Create channel (any member)
+ * GET  — list channels in a community (public, no auth)
+ * POST — create a channel in a community (IP rate-limited, no auth)
  */
 
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import {
-  authenticateRequest,
-  isCommunityMember,
+  checkRateLimit,
+  getClientIp,
   sanitizeInput,
   createErrorResponse,
   createSuccessResponse,
   OPTIONS,
 } from '@/lib/auth';
-import { createChannelSchema } from '@/lib/validation';
 
 export { OPTIONS };
 
@@ -24,48 +22,32 @@ interface RouteParams {
   params: Promise<{ id: string }>;
 }
 
-/**
- * GET /api/communities/[id]/channels
- * List channels in community (members only)
- */
 export async function GET(
-  req: NextRequest,
+  _req: NextRequest,
   { params }: RouteParams
 ): Promise<Response> {
   try {
     const { id: communityId } = await params;
 
-    const authResult = await authenticateRequest(req);
-    if (!authResult.success || !authResult.user) {
-      return createErrorResponse(
-        authResult.error || 'Authentication required to view channels',
-        authResult.statusCode || 401
-      );
-    }
-
-    const isMember = await isCommunityMember(authResult.user.id, communityId);
-    if (!isMember) {
-      return createErrorResponse('Must be a member to view channels', 403);
+    const community = await prisma.community.findUnique({
+      where: { id: communityId },
+      select: { id: true },
+    });
+    if (!community) {
+      return createErrorResponse('Community not found', 404);
     }
 
     const channels = await prisma.channel.findMany({
       where: { communityId },
-      orderBy: [
-        { isDefault: 'desc' },
-        { createdAt: 'asc' },
-      ],
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, name: true, description: true, isDefault: true, createdAt: true },
     });
 
     return createSuccessResponse({
-      channels: channels.map((c) => ({
-        id: c.id,
-        name: c.name,
-        description: c.description,
-        communityId: c.communityId,
-        isDefault: c.isDefault,
-        createdAt: c.createdAt.toISOString(),
+      channels: channels.map((ch) => ({
+        ...ch,
+        createdAt: ch.createdAt.toISOString(),
       })),
-      total: channels.length,
     });
   } catch (error) {
     console.error('[API] GET /communities/[id]/channels error:', error);
@@ -73,10 +55,6 @@ export async function GET(
   }
 }
 
-/**
- * POST /api/communities/[id]/channels
- * Create new channel (any member can create)
- */
 export async function POST(
   req: NextRequest,
   { params }: RouteParams
@@ -84,101 +62,61 @@ export async function POST(
   try {
     const { id: communityId } = await params;
 
-    const authResult = await authenticateRequest(req);
-    if (!authResult.success || !authResult.user) {
+    const clientIp = getClientIp(req);
+    const rateLimit = checkRateLimit(`channel-create:${clientIp}`);
+    if (!rateLimit.allowed) {
       return createErrorResponse(
-        authResult.error || 'Authentication required',
-        authResult.statusCode || 401
+        `Rate limit exceeded. Retry after ${rateLimit.retryAfter} seconds`,
+        429
       );
     }
 
-    const user = authResult.user;
-
     const community = await prisma.community.findUnique({
       where: { id: communityId },
+      select: { id: true },
     });
-
     if (!community) {
       return createErrorResponse('Community not found', 404);
     }
 
-    // Any member can create channels
-    const isMember = await isCommunityMember(user.id, communityId);
-    if (!isMember) {
-      return createErrorResponse('Must be a member to create channels', 403);
-    }
-
     const body = await req.json();
-    const validationResult = createChannelSchema.safeParse(body);
+    const name = sanitizeInput(body.name || '', 32);
+    const description = body.description ? sanitizeInput(body.description, 200) : null;
 
-    if (!validationResult.success) {
-      const errors = validationResult.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
-      return createErrorResponse(`Validation failed: ${errors}`, 400);
+    if (name.length < 1 || name.length > 32) {
+      return createErrorResponse('Channel name must be 1–32 characters', 400);
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+      return createErrorResponse('Channel name may only contain letters, numbers, _ and -', 400);
     }
 
-    const { name, description, isDefault } = validationResult.data;
-
-    const sanitizedName = sanitizeInput(name.trim().toLowerCase());
-    const sanitizedDescription = description
-      ? sanitizeInput(description.trim())
-      : null;
-
-    const existingChannel = await prisma.channel.findFirst({
-      where: {
-        communityId,
-        name: sanitizedName,
-      },
-    });
-
-    if (existingChannel) {
-      return createErrorResponse('A channel with this name already exists', 409);
-    }
-
-    if (sanitizedDescription && sanitizedDescription.length > 200) {
-      return createErrorResponse(
-        'Channel description must be 200 characters or less',
-        400
-      );
-    }
-
-    const channel = await prisma.$transaction(async (tx) => {
-      if (isDefault) {
-        await tx.channel.updateMany({
-          where: {
-            communityId,
-            isDefault: true,
-          },
-          data: {
-            isDefault: false,
-          },
-        });
-      }
-
-      return await tx.channel.create({
-        data: {
-          name: sanitizedName,
-          description: sanitizedDescription,
-          communityId,
-          isDefault: isDefault ?? false,
-        },
+    let channel;
+    try {
+      channel = await prisma.channel.create({
+        data: { name, description, communityId },
       });
-    });
+    } catch (err: unknown) {
+      if (typeof err === 'object' && err !== null && 'code' in err && (err as { code?: string }).code === 'P2002') {
+        return createErrorResponse('A channel with that name already exists in this community', 409);
+      }
+      throw err;
+    }
 
-    return createSuccessResponse({
-      id: channel.id,
-      name: channel.name,
-      description: channel.description,
-      communityId: channel.communityId,
-      isDefault: channel.isDefault,
-      createdAt: channel.createdAt.toISOString(),
-    }, 201);
+    return createSuccessResponse(
+      {
+        id: channel.id,
+        name: channel.name,
+        description: channel.description,
+        isDefault: channel.isDefault,
+        createdAt: channel.createdAt.toISOString(),
+      },
+      201
+    );
   } catch (error) {
     console.error('[API] POST /communities/[id]/channels error:', error);
-
     if (error instanceof SyntaxError) {
       return createErrorResponse('Invalid JSON in request body', 400);
     }
-
     return createErrorResponse('Internal server error', 500);
   }
 }
