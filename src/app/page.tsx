@@ -6,7 +6,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { Shield, Lock, Users, Zap, MessageCircle, Key } from 'lucide-react';
 import { WarrantCanaryBadge } from '@/components/legal/WarrantCanary';
-import { useAuth } from '@/hooks/useAuth';
+import { useSession } from '@/hooks/useSession';
 
 /**
  * Animated decoding text effect
@@ -85,7 +85,7 @@ function FeatureItem({
 
 export default function LandingPage() {
   const router = useRouter();
-  const { isAuthenticated } = useAuth();
+  const { isReady: isAuthenticated } = useSession();
 
   useEffect(() => {
     if (isAuthenticated) {

@@ -5,7 +5,7 @@ import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import type { MessageData } from './Message';
 import { useEncryption } from '@/hooks/useEncryption';
-import { useAuth } from '@/hooks/useAuth';
+import { useSession } from '@/hooks/useSession';
 
 /**
  * Chat mode - either a channel or direct message
@@ -90,7 +90,9 @@ export function ChatContainer({
   className = '',
   testMode = false,
 }: ChatContainerProps) {
-  const { publicId, isBlacklisted } = useAuth();
+  const { session } = useSession();
+  const publicId = session?.signingPublicKey ?? '';
+  const isBlacklisted = false;
   const {
     isInitialized,
     hasKeypair,

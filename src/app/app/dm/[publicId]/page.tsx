@@ -6,7 +6,7 @@ import { Lock, Shield } from 'lucide-react';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { ChatContainer, type ChatHeaderInfo } from '@/components/chat/ChatContainer';
 import type { MessageData } from '@/components/chat/Message';
-import { useAuth } from '@/hooks/useAuth';
+import { useSession } from '@/hooks/useSession';
 import { useEncryption } from '@/hooks/useEncryption';
 import { useRealtime, type OnMessageReceived } from '@/hooks/useRealtime';
 import { useApi } from '@/hooks/useApi';
@@ -36,11 +36,9 @@ export default function DMPage() {
   const params = useParams();
   const recipientId = params.publicId as string;
 
-  const {
-    publicId,
-    isAuthenticated,
-    session,
-  } = useAuth();
+  const { session, isReady } = useSession();
+  const publicId = session?.signingPublicKey ?? '';
+  const isAuthenticated = isReady;
   const { } = useEncryption();
   const api = useApi();
   const { error: showError } = useToast();

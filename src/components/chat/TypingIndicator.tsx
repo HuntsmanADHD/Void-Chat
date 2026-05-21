@@ -12,7 +12,11 @@
 'use client';
 
 import React, { useEffect, useState, useMemo } from 'react';
-import type { TypingUser } from '@/types/p2p';
+
+interface TypingUser {
+  publicId: string;
+  startedAt: number;
+}
 
 /**
  * Props for the TypingIndicator component

@@ -5,7 +5,7 @@ import { useRouter, useParams } from 'next/navigation';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { ChatContainer, type ChatHeaderInfo } from '@/components/chat/ChatContainer';
 import type { MessageData } from '@/components/chat/Message';
-import { useAuth } from '@/hooks/useAuth';
+import { useSession } from '@/hooks/useSession';
 import { useEncryption } from '@/hooks/useEncryption';
 import { useRealtime, type OnMessageReceived } from '@/hooks/useRealtime';
 import type { Community, Channel, CurrentUser } from '@/components/layout/Sidebar';
@@ -36,11 +36,9 @@ export default function ChannelPage() {
   const communityId = params.id as string;
   const channelId = params.channelId as string;
 
-  const {
-    publicId,
-    isAuthenticated,
-    session,
-  } = useAuth();
+  const { session, isReady } = useSession();
+  const publicId = session?.signingPublicKey ?? '';
+  const isAuthenticated = isReady;
   const { } = useEncryption();
 
   // State

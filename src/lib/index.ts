@@ -1,123 +1,24 @@
 /**
- * Central exports for lib utilities
+ * Central exports for lib utilities.
+ *
+ * Ephemeral identity model: most legacy auth/moderation/keystore/p2p
+ * utilities have been removed. Add exports back here only when a downstream
+ * file actually imports them via the barrel.
  */
 
-// Prisma client
 export { prisma } from './prisma';
 
-// Authentication utilities (API routes)
 export {
-  generateAuthToken,
-  verifyAuthToken,
-  authenticateRequest,
-  isCommunityMember,
   checkRateLimit,
-  checkBlacklistStatus,
-  isValidPublicId,
-  isValidBase64,
+  getClientIp,
   sanitizeInput,
   validatePagination,
+  getCORSHeaders,
+  CORS_HEADERS,
+  createCORSResponse,
+  OPTIONS,
   createErrorResponse,
   createSuccessResponse,
-  verifySignature,
-  validateAuthMessage,
 } from './auth';
 
-export type {
-  AuthenticatedUser,
-  AuthResult,
-  TokenPayload,
-} from './auth';
-
-// Format utilities
-export {
-  formatPublicId,
-} from './format';
-
-// Encryption utilities
-export {
-  generateKeyPair,
-  encryptMessage,
-  decryptMessage,
-  encryptChannelMessage,
-  decryptChannelMessage,
-  generateChannelKey,
-  encryptSecretKey,
-  decryptSecretKey,
-  encryptForKeyExchange,
-  decryptFromKeyExchange,
-  isValidPublicKey,
-  isValidSecretKey,
-  keyPairFromSeed,
-} from './encryption';
-
-// Key store utilities
-export {
-  initializeKeyStore,
-  getCachedPublicKey,
-  cachePublicKey,
-  removeCachedPublicKey,
-  clearPublicKeyCache,
-  fetchPublicKey,
-  getPublicKey,
-  getPublicKeys,
-  storeChannelKey,
-  getChannelKey,
-  removeChannelKey,
-  clearChannelKeys,
-  getStoredChannelIds,
-  prepareChannelKeyForMember,
-  acceptChannelKey,
-  clearAllKeys,
-} from './keyStore';
-
-// Moderation utilities
-export {
-  fileReport,
-  isUserBanned,
-  isPublicIdBanned,
-  getKickCount,
-  isKickedFromCommunity,
-} from './moderation';
-
-export type {
-  ModerationResult,
-  ReportResult,
-} from './moderation';
-
-// P2P connection management
-export {
-  P2PManager,
-  getP2PManager,
-  destroyP2PManager,
-  generateMessageId,
-  createP2PMessage,
-} from './p2p';
-
-export type {
-  OnMessageCallback,
-  OnConnectionStateChange as P2POnConnectionStateChange,
-  OnSignalCallback,
-  OnErrorCallback as P2POnErrorCallback,
-} from './p2p';
-
-// Socket.io client
-export {
-  SocketManager,
-  getSocketManager,
-  destroySocketManager,
-  connectSocket,
-} from './socket';
-
-export type {
-  OnChannelMessageCallback,
-  OnDMMessageCallback,
-  OnSignalCallback as SocketOnSignalCallback,
-  OnICECandidateCallback,
-  OnUserStatusCallback,
-  OnUsersOnlineCallback,
-  OnTypingCallback,
-  OnConnectionStateChange as SocketOnConnectionStateChange,
-  OnErrorCallback as SocketOnErrorCallback,
-  OnRateLimitedCallback,
-} from './socket';
+export { formatPublicId, truncatePublicId } from './format';

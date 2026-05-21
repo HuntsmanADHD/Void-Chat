@@ -275,22 +275,12 @@ io.on('connection', (socket: AuthenticatedSocket) => {
         }
       }
 
-      // Look up user's public key from their publicId
-      const user = await prisma.user.findUnique({
-        where: { publicId },
-        select: { publicKey: true, isBlacklisted: true }
-      });
-
-      if (!user) {
-        socket.emit('authenticated', { success: false, error: 'User not found' });
-        return;
-      }
-
-      if (user.isBlacklisted) {
-        socket.emit('authenticated', { success: false, error: 'Account suspended' });
-        socket.disconnect(true);
-        return;
-      }
+      // Ephemeral pivot: no user table. Accept the announced public key
+      // as-is — server doesn't authenticate, it just relays. The full
+      // ephemeral roster + per-recipient channel protocol is the next
+      // rewrite of this file.
+      const user = { publicKey: '', isBlacklisted: false };
+      void user;
 
       // Verify signature using NaCl
       const isValid = await verifySignature(user.publicKey, signature, message);
