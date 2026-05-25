@@ -12,8 +12,9 @@ export interface CommunityData {
   icon?: string | null;
   /** Banner image URL */
   banner?: string | null;
-  /** Member count */
-  memberCount: number;
+  /** Member count. Omit to hide the stats row entirely (ephemeral mode
+   *  has no meaningful member count). */
+  memberCount?: number;
   /** Online member count */
   onlineCount?: number;
   /** Whether the current user is a member */
@@ -24,6 +25,8 @@ export interface CommunityData {
   tags?: string[];
   /** Owner public ID */
   ownerId?: string;
+  /** Whether the community requires a password to access. */
+  isPrivate?: boolean;
 }
 
 export interface CommunityCardProps {
@@ -199,41 +202,53 @@ export const CommunityCard = React.memo(function CommunityCard({
               </p>
             )}
 
-            {/* Stats row */}
-            <div className="flex items-center gap-3 mt-2">
-              {/* Member count */}
-              <div className="flex items-center gap-1 text-zinc-400">
-                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                  <path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z" />
-                </svg>
-                <span className={size === 'sm' ? 'text-xs' : 'text-sm'}>
-                  {formatMemberCount(community.memberCount)}
-                </span>
+            {/* Stats row — only render if there's an actual count to show.
+             *  In ephemeral mode the dashboard doesn't pass one. */}
+            {(community.memberCount !== undefined || community.onlineCount !== undefined) && (
+              <div className="flex items-center gap-3 mt-2">
+                {community.memberCount !== undefined && community.memberCount > 0 && (
+                  <div className="flex items-center gap-1 text-zinc-400">
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                      <path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z" />
+                    </svg>
+                    <span className={size === 'sm' ? 'text-xs' : 'text-sm'}>
+                      {formatMemberCount(community.memberCount)}
+                    </span>
+                  </div>
+                )}
+                {community.onlineCount !== undefined && (
+                  <div className="flex items-center gap-1 text-emerald-400">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                    <span className={size === 'sm' ? 'text-xs' : 'text-sm'}>
+                      {formatMemberCount(community.onlineCount)} online
+                    </span>
+                  </div>
+                )}
               </div>
+            )}
 
-              {/* Online count */}
-              {community.onlineCount !== undefined && (
-                <div className="flex items-center gap-1 text-emerald-400">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                  <span className={size === 'sm' ? 'text-xs' : 'text-sm'}>
-                    {formatMemberCount(community.onlineCount)} online
-                  </span>
-                </div>
-              )}
-            </div>
-
-            {/* Free to join badge */}
+            {/* Access badge: lock + "Password protected" for private,
+             *  open-door + "Free to join" for public. */}
             <div className="mt-2">
-              <span className={`inline-flex items-center gap-1 ${size === 'sm' ? 'text-xs' : 'text-sm'} text-emerald-400`}>
-                <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                  <path
-                    fillRule="evenodd"
-                    d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-                Free to join
-              </span>
+              {community.isPrivate ? (
+                <span className={`inline-flex items-center gap-1 ${size === 'sm' ? 'text-xs' : 'text-sm'} text-amber-400`}>
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+                  </svg>
+                  Password protected
+                </span>
+              ) : (
+                <span className={`inline-flex items-center gap-1 ${size === 'sm' ? 'text-xs' : 'text-sm'} text-emerald-400`}>
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                    <path
+                      fillRule="evenodd"
+                      d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                  Free to join
+                </span>
+              )}
             </div>
 
             {/* Tags */}

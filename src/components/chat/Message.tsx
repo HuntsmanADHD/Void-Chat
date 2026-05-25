@@ -19,6 +19,8 @@ export interface Reaction {
  */
 export interface MessageSender {
   publicId: string;
+  /** Sender-chosen display name. Falls back to truncated publicId if absent. */
+  displayName?: string;
   avatarUrl?: string | null;
 }
 
@@ -272,8 +274,8 @@ export const Message = React.memo(function Message({
   const { sender, createdAt } = message;
 
   const displayName = useMemo(() => {
-    return truncatePublicId(sender.publicId);
-  }, [sender.publicId]);
+    return sender.displayName?.trim() || truncatePublicId(sender.publicId);
+  }, [sender.displayName, sender.publicId]);
 
   const relativeTime = useMemo(() => formatRelativeTime(createdAt), [createdAt]);
   const fullTimestamp = useMemo(() => formatFullTimestamp(createdAt), [createdAt]);

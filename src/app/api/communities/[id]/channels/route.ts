@@ -15,6 +15,24 @@ import {
   createSuccessResponse,
   OPTIONS,
 } from '@/lib/auth';
+import { verifyPassword } from '@/lib/communityPassword';
+
+async function ensureCommunityAccess(
+  req: NextRequest,
+  communityId: string,
+): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
+  const community = await prisma.community.findUnique({
+    where: { id: communityId },
+    select: { id: true, passwordHash: true },
+  });
+  if (!community) return { ok: false, status: 404, message: 'Community not found' };
+  if (community.passwordHash === null) return { ok: true };
+  const provided = req.headers.get('x-community-password') || '';
+  if (!provided) return { ok: false, status: 401, message: 'Password required' };
+  const valid = await verifyPassword(provided, community.passwordHash);
+  if (!valid) return { ok: false, status: 401, message: 'Invalid password' };
+  return { ok: true };
+}
 
 export { OPTIONS };
 
@@ -23,19 +41,14 @@ interface RouteParams {
 }
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: RouteParams
 ): Promise<Response> {
   try {
     const { id: communityId } = await params;
 
-    const community = await prisma.community.findUnique({
-      where: { id: communityId },
-      select: { id: true },
-    });
-    if (!community) {
-      return createErrorResponse('Community not found', 404);
-    }
+    const access = await ensureCommunityAccess(req, communityId);
+    if (!access.ok) return createErrorResponse(access.message, access.status);
 
     const channels = await prisma.channel.findMany({
       where: { communityId },
@@ -71,13 +84,8 @@ export async function POST(
       );
     }
 
-    const community = await prisma.community.findUnique({
-      where: { id: communityId },
-      select: { id: true },
-    });
-    if (!community) {
-      return createErrorResponse('Community not found', 404);
-    }
+    const access = await ensureCommunityAccess(req, communityId);
+    if (!access.ok) return createErrorResponse(access.message, access.status);
 
     const body = await req.json();
     const name = sanitizeInput(body.name || '', 32);

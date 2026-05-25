@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useToast } from '@/components/ui/Toast';
 
 /**
@@ -98,5 +98,9 @@ export function useApi() {
     [handleError]
   );
 
-  return { get, post, put, delete: del };
+  // Memo the returned object so consumers can safely include `api` in
+  // useEffect deps. Without this the literal `{ get, post, put, delete }`
+  // is a fresh reference every render → effects re-fire every render →
+  // any effect that calls api.get(...) loops forever.
+  return useMemo(() => ({ get, post, put, delete: del }), [get, post, put, del]);
 }

@@ -109,7 +109,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-black">
+    <div className="h-screen overflow-y-auto bg-black">
       <header className="sticky top-0 z-10 bg-zinc-900 border-b border-zinc-800">
         <div className="max-w-3xl mx-auto px-4 py-4 flex items-center gap-4">
           <button
@@ -193,8 +193,16 @@ export default function SettingsPage() {
           </button>
         </SettingsSection>
 
-        <div className="text-center pt-8 pb-16">
+        <div className="text-center pt-8 pb-16 space-y-2">
           <p className="text-sm text-zinc-500">Void Chat v0.1.0 — ephemeral</p>
+          <div className="flex items-center justify-center gap-4 text-xs text-zinc-500">
+            <a href="/how-it-works" className="hover:text-white transition-colors underline">
+              How the encryption works
+            </a>
+            <a href="/wash" className="hover:text-white transition-colors underline">
+              Wash a phrase
+            </a>
+          </div>
         </div>
       </main>
     </div>

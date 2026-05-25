@@ -1,21 +1,20 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Image from 'next/image';
 import {
   Plus,
   Hash,
-  Volume2,
   ChevronDown,
   ChevronRight,
+  Droplets,
   Settings,
-  Mic,
-  MicOff,
-  Headphones,
-  HeadphoneOff,
+  Share2,
+  Trash2,
   X,
 } from 'lucide-react';
 import { Avatar } from '../ui/Avatar';
+import { WashFloating } from '@/components/wash/WashFloating';
 import { truncatePublicId as truncateId } from '@/lib/format';
 
 export interface Community {
@@ -29,7 +28,9 @@ export interface Community {
 export interface Channel {
   id: string;
   name: string;
-  type: 'text' | 'voice';
+  /** Type kept on the interface for future voice support; currently every
+   *  channel renders as text since voice isn't implemented. */
+  type?: 'text' | 'voice';
   unreadCount?: number;
   isActive?: boolean;
 }
@@ -45,10 +46,10 @@ export interface DirectMessage {
 
 export interface CurrentUser {
   publicId: string;
+  /** Local user's chosen display name. Shown in the bottom user panel. */
+  displayName?: string;
   imageUrl?: string | null;
   status?: 'online' | 'idle' | 'dnd' | 'offline';
-  isMuted?: boolean;
-  isDeafened?: boolean;
 }
 
 export interface SidebarProps {
@@ -78,10 +79,10 @@ export interface SidebarProps {
   onAddChannel?: () => void;
   /** User settings handler */
   onUserSettings?: () => void;
-  /** Toggle mute handler */
-  onToggleMute?: () => void;
-  /** Toggle deafen handler */
-  onToggleDeafen?: () => void;
+  /** Per-community menu actions, exposed in a dropdown on the header next to
+   *  the community name. Pages provide these when they have an active community. */
+  onCopyInviteLink?: () => void;
+  onDeleteCommunity?: () => void;
   /** Mobile close handler */
   onMobileClose?: () => void;
   /** Whether sidebar is in mobile mode */
@@ -102,17 +103,33 @@ export const Sidebar = React.memo(function Sidebar({
   onAddCommunity,
   onAddChannel,
   onUserSettings,
-  onToggleMute,
-  onToggleDeafen,
+  onCopyInviteLink,
+  onDeleteCommunity,
   onMobileClose,
   isMobile = false,
 }: SidebarProps) {
   const [channelsExpanded, setChannelsExpanded] = useState(true);
   const [dmsExpanded, setDmsExpanded] = useState(true);
+  const [communityMenuOpen, setCommunityMenuOpen] = useState(false);
+  const [washOpen, setWashOpen] = useState(false);
+  const communityMenuRef = useRef<HTMLDivElement>(null);
 
-  // Group channels by category (for now, just one group)
-  const textChannels = channels.filter((c) => c.type === 'text');
-  const voiceChannels = channels.filter((c) => c.type === 'voice');
+  // Close the community menu on outside click.
+  useEffect(() => {
+    if (!communityMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!communityMenuRef.current?.contains(e.target as Node)) {
+        setCommunityMenuOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', onDown);
+    return () => window.removeEventListener('mousedown', onDown);
+  }, [communityMenuOpen]);
+
+  // Voice channels aren't implemented yet — every channel renders under
+  // "Text Channels". Once voice ships, restore the `c.type === 'voice'`
+  // bucket and the corresponding render section below.
+  const textChannels = channels;
 
   return (
     <div className="flex h-full">
@@ -190,10 +207,12 @@ export const Sidebar = React.memo(function Sidebar({
             {activeCommunityId !== community.id && (
               <span className="server-icon-indicator h-0 group-hover:h-5 top-3.5" />
             )}
-            {/* Notification badge */}
-            {community.unreadCount && community.unreadCount > 0 && (
+            {/* Notification badge. Note: `count && count > 0` evaluates to
+                `0` when count is 0, which React renders as literal text "0".
+                Use an explicit comparison so the falsy branch is boolean false. */}
+            {(community.unreadCount ?? 0) > 0 && (
               <span className="absolute -bottom-1 -right-1 min-w-[18px] h-[18px] flex items-center justify-center px-1 text-xs font-bold bg-[var(--accent-danger)] text-white rounded-full">
-                {community.unreadCount > 99 ? '99+' : community.unreadCount}
+                {community.unreadCount! > 99 ? '99+' : community.unreadCount}
               </span>
             )}
             {/* Tooltip */}
@@ -235,9 +254,59 @@ export const Sidebar = React.memo(function Sidebar({
               Direct Messages
             </h2>
           ) : (
-            <h2 className="font-semibold text-[var(--text-primary)] truncate">
-              {communities.find((c) => c.id === activeCommunityId)?.name || 'Community'}
-            </h2>
+            // Inside a community: clickable header → dropdown with per-community
+            // actions (invite, delete). Only renders chevron if the parent
+            // provided at least one action handler.
+            <div className="relative flex-1 min-w-0" ref={communityMenuRef}>
+              <button
+                onClick={() => {
+                  if (onCopyInviteLink || onDeleteCommunity) {
+                    setCommunityMenuOpen((v) => !v);
+                  }
+                }}
+                className="flex items-center gap-1 min-w-0 w-full text-left hover:opacity-80 transition-opacity"
+              >
+                <span className="font-semibold text-[var(--text-primary)] truncate">
+                  {communities.find((c) => c.id === activeCommunityId)?.name || 'Community'}
+                </span>
+                {(onCopyInviteLink || onDeleteCommunity) && (
+                  <ChevronDown
+                    size={16}
+                    className={`flex-shrink-0 text-zinc-500 transition-transform ${
+                      communityMenuOpen ? 'rotate-180' : ''
+                    }`}
+                  />
+                )}
+              </button>
+              {communityMenuOpen && (
+                <div className="absolute top-full left-0 mt-1 w-56 bg-zinc-900 border border-zinc-800 rounded-lg shadow-2xl shadow-black/50 py-1 z-30">
+                  {onCopyInviteLink && (
+                    <button
+                      onClick={() => {
+                        onCopyInviteLink();
+                        setCommunityMenuOpen(false);
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors"
+                    >
+                      <Share2 size={14} />
+                      Copy invite link
+                    </button>
+                  )}
+                  {onDeleteCommunity && (
+                    <button
+                      onClick={() => {
+                        onDeleteCommunity();
+                        setCommunityMenuOpen(false);
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-400 hover:bg-red-900/30 transition-colors"
+                    >
+                      <Trash2 size={14} />
+                      Delete community
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           )}
           {isMobile && (
             <button
@@ -307,7 +376,7 @@ export const Sidebar = React.memo(function Sidebar({
                           {truncateId(dm.recipientId)}
                         </span>
                       </div>
-                      {dm.unreadCount && dm.unreadCount > 0 && (
+                      {(dm.unreadCount ?? 0) > 0 && (
                         <span className="min-w-[18px] h-[18px] flex items-center justify-center px-1 text-xs font-bold bg-[var(--accent-danger)] text-white rounded-full">
                           {dm.unreadCount}
                         </span>
@@ -365,7 +434,7 @@ export const Sidebar = React.memo(function Sidebar({
                     >
                       <Hash size={18} className="flex-shrink-0 opacity-60" />
                       <span className="flex-1 truncate">{channel.name}</span>
-                      {channel.unreadCount && channel.unreadCount > 0 && (
+                      {(channel.unreadCount ?? 0) > 0 && (
                         <span className="min-w-[18px] h-[18px] flex items-center justify-center px-1 text-xs font-bold bg-[var(--accent-danger)] text-white rounded-full">
                           {channel.unreadCount}
                         </span>
@@ -375,37 +444,6 @@ export const Sidebar = React.memo(function Sidebar({
                 </div>
               )}
 
-              {/* Voice Channels */}
-              {voiceChannels.length > 0 && (
-                <>
-                  <div className="section-header group mt-4">
-                    <div className="flex items-center gap-1">
-                      <ChevronDown size={12} />
-                      <span>Voice Channels</span>
-                    </div>
-                  </div>
-                  <div className="space-y-0.5">
-                    {voiceChannels.map((channel) => (
-                      <div
-                        key={channel.id}
-                        className={`channel-item ${channel.isActive ? 'active' : ''}`}
-                        onClick={() => onSelectChannel?.(channel.id)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            onSelectChannel?.(channel.id);
-                          }
-                        }}
-                        role="button"
-                        tabIndex={0}
-                      >
-                        <Volume2 size={18} className="flex-shrink-0 opacity-60" />
-                        <span className="flex-1 truncate">{channel.name}</span>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              )}
             </>
           )}
         </div>
@@ -425,7 +463,7 @@ export const Sidebar = React.memo(function Sidebar({
                 className="text-sm font-medium text-[var(--text-primary)] truncate"
                 title={currentUser.publicId}
               >
-                {truncateId(currentUser.publicId)}
+                {currentUser.displayName?.trim() || truncateId(currentUser.publicId)}
               </p>
               <p className="text-xs text-[var(--text-muted)] truncate">
                 {currentUser.status === 'online' ? 'Online' : currentUser.status}
@@ -433,41 +471,24 @@ export const Sidebar = React.memo(function Sidebar({
             </div>
           </div>
 
-          {/* Voice controls */}
-          <div className="flex items-center gap-1">
-            <button
-              onClick={onToggleMute}
-              className={`p-1.5 rounded transition-colors ${
-                currentUser.isMuted
-                  ? 'bg-[var(--accent-danger)] text-white'
-                  : 'hover:bg-[var(--discord-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
-              }`}
-              aria-label={currentUser.isMuted ? 'Unmute' : 'Mute'}
-              title={currentUser.isMuted ? 'Unmute' : 'Mute'}
-            >
-              {currentUser.isMuted ? <MicOff size={18} /> : <Mic size={18} />}
-            </button>
-            <button
-              onClick={onToggleDeafen}
-              className={`p-1.5 rounded transition-colors ${
-                currentUser.isDeafened
-                  ? 'bg-[var(--accent-danger)] text-white'
-                  : 'hover:bg-[var(--discord-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
-              }`}
-              aria-label={currentUser.isDeafened ? 'Undeafen' : 'Deafen'}
-              title={currentUser.isDeafened ? 'Undeafen' : 'Deafen'}
-            >
-              {currentUser.isDeafened ? <HeadphoneOff size={18} /> : <Headphones size={18} />}
-            </button>
-            <button
-              className="p-1.5 rounded hover:bg-[var(--discord-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-              onClick={onUserSettings}
-              aria-label="User Settings"
-            >
-              <Settings size={18} />
-            </button>
-          </div>
+          <button
+            className="p-1.5 rounded hover:bg-[var(--discord-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+            onClick={() => setWashOpen(true)}
+            aria-label="Wash a phrase"
+            title="Wash — off-Void encryption tool"
+          >
+            <Droplets size={18} />
+          </button>
+          <button
+            className="p-1.5 rounded hover:bg-[var(--discord-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+            onClick={onUserSettings}
+            aria-label="User Settings"
+          >
+            <Settings size={18} />
+          </button>
         </div>
+
+        <WashFloating isOpen={washOpen} onClose={() => setWashOpen(false)} />
       </div>
     </div>
   );

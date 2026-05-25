@@ -8,6 +8,8 @@ import { truncatePublicId } from '@/lib/format';
 export interface Member {
   id: string;
   publicId: string;
+  /** Sender-chosen display name. Falls back to truncated publicId if absent. */
+  displayName?: string;
   imageUrl?: string | null;
   status?: 'online' | 'idle' | 'dnd' | 'offline';
   role?: 'OWNER' | 'MEMBER';
@@ -66,7 +68,7 @@ const MemberItem = React.memo(function MemberItem({
             className="text-sm text-[var(--text-secondary)] truncate group-hover:text-[var(--text-primary)]"
             title={member.publicId}
           >
-            {truncatePublicId(member.publicId)}
+            {member.displayName?.trim() || truncatePublicId(member.publicId)}
           </span>
         </div>
       </div>

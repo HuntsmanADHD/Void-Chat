@@ -19,6 +19,11 @@ import {
   createSuccessResponse,
   OPTIONS,
 } from '@/lib/auth';
+import {
+  COMMUNITY_PASSWORD_MAX_LEN,
+  COMMUNITY_PASSWORD_MIN_LEN,
+  hashPassword,
+} from '@/lib/communityPassword';
 
 export { OPTIONS };
 
@@ -41,12 +46,16 @@ export async function GET(req: NextRequest): Promise<Response> {
     ]);
 
     return createSuccessResponse({
+      // Never leak the password hash. Surface only the boolean fact that a
+      // community is private — clients prompt the user for a password before
+      // hitting the per-community GET.
       communities: communities.map((c) => ({
         id: c.id,
         name: c.name,
         description: c.description,
         avatar: c.avatar,
         channelCount: c._count.channels,
+        isPrivate: c.passwordHash !== null,
         createdAt: c.createdAt.toISOString(),
       })),
       total,
@@ -71,13 +80,31 @@ export async function POST(req: NextRequest): Promise<Response> {
     const body = await req.json();
     const name = sanitizeInput(body.name || '', 64);
     const description = body.description ? sanitizeInput(body.description, 500) : null;
-    const avatar = body.avatar ? sanitizeInput(body.avatar, 512) : null;
+    // Avatar is a base64 data URL of a client-side-resized 256x256 JPEG.
+    // Headroom for the resized image + the `data:image/jpeg;base64,` prefix.
+    // Larger uploads are bounded both here and by the client downscaler.
+    const avatar = body.avatar ? sanitizeInput(body.avatar, 256 * 1024) : null;
+    const rawPassword = typeof body.password === 'string' ? body.password : '';
 
     if (name.length < 2 || name.length > 64) {
       return createErrorResponse('Community name must be 2–64 characters', 400);
     }
     if (!/^[a-zA-Z0-9 _-]+$/.test(name)) {
       return createErrorResponse('Community name may only contain letters, numbers, spaces, _ and -', 400);
+    }
+
+    let passwordHash: string | null = null;
+    if (rawPassword) {
+      if (
+        rawPassword.length < COMMUNITY_PASSWORD_MIN_LEN ||
+        rawPassword.length > COMMUNITY_PASSWORD_MAX_LEN
+      ) {
+        return createErrorResponse(
+          `Password must be ${COMMUNITY_PASSWORD_MIN_LEN}–${COMMUNITY_PASSWORD_MAX_LEN} characters`,
+          400,
+        );
+      }
+      passwordHash = await hashPassword(rawPassword);
     }
 
     let community;
@@ -87,6 +114,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           name,
           description,
           avatar,
+          passwordHash,
           channels: {
             create: [{ name: 'general', isDefault: true }],
           },
@@ -106,6 +134,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         name: community.name,
         description: community.description,
         avatar: community.avatar,
+        isPrivate: community.passwordHash !== null,
         channels: community.channels.map((ch) => ({
           id: ch.id,
           name: ch.name,

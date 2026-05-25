@@ -49,10 +49,9 @@ export interface AppLayoutProps {
   onAddChannel?: () => void;
   /** User settings handler */
   onUserSettings?: () => void;
-  /** Toggle mute handler */
-  onToggleMute?: () => void;
-  /** Toggle deafen handler */
-  onToggleDeafen?: () => void;
+  /** Community menu actions (sidebar header dropdown) */
+  onCopyInviteLink?: () => void;
+  onDeleteCommunity?: () => void;
   /** Open search */
   onOpenSearch?: () => void;
   /** Open notifications */
@@ -87,8 +86,8 @@ export const AppLayout = React.memo(function AppLayout({
   onAddCommunity,
   onAddChannel,
   onUserSettings,
-  onToggleMute,
-  onToggleDeafen,
+  onCopyInviteLink,
+  onDeleteCommunity,
   onOpenSearch,
   onOpenNotifications,
   onOpenSettings,
@@ -167,8 +166,8 @@ export const AppLayout = React.memo(function AppLayout({
           onAddCommunity={onAddCommunity}
           onAddChannel={onAddChannel}
           onUserSettings={onUserSettings}
-          onToggleMute={onToggleMute}
-          onToggleDeafen={onToggleDeafen}
+          onCopyInviteLink={onCopyInviteLink}
+          onDeleteCommunity={onDeleteCommunity}
           onMobileClose={closeMobileSidebar}
           isMobile={mobileSidebarOpen}
         />
