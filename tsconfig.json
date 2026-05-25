@@ -42,5 +42,5 @@
     }
   },
   "include": ["next-env.d.ts", "src/**/*.ts", "src/**/*.tsx", ".next/types/**/*.ts", "prisma/**/*.ts", "server/socket-server.ts"],
-  "exclude": ["node_modules", ".next", "out", "dist", "client"]
+  "exclude": ["node_modules", ".next", "out", "dist"]
 }

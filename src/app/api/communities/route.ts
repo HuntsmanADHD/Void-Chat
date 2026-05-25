@@ -18,7 +18,7 @@ import {
   createErrorResponse,
   createSuccessResponse,
   OPTIONS,
-} from '@/lib/auth';
+} from '@/lib/api';
 import {
   COMMUNITY_PASSWORD_MAX_LEN,
   COMMUNITY_PASSWORD_MIN_LEN,

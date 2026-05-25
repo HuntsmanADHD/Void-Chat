@@ -5,7 +5,6 @@
 .yarn/install-state.gz
 node_modules
 data
-client
 **/dist
 **/node_modules
 .env
@@ -13,7 +12,5 @@ client
 .env.*.local
 *.tsbuildinfo
 README.md
-PROGRESS.md
-SECURITY_AUDIT.md
 images
 .eslintcache

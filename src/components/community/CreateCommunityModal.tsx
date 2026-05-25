@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
-import { useBackdropClose } from '@/components/ui/useBackdropClose';
+import { useBackdropClose } from '@/hooks/useBackdropClose';
 
 const createCommunityFormSchema = z.object({
   name: z.string().min(2).max(64).regex(/^[a-zA-Z0-9 _-]+$/),
