@@ -2,15 +2,13 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// SQLite chosen for the self-host model: zero-config, single file lives
+// next to the binary, trivial to back up (copy the .db file). The schema
+// only holds the community/channel directory — no message data, no users.
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
-
-// Ephemeral identity model: server holds room structure only.
-// No users, no memberships, no moderation tables. Sessions live in client
-// memory; community membership is implicit (you're "in" a room as long as
-// your socket is connected to its channel).
 
 model Community {
   id          String   @id @default(cuid())

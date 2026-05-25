@@ -1,56 +1,23 @@
 import type { Metadata } from 'next';
-import localFont from 'next/font/local';
+import { Inter, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import { AppProviders } from '@/components/providers/AppProviders';
 
-const geistSans = localFont({
-  src: './fonts/GeistVF.woff',
+// Geist isn't in next/font/google for Next 14. Inter + JetBrains Mono are
+// close visual matches and have been stable since Next 13.
+const geistSans = Inter({
+  subsets: ['latin'],
   variable: '--font-geist-sans',
-  weight: '100 900',
 });
 
-const geistMono = localFont({
-  src: './fonts/GeistMonoVF.woff',
+const geistMono = JetBrains_Mono({
+  subsets: ['latin'],
   variable: '--font-geist-mono',
-  weight: '100 900',
 });
 
 export const metadata: Metadata = {
-  title: 'Void Chat - Private Messaging',
-  description:
-    'Privacy-first messenger with end-to-end encryption, communities, and P2P messaging. Zero-knowledge architecture.',
-  keywords: [
-    'messenger',
-    'encrypted',
-    'private',
-    'p2p',
-    'zero-knowledge',
-    'void-chat',
-  ],
-  authors: [{ name: 'Void Chat Team' }],
-  creator: 'Void Chat',
-  openGraph: {
-    type: 'website',
-    locale: 'en_US',
-    url: 'https://voidchat.app',
-    title: 'Void Chat - Private Messaging',
-    description:
-      'Privacy-first messenger with end-to-end encryption, communities, and P2P messaging.',
-    siteName: 'Void Chat',
-  },
-  twitter: {
-    card: 'summary_large_image',
-    title: 'Void Chat - Private Messaging',
-    description:
-      'Privacy-first messenger with end-to-end encryption, communities, and P2P messaging.',
-    creator: '@voidchatapp',
-  },
-  icons: {
-    icon: '/favicon.ico',
-    shortcut: '/favicon-16x16.png',
-    apple: '/apple-touch-icon.png',
-  },
-  manifest: '/site.webmanifest',
+  title: 'Void Chat',
+  description: 'Self-hosted ephemeral messaging. What\'s said in the void stays in the void.',
 };
 
 export default function RootLayout({

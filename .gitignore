@@ -52,3 +52,8 @@ yarn-error.log*
 next-env.d.ts
 
 /src/generated/prisma
+
+# SQLite runtime data (self-host)
+/data/
+*.db
+*.db-journal

@@ -35,7 +35,14 @@ import {
 // ── Config ─────────────────────────────────────────────────────────────────
 
 const PORT = process.env['SOCKET_PORT'] ? parseInt(process.env['SOCKET_PORT'], 10) : 3001;
-const CORS_ORIGIN = process.env['CORS_ORIGIN'] || 'http://localhost:3000';
+
+// Self-host typically has several valid origins (localhost, LAN IP, .local
+// hostname). Accept a comma-separated list. The literal "*" disables the
+// allowlist entirely — convenient for LAN-only setups where you don't care
+// what address your friends type, but DO NOT use over the internet.
+const CORS_RAW = process.env['CORS_ORIGIN'] || 'http://localhost:3000';
+const CORS_ALLOW_ANY = CORS_RAW.trim() === '*';
+const CORS_ORIGIN_LIST = CORS_RAW.split(',').map(s => s.trim()).filter(Boolean);
 
 const ANNOUNCE_MAX_SKEW_MS = 5 * 60 * 1000;
 const RATE_WINDOW_MS = 60_000;
@@ -147,7 +154,11 @@ function verifyAnnounceSignature(
 
 const httpServer = createServer();
 const io = new Server(httpServer, {
-  cors: { origin: CORS_ORIGIN, methods: ['GET', 'POST'], credentials: true },
+  cors: {
+    origin: CORS_ALLOW_ANY ? true : CORS_ORIGIN_LIST,
+    methods: ['GET', 'POST'],
+    credentials: true,
+  },
   pingTimeout: 60_000,
   pingInterval: 25_000,
 });
@@ -398,7 +409,9 @@ setInterval(() => {
 }, RATE_WINDOW_MS);
 
 httpServer.listen(PORT, () => {
-  console.log(`[void-relay] listening on :${PORT} (CORS: ${CORS_ORIGIN})`);
+  console.log(
+    `[void-relay] listening on :${PORT} (CORS: ${CORS_ALLOW_ANY ? '* (any origin)' : CORS_ORIGIN_LIST.join(', ')})`,
+  );
 });
 
 function shutdown(sig: string) {

@@ -74,9 +74,28 @@ interface ChannelEntry {
   roster: Map<string, RosterMember>; // keyed by boxPublicKey
 }
 
-const DEFAULT_URL =
-  (typeof process !== 'undefined' && process.env['NEXT_PUBLIC_SOCKET_URL']) ||
-  'http://localhost:3001';
+const RELAY_PORT = 3001;
+
+/**
+ * Resolve the relay URL for this client.
+ *
+ * Priority:
+ *   1. `NEXT_PUBLIC_VOID_RELAY_URL` env override (for deploys that proxy
+ *      the relay through a non-default host/path, e.g. `wss://alice.tld/ws`).
+ *   2. Same-origin + `:3001`. This is the right answer for almost every
+ *      self-host setup: the web app and the relay run on the same machine,
+ *      so the client just talks to whatever host the browser loaded from.
+ *   3. `http://localhost:3001` as the SSR/test fallback (when `window` is
+ *      undefined). The real value is recomputed on the client once mounted.
+ */
+function resolveRelayUrl(): string {
+  const override =
+    typeof process !== 'undefined' && process.env['NEXT_PUBLIC_VOID_RELAY_URL'];
+  if (override) return override;
+  if (typeof window === 'undefined') return `http://localhost:${RELAY_PORT}`;
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${window.location.hostname}:${RELAY_PORT}`;
+}
 
 class RealtimeClient {
   private socket: Socket | null = null;
@@ -98,7 +117,7 @@ class RealtimeClient {
   private stateListeners = new Set<StateListener>();
   private offlineDMListeners = new Set<OfflineDMListener>();
 
-  init(session: Session, url: string = DEFAULT_URL): void {
+  init(session: Session, url: string = resolveRelayUrl()): void {
     const keypairChanged =
       this.session && this.session.boxPublicKey !== session.boxPublicKey;
     const nameChanged =
