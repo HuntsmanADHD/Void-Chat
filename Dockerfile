@@ -58,21 +58,26 @@ COPY --from=builder --chown=voidchat:nodejs /app/node_modules/socket.io ./node_m
 COPY --from=builder --chown=voidchat:nodejs /app/node_modules/tweetnacl ./node_modules/tweetnacl
 COPY --from=builder --chown=voidchat:nodejs /app/node_modules/bs58 ./node_modules/bs58
 
-# Prisma client + schema (so the web container can talk to SQLite).
+# Prisma schema + generated client + CLI. We need the CLI (`node_modules/prisma`)
+# because the web container runs `prisma db push --skip-generate` on every
+# start — idempotent, creates SQLite tables on first boot, no-op on later boots.
 COPY --from=builder --chown=voidchat:nodejs /app/prisma ./prisma
 COPY --from=builder --chown=voidchat:nodejs /app/node_modules/@prisma ./node_modules/@prisma
 COPY --from=builder --chown=voidchat:nodejs /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder --chown=voidchat:nodejs /app/node_modules/prisma ./node_modules/prisma
 
 USER voidchat
 
-# data/ is mounted at runtime as a volume — created here as a placeholder so
-# the path resolves before the volume mount populates it.
+# data/ is a Docker-managed volume mount in compose. Pre-creating the
+# directory here just means the path exists if someone runs the image
+# without mounting anything.
 RUN mkdir -p /app/data
 
-# tini reaps zombies and handles SIGTERM properly so docker stop is graceful.
+# tini reaps zombies and forwards SIGTERM so `docker stop` is graceful.
 ENTRYPOINT ["/sbin/tini", "--"]
 
-# Default command runs the Next server. docker-compose overrides this for
-# the relay container.
+# Default command runs Next after a no-op-on-rerun schema sync. Compose
+# overrides this for the relay container (which doesn't need the schema).
+# `exec` ensures node replaces sh, so signals reach node directly.
 EXPOSE 3000
-CMD ["node", "server.js"]
+CMD ["sh", "-c", "node node_modules/prisma/build/index.js db push --skip-generate && exec node server.js"]

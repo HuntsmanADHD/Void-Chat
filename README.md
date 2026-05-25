@@ -36,7 +36,21 @@ docker compose up -d
 
 Open <http://localhost:3000>. That's it.
 
-The web app is on `:3000`, the relay on `:3001`. Your data lives in `./data/voidchat.db`. Back up that file to back up your server.
+The web app is on `:3000`, the relay on `:3001`. Your data lives in a Docker named volume (`voidchat_data`).
+
+**Back up your server:**
+```bash
+docker run --rm -v voidchat_data:/data -v "$(pwd)":/backup alpine \
+  cp /data/voidchat.db /backup/voidchat-backup.db
+```
+
+**Restore from backup:**
+```bash
+docker compose down
+docker run --rm -v voidchat_data:/data -v "$(pwd)":/backup alpine \
+  cp /backup/voidchat-backup.db /data/voidchat.db
+docker compose up -d
+```
 
 ### Without Docker
 
@@ -79,7 +93,8 @@ You can be in someone else's server without ever running your own — being a ho
 `.env` — most setups only touch the first two:
 
 ```bash
-# Where the SQLite file lives. The default puts it next to the binary.
+# Where the SQLite file lives. Inside the Docker container the path resolves
+# to /app/data/voidchat.db (mapped to the `voidchat_data` named volume).
 DATABASE_URL="file:../data/voidchat.db"
 
 # Origins the relay accepts WebSocket connections from. Comma-separated.

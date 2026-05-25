@@ -19,7 +19,8 @@ import { io as ioClient, type Socket } from 'socket.io-client';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 
-import { openFromSender, sealForRecipient } from './encryption';
+import { MAX_PLAINTEXT_BYTES, openFromSender, sealForRecipient } from './encryption';
+import { appendChannel as storeAppendChannel, appendDM as storeAppendDM, setActiveSession } from './messageStore';
 import type { Session } from '@/types/session';
 import {
   WIRE,
@@ -107,9 +108,13 @@ class RealtimeClient {
   /**
    * Long-lived cache of peers we've ever observed (in a channel roster or
    * as a message sender). Lets DM lookups by signing key survive leaving
-   * the channel where we discovered them.
+   * the channel where we discovered them. Capped via LRU eviction — at
+   * 500 entries we keep the 500 most-recently-seen peers and let the
+   * older ones fall off. Insertion order of `Map` is the iteration order,
+   * so re-inserting on touch is enough.
    */
   private peerCache = new Map<string, RosterMember>();
+  private static readonly PEER_CACHE_MAX = 500;
 
   private channelMessageListeners = new Set<ChannelMessageListener>();
   private dmMessageListeners = new Set<DMMessageListener>();
@@ -137,6 +142,12 @@ class RealtimeClient {
     }
 
     this.session = session;
+    // Bind the persistence layer to this session. Errors here are
+    // non-fatal — the chat works without history in private-mode
+    // browsers that block IndexedDB.
+    void setActiveSession(session.boxPublicKey).catch((err) => {
+      console.warn('[realtime] could not bind messageStore', err);
+    });
     if (this.socket) return;
 
     this.setState('connecting');
@@ -191,7 +202,22 @@ class RealtimeClient {
       }
     }
     const cached = this.peerCache.get(signingPublicKey);
-    return cached ? cached.boxPublicKey : null;
+    if (!cached) return null;
+    // Touch on hit so an actively-used peer doesn't get evicted.
+    this.peerCache.delete(signingPublicKey);
+    this.peerCache.set(signingPublicKey, cached);
+    return cached.boxPublicKey;
+  }
+
+  private rememberPeer(member: RosterMember): void {
+    // Re-insert to push to the back of the iteration order (LRU touch).
+    this.peerCache.delete(member.signingPublicKey);
+    this.peerCache.set(member.signingPublicKey, member);
+    while (this.peerCache.size > RealtimeClient.PEER_CACHE_MAX) {
+      const oldest = this.peerCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.peerCache.delete(oldest);
+    }
   }
 
   joinChannel(channelId: string): void {
@@ -201,9 +227,9 @@ class RealtimeClient {
       this.channels.set(channelId, entry);
     }
     entry.refCount += 1;
-    // Only emit join the first time the ref count goes positive — or if
-    // we reconnected and need to re-join. `state === 'ready'` gates the
-    // emit; otherwise reconnect-replay will catch it.
+    // Only emit join the first time the ref count goes positive. If we're
+    // mid-handshake the SESSION_ACK handler will replay every channel we've
+    // got refs for, so a pre-ready join lands on reconnect for free.
     if (entry.refCount === 1 && this.state === 'ready' && this.socket) {
       this.socket.emit(WIRE.CHANNEL_JOIN, { channelId });
     }
@@ -223,24 +249,19 @@ class RealtimeClient {
   async sendChannelMessage(channelId: string, plaintext: string): Promise<boolean> {
     const entry = this.channels.get(channelId);
     if (!entry || !this.session || !this.socket || this.state !== 'ready') return false;
-
-    const recipients = Array.from(entry.roster.values()).filter(
-      (m) => m.boxPublicKey !== this.session!.boxPublicKey,
-    );
-    // Empty roster (only us) → no-op success: nobody to deliver to. Still
-    // counts as "sent" from the caller's perspective.
-    if (recipients.length === 0) return true;
+    // Reject oversize input once, up front, instead of running the per-recipient
+    // seal loop N times and watching every call fail.
+    if (new TextEncoder().encode(plaintext).length > MAX_PLAINTEXT_BYTES) return false;
 
     const sealed: ChannelSendMessage = {
       channelId,
       recipients: [],
     };
-    for (const member of recipients) {
-      const out = sealForRecipient(
-        plaintext,
-        member.boxPublicKey,
-        this.session.boxSecretKey,
-      );
+    let hadAnyRecipient = false;
+    for (const member of entry.roster.values()) {
+      if (member.boxPublicKey === this.session.boxPublicKey) continue; // skip self
+      hadAnyRecipient = true;
+      const out = sealForRecipient(plaintext, member.boxPublicKey, this.session.boxSecretKey);
       if (!out) continue;
       sealed.recipients.push({
         boxPublicKey: member.boxPublicKey,
@@ -248,6 +269,9 @@ class RealtimeClient {
         nonce: out.nonce,
       });
     }
+    // Channel of one (only us) — nothing to send, but the caller's optimistic
+    // append already landed, so report success.
+    if (!hadAnyRecipient) return true;
     if (sealed.recipients.length === 0) return false;
     this.socket.emit(WIRE.CHANNEL_SEND, sealed);
     return true;
@@ -336,7 +360,7 @@ class RealtimeClient {
       entry.roster.clear();
       for (const m of raw.members) {
         entry.roster.set(m.boxPublicKey, m);
-        this.peerCache.set(m.signingPublicKey, m);
+        this.rememberPeer(m);
       }
       this.emitRoster(raw.channelId);
     });
@@ -345,7 +369,7 @@ class RealtimeClient {
       const entry = this.channels.get(raw.channelId);
       if (!entry) return;
       entry.roster.set(raw.member.boxPublicKey, raw.member);
-      this.peerCache.set(raw.member.signingPublicKey, raw.member);
+      this.rememberPeer(raw.member);
       this.emitRoster(raw.channelId);
     });
 
@@ -371,7 +395,7 @@ class RealtimeClient {
       );
       if (plaintext === null) return; // drop unauthenticated/tampered messages silently
       // Remember the sender so DM lookups still work after we leave this channel.
-      this.peerCache.set(raw.senderSigningPublicKey, {
+      this.rememberPeer({
         signingPublicKey: raw.senderSigningPublicKey,
         boxPublicKey: raw.senderBoxPublicKey,
         displayName: raw.senderDisplayName,
@@ -385,6 +409,14 @@ class RealtimeClient {
         senderDisplayName: raw.senderDisplayName,
         plaintext,
       };
+      void storeAppendChannel(raw.channelId, {
+        id: raw.msgId,
+        ts: raw.ts,
+        senderSigningPublicKey: raw.senderSigningPublicKey,
+        senderBoxPublicKey: raw.senderBoxPublicKey,
+        senderDisplayName: raw.senderDisplayName,
+        plaintext,
+      });
       for (const fn of this.channelMessageListeners) fn(decoded);
     });
 
@@ -397,7 +429,7 @@ class RealtimeClient {
         this.session.boxSecretKey,
       );
       if (plaintext === null) return;
-      this.peerCache.set(raw.senderSigningPublicKey, {
+      this.rememberPeer({
         signingPublicKey: raw.senderSigningPublicKey,
         boxPublicKey: raw.senderBoxPublicKey,
         displayName: raw.senderDisplayName,
@@ -410,6 +442,14 @@ class RealtimeClient {
         senderDisplayName: raw.senderDisplayName,
         plaintext,
       };
+      void storeAppendDM(raw.senderSigningPublicKey, {
+        id: raw.msgId,
+        ts: raw.ts,
+        senderSigningPublicKey: raw.senderSigningPublicKey,
+        senderBoxPublicKey: raw.senderBoxPublicKey,
+        senderDisplayName: raw.senderDisplayName,
+        plaintext,
+      });
       for (const fn of this.dmMessageListeners) fn(decoded);
     });
 

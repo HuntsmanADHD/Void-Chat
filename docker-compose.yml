@@ -27,7 +27,9 @@ services:
     ports:
       - "${WEB_PORT:-3000}:3000"
     volumes:
-      - ./data:/app/data
+      # Named volume → Docker manages permissions; no UID-mismatch pain when
+      # bind-mounting on Linux. To back up: see README.
+      - voidchat_data:/app/data
     depends_on:
       - relay
 
@@ -37,6 +39,7 @@ services:
     image: voidchat:latest
     container_name: voidchat-relay
     restart: unless-stopped
+    # Skip the schema-push prelude — relay never touches the DB.
     command: ["node", "node_modules/tsx/dist/cli.mjs", "server/socket-server.ts"]
     environment:
       SOCKET_PORT: 3001
@@ -46,3 +49,6 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
     ports:
       - "${RELAY_PORT:-3001}:3001"
+
+volumes:
+  voidchat_data:
