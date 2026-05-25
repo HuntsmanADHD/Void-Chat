@@ -15,6 +15,11 @@ model Community {
   name        String   @unique
   description String?
   avatar      String?
+  // Scrypt-derived hash + salt for private communities. Null = public.
+  // Format: "salt:derivedKey" (both hex). Set at create time, never updated.
+  // Recovery is not possible — losing the password orphans the community
+  // (the server owner can still delete the row via the SQLite file).
+  passwordHash String?
   createdAt   DateTime @default(now())
 
   channels Channel[]

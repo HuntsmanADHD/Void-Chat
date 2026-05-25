@@ -9,6 +9,7 @@ import {
   Check,
 } from 'lucide-react';
 import { Avatar } from './Avatar';
+import { useBackdropClose } from './useBackdropClose';
 
 export interface UserProfileData {
   id: string;
@@ -95,15 +96,9 @@ export function UserProfileModal({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
-  // Handle backdrop click
-  const handleBackdropClick = useCallback(
-    (e: React.MouseEvent) => {
-      if (e.target === e.currentTarget) {
-        onClose();
-      }
-    },
-    [onClose]
-  );
+  // Use the shared backdrop-close pattern so text selection that ends on
+  // the backdrop doesn't unintentionally close the modal.
+  const backdrop = useBackdropClose(onClose);
 
   // Copy public ID
   const handleCopyId = useCallback(async () => {
@@ -133,7 +128,7 @@ export function UserProfileModal({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
-      onClick={handleBackdropClick}
+      {...backdrop}
     >
       <div
         onClick={(e) => e.stopPropagation()}

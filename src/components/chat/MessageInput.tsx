@@ -1,9 +1,11 @@
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect, KeyboardEvent } from 'react';
+import { Droplets } from 'lucide-react';
 import { FileUploadButton } from './FileUploadButton';
 import { FilePreview } from './FilePreview';
 import { EmojiPicker } from './EmojiPicker';
+import { WashModal } from '@/components/wash/WashModal';
 import { useHarmonicTyping } from '@/hooks/useHarmonicTyping';
 import type { ScanStatus } from '@/types/api';
 
@@ -215,6 +217,7 @@ export function MessageInput({
 }: MessageInputProps) {
   const [message, setMessage] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showWashModal, setShowWashModal] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const emojiButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -377,7 +380,7 @@ export function MessageInput({
           />
         )}
 
-        <div className="flex items-end gap-3 bg-zinc-900/80 rounded-lg px-4 py-2 border border-zinc-800/50">
+        <div className="flex items-center gap-3 bg-zinc-900/80 rounded-lg px-4 py-2 border border-zinc-800/50">
           {/* File upload button - always visible */}
           <FileUploadButton
             onFileSelect={handleFileSelect}
@@ -421,6 +424,16 @@ export function MessageInput({
             )}
           </button>
 
+          {/* Wash button — opens the off-Void encryption tool */}
+          <button
+            type="button"
+            onClick={() => setShowWashModal(true)}
+            className="p-1 text-zinc-600 hover:text-zinc-400 transition-colors flex-shrink-0"
+            title="Wash a phrase or invite code (off-Void encryption layer)"
+          >
+            <Droplets className="w-5 h-5" />
+          </button>
+
           {/* Emoji button */}
           <div className="relative">
             <button
@@ -460,7 +473,7 @@ export function MessageInput({
             placeholder={placeholder}
             disabled={disabled || isSending}
             rows={1}
-            className="flex-1 bg-transparent text-zinc-200 placeholder-zinc-600 resize-none focus:outline-none min-h-[24px] max-h-[200px] scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent"
+            className="flex-1 bg-transparent text-zinc-200 placeholder-zinc-600 resize-none focus:outline-none leading-6 py-1 min-h-[24px] max-h-[200px] scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent self-center"
             style={{ height: 'auto' }}
           />
 
@@ -531,6 +544,8 @@ export function MessageInput({
           )}
         </div>
       </div>
+
+      <WashModal isOpen={showWashModal} onClose={() => setShowWashModal(false)} />
     </div>
   );
 }

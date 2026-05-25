@@ -7,7 +7,7 @@ export default function TermsOfServicePage() {
   const lastUpdated = '2024-12-02';
 
   return (
-    <div className="min-h-screen bg-gray-900 text-gray-100">
+    <div className="h-screen overflow-y-auto bg-gray-900 text-gray-100">
       <div className="max-w-4xl mx-auto px-4 py-12">
         <div className="mb-8">
           <Link href="/" className="text-purple-400 hover:text-purple-300 transition-colors">&larr; Back to Void Chat</Link>

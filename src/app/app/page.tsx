@@ -5,10 +5,13 @@ import { useRouter } from 'next/navigation';
 import { Plus, Users, MessageCircle, Sparkles } from 'lucide-react';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { CommunityCard, type CommunityData } from '@/components/community/CommunityCard';
-import { CreateCommunityModal, type CreateCommunityFormData } from '@/components/community/CreateCommunityModal';
+import { CreateCommunityModal, type CreateCommunityFormData, type JoinCommunityFormData } from '@/components/community/CreateCommunityModal';
 import { useSession } from '@/hooks/useSession';
 import { useApi } from '@/hooks/useApi';
 import { useToast } from '@/components/ui/Toast';
+import { CommunityPasswordPrompt } from '@/components/community/CommunityPasswordPrompt';
+import { setCommunityPassword } from '@/lib/communityPasswordStore';
+import { OnboardingModal, hasSeenOnboarding } from '@/components/onboarding/OnboardingModal';
 /** Truncate a public ID for display */
 function truncatePublicId(id: string, chars = 4): string {
   if (id.length <= chars * 2 + 3) return id;
@@ -70,11 +73,19 @@ const RecentDMsSection = React.memo(function RecentDMsSection({ dms, onSelectDM 
 
 export default function AppDashboard() {
   const router = useRouter();
-  const { session, isReady } = useSession();
+  const { session, displayName, isReady } = useSession();
   const publicId = session?.signingPublicKey ?? '';
   const isAuthenticated = isReady;
   const api = useApi();
   const { success: showSuccess, error: showError } = useToast();
+
+  // First-run onboarding modal. Gated by localStorage; we check after the
+  // first client paint to avoid SSR flash.
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  useEffect(() => {
+    if (!isReady) return;
+    if (!hasSeenOnboarding()) setShowOnboarding(true);
+  }, [isReady]);
 
   const [communities, setCommunities] = useState<Community[]>([]);
   const [communityData, setCommunityData] = useState<CommunityData[]>([]);
@@ -88,13 +99,13 @@ export default function AppDashboard() {
     const fetchData = async () => {
       if (!isAuthenticated || !publicId) return;
       setIsLoading(true);
-      const communitiesResponse = await api.get<{ communities: Array<{ id: string; name: string; description?: string; avatar?: string; channelCount?: number }> }>('/api/communities', { showErrorToast: false });
+      const communitiesResponse = await api.get<{ communities: Array<{ id: string; name: string; description?: string; avatar?: string; isPrivate?: boolean }> }>('/api/communities', { showErrorToast: false });
       if (communitiesResponse.success && communitiesResponse.data?.communities) {
-        // CommunityCard's `memberCount` field is repurposed as channel count
-        // in the ephemeral model — there's no membership concept, so the
-        // most meaningful directory stat is "how many channels exist."
-        const transformedCommunities: CommunityData[] = communitiesResponse.data.communities.map((c) => ({ id: c.id, name: c.name, description: c.description, icon: c.avatar, memberCount: c.channelCount ?? 0 }));
-        const communityList: Community[] = transformedCommunities.map((c) => ({ id: c.id, name: c.name, icon: c.icon, unreadCount: 0 }));
+        // Ephemeral has no member count and "channel count" was misleading
+        // when shown under a people icon. Drop the stat entirely; just
+        // surface isPrivate so the lock badge can render.
+        const transformedCommunities: CommunityData[] = communitiesResponse.data.communities.map((c) => ({ id: c.id, name: c.name, description: c.description, icon: c.avatar, isPrivate: !!c.isPrivate }));
+        const communityList: Community[] = transformedCommunities.map((c) => ({ id: c.id, name: c.name, icon: c.icon ?? null, unreadCount: 0 }));
         setCommunities(communityList);
         setCommunityData(transformedCommunities);
       }
@@ -105,9 +116,88 @@ export default function AppDashboard() {
     fetchData();
   }, [isAuthenticated, publicId, api, showError]);
 
-  const handleSelectCommunity = useCallback((communityId: string) => { router.push(`/app/community/${communityId}`); }, [router]);
+  // For public communities we navigate directly; for private ones we
+  // first prompt for the password and stash it in sessionStorage so the
+  // destination page can include it on its GET. This avoids the 401 +
+  // re-prompt round-trip in the common case.
+  const [pendingPrivate, setPendingPrivate] = useState<{ id: string; name: string } | null>(null);
+  const [pwError, setPwError] = useState<string | null>(null);
+  const [pwSubmitting, setPwSubmitting] = useState(false);
+
+  const handleSelectCommunity = useCallback(
+    (communityId: string) => {
+      const target = communityData.find((c) => c.id === communityId);
+      if (target?.isPrivate) {
+        setPwError(null);
+        setPendingPrivate({ id: communityId, name: target.name });
+        return;
+      }
+      router.push(`/app/community/${communityId}`);
+    },
+    [communityData, router],
+  );
+
+  const handlePasswordSubmit = useCallback(
+    async (password: string) => {
+      if (!pendingPrivate) return;
+      setPwSubmitting(true);
+      setPwError(null);
+      try {
+        // Verify against the server before stashing; saves the user from
+        // landing on the community page only to bounce back.
+        const res = await fetch(`/api/communities/${pendingPrivate.id}`, {
+          headers: { 'x-community-password': password },
+        });
+        if (res.status === 401) {
+          setPwError('Wrong password');
+          return;
+        }
+        if (!res.ok) {
+          setPwError('Could not reach the community');
+          return;
+        }
+        setCommunityPassword(pendingPrivate.id, password);
+        const id = pendingPrivate.id;
+        setPendingPrivate(null);
+        router.push(`/app/community/${id}`);
+      } catch {
+        setPwError('Network error');
+      } finally {
+        setPwSubmitting(false);
+      }
+    },
+    [pendingPrivate, router],
+  );
+  const handlePasswordCancel = useCallback(() => setPendingPrivate(null), []);
+
   const handleSelectDM = useCallback((dmId: string) => { router.push(`/app/dm/${dmId}`); }, [router]);
   const handleSwitchToDMs = useCallback(() => {}, []);
+
+  const handleJoinCommunity = useCallback(
+    async (data: JoinCommunityFormData): Promise<string | null> => {
+      const code = data.inviteCode.trim();
+      if (!code) return 'Invite code is required';
+      try {
+        const headers: Record<string, string> = {};
+        if (data.password) headers['x-community-password'] = data.password;
+        const res = await fetch(`/api/communities/${encodeURIComponent(code)}`, { headers });
+        if (res.status === 404) return 'Invite code not found';
+        if (res.status === 401) {
+          return data.password
+            ? 'Wrong password for this community'
+            : 'This community is private — enter the password';
+        }
+        if (!res.ok) return 'Could not reach the server';
+        if (data.password) setCommunityPassword(code, data.password);
+        setShowCreateModal(false);
+        router.push(`/app/community/${code}`);
+        return null;
+      } catch {
+        return 'Network error';
+      }
+    },
+    [router],
+  );
 
   const handleCreateCommunity = useCallback(async (data: CreateCommunityFormData) => {
     if (!publicId) return;
@@ -116,8 +206,27 @@ export default function AppDashboard() {
     try {
       let avatarData: string | undefined;
       if (data.icon && data.iconPreview) { avatarData = data.iconPreview; }
-      const response = await api.post<{ id: string }>('/api/communities', { name: data.name, description: data.description, isPublic: !data.isPrivate, avatar: avatarData });
-      if (response.success) { setShowCreateModal(false); showSuccess('Community created successfully!'); router.push(`/app/community/${response.data?.id}`); } else { setCreateError(response.error?.message || 'Failed to create community'); }
+      const response = await api.post<{ id: string; isPrivate: boolean }>('/api/communities', {
+        name: data.name,
+        description: data.description,
+        avatar: avatarData,
+        password: data.isPrivate ? data.password : undefined,
+      });
+      if (response.success) {
+        setShowCreateModal(false);
+        showSuccess('Community created successfully!');
+        // Carry the password through to the destination page if private,
+        // otherwise the next GET will 401 right after the create succeeds.
+        const id = response.data?.id;
+        if (id) {
+          if (data.isPrivate && data.password) {
+            try { sessionStorage.setItem(`voidchat_pw:${id}`, data.password); } catch {}
+          }
+          router.push(`/app/community/${id}`);
+        }
+      } else {
+        setCreateError(response.error?.message || 'Failed to create community');
+      }
     } catch (error) { console.error('Failed to create community:', error); setCreateError('An unexpected error occurred'); } finally { setIsCreating(false); }
   }, [publicId, api, router, showSuccess]);
 
@@ -140,7 +249,27 @@ export default function AppDashboard() {
       <AppLayout communities={communities} activeCommunityId={null} channels={[]} directMessages={directMessages} currentUser={currentUser} isDMView={true} onSelectCommunity={handleSelectCommunity} onSelectDM={(dmId) => handleSelectDM(dmId)} onSwitchToDMs={handleSwitchToDMs} onAddCommunity={() => setShowCreateModal(true)} onUserSettings={handleSettings} onOpenSettings={handleOpenSettings} onOpenHelp={handleOpenHelp} onOpenNotifications={handleOpenNotifications} onOpenSearch={handleOpenSearch}>
         {hasContent ? (<div className="h-full overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent"><CommunitiesSection communities={communityData} onSelectCommunity={handleSelectCommunity} /><RecentDMsSection dms={directMessages} onSelectDM={handleSelectDM} /></div>) : (<WelcomeSection onCreateCommunity={() => setShowCreateModal(true)} />)}
       </AppLayout>
-      <CreateCommunityModal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} onSubmit={handleCreateCommunity} isSubmitting={isCreating} error={createError} />
+      <CreateCommunityModal
+        isOpen={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        onSubmit={handleCreateCommunity}
+        onJoin={handleJoinCommunity}
+        isSubmitting={isCreating}
+        error={createError}
+      />
+      <CommunityPasswordPrompt
+        isOpen={pendingPrivate !== null}
+        communityName={pendingPrivate?.name}
+        error={pwError}
+        isSubmitting={pwSubmitting}
+        onSubmit={handlePasswordSubmit}
+        onCancel={handlePasswordCancel}
+      />
+      <OnboardingModal
+        isOpen={showOnboarding}
+        displayName={displayName}
+        onClose={() => setShowOnboarding(false)}
+      />
     </>
   );
 }

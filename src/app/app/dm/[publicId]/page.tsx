@@ -10,6 +10,20 @@ import { useSession } from '@/hooks/useSession';
 import { useRealtime, type DecryptedDMMessage } from '@/hooks/useRealtime';
 import { useApi } from '@/hooks/useApi';
 import { appendDM as storeAppendDM, listDM as storeListDM } from '@/lib/messageStore';
+
+/**
+ * Find the most recent display name we've seen for a peer in this DM thread.
+ * Looks at messages this peer sent us (not optimistic local ones).
+ */
+function peerName(messages: MessageData[], peerSigningKey: string): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.senderId === peerSigningKey && m.sender.displayName?.trim()) {
+      return m.sender.displayName.trim();
+    }
+  }
+  return undefined;
+}
 import type { Community, DirectMessage, CurrentUser } from '@/components/layout/Sidebar';
 import type { Member } from '@/components/layout/MemberList';
 import type { HeaderUser } from '@/components/layout/Header';
@@ -47,7 +61,7 @@ export default function DMPage() {
           content: msg.plaintext,
           nonce: '',
           senderId: msg.senderSigningPublicKey,
-          sender: { publicId: msg.senderSigningPublicKey },
+          sender: { publicId: msg.senderSigningPublicKey, displayName: msg.senderDisplayName },
           dmRecipient: publicId,
           createdAt: new Date(msg.ts),
         };
@@ -81,7 +95,7 @@ export default function DMPage() {
           content: m.plaintext,
           nonce: '',
           senderId: m.senderSigningPublicKey,
-          sender: { publicId: m.senderSigningPublicKey },
+          sender: { publicId: m.senderSigningPublicKey, displayName: m.senderDisplayName },
           dmRecipient: m.optimistic ? recipientSigningKey : publicId,
           createdAt: new Date(m.ts),
         })),
@@ -96,7 +110,7 @@ export default function DMPage() {
     const load = async () => {
       if (!isReady) return;
       setIsLoading(true);
-      const res = await api.get<{ communities: Array<{ id: string; name: string; icon?: string }> }>(
+      const res = await api.get<{ communities: Array<{ id: string; name: string; avatar?: string | null }> }>(
         '/api/communities',
         { showErrorToast: false },
       );
@@ -105,7 +119,7 @@ export default function DMPage() {
           res.data.communities.map((c) => ({
             id: c.id,
             name: c.name,
-            icon: c.icon || null,
+            icon: c.avatar || null,
             unreadCount: 0,
           })),
         );
@@ -131,12 +145,13 @@ export default function DMPage() {
       setSendError(null);
       const id = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const ts = Date.now();
+      const localName = session?.displayName || '';
       const optimistic: MessageData = {
         id,
         content: plaintext,
         nonce: '',
         senderId: publicId,
-        sender: { publicId },
+        sender: { publicId, displayName: localName },
         dmRecipient: recipientSigningKey,
         createdAt: new Date(ts),
       };
@@ -146,13 +161,13 @@ export default function DMPage() {
         ts,
         senderSigningPublicKey: publicId,
         senderBoxPublicKey: '',
-        senderDisplayName: '',
+        senderDisplayName: localName,
         plaintext,
         optimistic: true,
       });
       return sendDM(recipientBoxKey, plaintext);
     },
-    [publicId, recipientBoxKey, recipientSigningKey, sendDM],
+    [publicId, recipientBoxKey, recipientSigningKey, session, sendDM],
   );
 
   const handleSelectCommunity = useCallback(
@@ -165,13 +180,18 @@ export default function DMPage() {
 
   const currentUser: CurrentUser = {
     publicId: publicId || '',
+    displayName: session?.displayName,
     imageUrl: null,
     status: 'online',
   };
 
+  // If we've seen this peer's session before, surface their chosen name.
+  const peerCachedName = peerName(messages, recipientSigningKey);
+
   const activeDMUser: (HeaderUser & Member) | undefined = {
     id: recipientSigningKey,
     publicId: recipientSigningKey,
+    displayName: peerCachedName,
     isOnline: recipientBoxKey !== null,
     imageUrl: undefined,
     role: 'MEMBER',

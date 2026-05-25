@@ -8,6 +8,15 @@ import type { MessageData } from '@/components/chat/Message';
 import { useSession } from '@/hooks/useSession';
 import { useChannelRoster, useRealtime, type DecryptedChannelMessage } from '@/hooks/useRealtime';
 import { appendChannel as storeAppendChannel, listChannel as storeListChannel } from '@/lib/messageStore';
+import {
+  clearCommunityPassword,
+  communityAuthHeaders,
+  getCommunityPassword,
+  setCommunityPassword,
+} from '@/lib/communityPasswordStore';
+import { CommunityPasswordPrompt } from '@/components/community/CommunityPasswordPrompt';
+import { useToast } from '@/components/ui/Toast';
+import { useBackdropClose } from '@/components/ui/useBackdropClose';
 import type { Channel, Community, CurrentUser } from '@/components/layout/Sidebar';
 import type { Member } from '@/components/layout/MemberList';
 import { UserProfileModal, type UserProfileData } from '@/components/ui';
@@ -34,6 +43,7 @@ export default function CommunityPage() {
 
   const { session, isReady } = useSession();
   const publicId = session?.signingPublicKey ?? '';
+  const { success: toastSuccess, error: toastError } = useToast();
 
   const [community, setCommunity] = useState<CommunityDetail | null>(null);
   const [channels, setChannels] = useState<ChannelDetail[]>([]);
@@ -47,8 +57,17 @@ export default function CommunityPage() {
   const [isCreatingChannel, setIsCreatingChannel] = useState(false);
   const [createChannelError, setCreateChannelError] = useState<string | null>(null);
 
-  const [isMuted, setIsMuted] = useState(false);
-  const [isDeafened, setIsDeafened] = useState(false);
+  // Password-gate state. Lifted to the page level so it survives across
+  // the channel fetch retry + delete flow.
+  const [needsPassword, setNeedsPassword] = useState(false);
+  const [pwError, setPwError] = useState<string | null>(null);
+  const [pwSubmitting, setPwSubmitting] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const deleteConfirmBackdrop = useBackdropClose(
+    () => setShowDeleteConfirm(false),
+    showDeleteConfirm && !isDeleting,
+  );
 
   const handleChannelMessage = useCallback(
     (msg: DecryptedChannelMessage) => {
@@ -60,7 +79,7 @@ export default function CommunityPage() {
           content: msg.plaintext,
           nonce: '',
           senderId: msg.senderSigningPublicKey,
-          sender: { publicId: msg.senderSigningPublicKey },
+          sender: { publicId: msg.senderSigningPublicKey, displayName: msg.senderDisplayName },
           channelId: msg.channelId,
           createdAt: new Date(msg.ts),
         };
@@ -75,55 +94,67 @@ export default function CommunityPage() {
 
   const roster = useChannelRoster(activeChannelId);
 
-  useEffect(() => {
-    const fetch_ = async () => {
-      if (!isReady || !communityId) return;
-      setIsLoading(true);
-      try {
-        const [communityRes, channelsRes, allRes] = await Promise.all([
-          fetch(`/api/communities/${communityId}`),
-          fetch(`/api/communities/${communityId}/channels`),
-          fetch('/api/communities'),
-        ]);
-        if (!communityRes.ok) {
-          if (communityRes.status === 404) router.push('/app');
-          return;
-        }
-        const cData = await communityRes.json();
-        setCommunity({
-          id: cData.id ?? communityId,
-          name: cData.name ?? '',
-          description: cData.description,
-          icon: cData.avatar ?? null,
-        });
-        if (channelsRes.ok) {
-          const chData = await channelsRes.json();
-          const list: ChannelDetail[] = chData.channels || [];
-          setChannels(list);
-          const general = list.find((c) => c.name.toLowerCase() === 'general');
-          const def = general || list[0];
-          if (def) setActiveChannelId(def.id);
-        }
-        if (allRes.ok) {
-          const allData = await allRes.json();
-          const list: Community[] =
-            allData.communities?.map((c: { id: string; name: string; icon?: string }) => ({
-              id: c.id,
-              name: c.name,
-              icon: c.icon || null,
-              unreadCount: 0,
-            })) || [];
-          setCommunities(list);
-        }
-      } catch (err) {
-        console.error('Failed to fetch community:', err);
-        router.push('/app');
-      } finally {
-        setIsLoading(false);
+  // Reusable fetch wrapper that always sends the cached password header.
+  // 401 means "private and we don't have the right password" → trigger
+  // the prompt. 404 means the community is gone → bounce to dashboard.
+  const fetchCommunityData = useCallback(async () => {
+    if (!isReady || !communityId) return;
+    setIsLoading(true);
+    try {
+      const authHeaders = communityAuthHeaders(communityId);
+      const [communityRes, channelsRes, allRes] = await Promise.all([
+        fetch(`/api/communities/${communityId}`, { headers: authHeaders }),
+        fetch(`/api/communities/${communityId}/channels`, { headers: authHeaders }),
+        fetch('/api/communities'),
+      ]);
+      if (communityRes.status === 401) {
+        clearCommunityPassword(communityId);
+        setNeedsPassword(true);
+        return;
       }
-    };
-    fetch_();
+      if (!communityRes.ok) {
+        if (communityRes.status === 404) router.push('/app');
+        return;
+      }
+      const cData = await communityRes.json();
+      setCommunity({
+        id: cData.id ?? communityId,
+        name: cData.name ?? '',
+        description: cData.description,
+        icon: cData.avatar ?? null,
+      });
+      if (channelsRes.ok) {
+        const chData = await channelsRes.json();
+        const list: ChannelDetail[] = chData.channels || [];
+        setChannels(list);
+        const general = list.find((c) => c.name.toLowerCase() === 'general');
+        const def = general || list[0];
+        if (def) setActiveChannelId(def.id);
+      }
+      if (allRes.ok) {
+        const allData = await allRes.json();
+        const list: Community[] =
+          allData.communities?.map((c: { id: string; name: string; avatar?: string | null }) => ({
+            id: c.id,
+            name: c.name,
+            // API returns `avatar`, not `icon` — the Sidebar's Community
+            // type just calls it `icon` for visual convention.
+            icon: c.avatar || null,
+            unreadCount: 0,
+          })) || [];
+        setCommunities(list);
+      }
+    } catch (err) {
+      console.error('Failed to fetch community:', err);
+      router.push('/app');
+    } finally {
+      setIsLoading(false);
+    }
   }, [isReady, communityId, router]);
+
+  useEffect(() => {
+    void fetchCommunityData();
+  }, [fetchCommunityData]);
 
   useEffect(() => {
     if (!activeChannelId || !isReady) return;
@@ -147,7 +178,7 @@ export default function CommunityPage() {
           content: m.plaintext,
           nonce: '',
           senderId: m.senderSigningPublicKey,
-          sender: { publicId: m.senderSigningPublicKey },
+          sender: { publicId: m.senderSigningPublicKey, displayName: m.senderDisplayName },
           channelId: activeChannelId,
           createdAt: new Date(m.ts),
         })),
@@ -163,12 +194,13 @@ export default function CommunityPage() {
       if (!activeChannelId) return false;
       const id = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const ts = Date.now();
+      const localName = session?.displayName || '';
       const optimistic: MessageData = {
         id,
         content: plaintext,
         nonce: '',
         senderId: publicId,
-        sender: { publicId },
+        sender: { publicId, displayName: localName },
         channelId: activeChannelId,
         createdAt: new Date(ts),
       };
@@ -178,13 +210,13 @@ export default function CommunityPage() {
         ts,
         senderSigningPublicKey: publicId,
         senderBoxPublicKey: '',
-        senderDisplayName: '',
+        senderDisplayName: localName,
         plaintext,
         optimistic: true,
       });
       return sendChannelMessage(activeChannelId, plaintext);
     },
-    [activeChannelId, publicId, sendChannelMessage],
+    [activeChannelId, publicId, session, sendChannelMessage],
   );
 
   const handleSelectChannel = useCallback(
@@ -224,6 +256,78 @@ export default function CommunityPage() {
   const handleOpenNotifications = useCallback(() => alert('Notifications feature coming soon!'), []);
   const handleOpenSearch = useCallback(() => alert('Search feature coming soon!'), []);
 
+  const handlePasswordSubmit = useCallback(
+    async (password: string) => {
+      setPwSubmitting(true);
+      setPwError(null);
+      try {
+        const res = await fetch(`/api/communities/${communityId}`, {
+          headers: { 'x-community-password': password },
+        });
+        if (res.status === 401) {
+          setPwError('Wrong password');
+          return;
+        }
+        if (!res.ok) {
+          setPwError('Could not reach the community');
+          return;
+        }
+        setCommunityPassword(communityId, password);
+        setNeedsPassword(false);
+        // Re-fetch with the new password now cached.
+        void fetchCommunityData();
+      } catch {
+        setPwError('Network error');
+      } finally {
+        setPwSubmitting(false);
+      }
+    },
+    [communityId, fetchCommunityData],
+  );
+
+  const handlePasswordCancel = useCallback(() => router.push('/app'), [router]);
+
+  const handleCopyInvite = useCallback(async () => {
+    if (typeof window === 'undefined') return;
+    try {
+      // Copy just the bare invite code — recipients paste it into the
+      // "Join with invite code" tab on their dashboard. Keeps the clipboard
+      // contents short and pasteable into chat without URL clutter.
+      await navigator.clipboard.writeText(communityId);
+      const isPrivate = getCommunityPassword(communityId) !== null;
+      toastSuccess(isPrivate ? 'Invite code copied — share the password separately' : 'Invite code copied');
+    } catch {
+      toastError('Could not access the clipboard');
+    }
+  }, [communityId, toastSuccess, toastError]);
+
+  const handleDeleteCommunity = useCallback(async () => {
+    setIsDeleting(true);
+    try {
+      const res = await fetch(`/api/communities/${communityId}`, {
+        method: 'DELETE',
+        headers: communityAuthHeaders(communityId),
+      });
+      if (!res.ok) {
+        if (res.status === 401) {
+          // Password expired or wrong — clear and prompt.
+          clearCommunityPassword(communityId);
+          setShowDeleteConfirm(false);
+          setNeedsPassword(true);
+          return;
+        }
+        setShowDeleteConfirm(false);
+        return;
+      }
+      clearCommunityPassword(communityId);
+      router.push('/app');
+    } catch {
+      setShowDeleteConfirm(false);
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [communityId, router]);
+
   const handleCreateChannel = useCallback(
     async (data: CreateChannelFormData) => {
       if (!communityId) return;
@@ -232,7 +336,7 @@ export default function CommunityPage() {
       try {
         const response = await fetch(`/api/communities/${communityId}/channels`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...communityAuthHeaders(communityId) },
           body: JSON.stringify({
             name: data.name,
             description: data.description || null,
@@ -264,19 +368,12 @@ export default function CommunityPage() {
     [communityId],
   );
 
-  const handleToggleMute = useCallback(() => setIsMuted((p) => !p), []);
-  const handleToggleDeafen = useCallback(() => {
-    setIsDeafened((p) => {
-      if (!p) setIsMuted(true);
-      return !p;
-    });
-  }, []);
-
   const members: Member[] = useMemo(
     () =>
       roster.map((m) => ({
         id: m.signingPublicKey,
         publicId: m.signingPublicKey,
+        displayName: m.displayName,
         role: 'MEMBER',
         isOnline: true,
       })),
@@ -285,10 +382,9 @@ export default function CommunityPage() {
 
   const currentUser: CurrentUser = {
     publicId: publicId || '',
+    displayName: session?.displayName,
     imageUrl: null,
     status: 'online',
-    isMuted,
-    isDeafened,
   };
 
   const activeChannel = useMemo(() => {
@@ -302,7 +398,9 @@ export default function CommunityPage() {
       channels.map((c) => ({
         id: c.id,
         name: c.name,
-        type: c.type,
+        // API doesn't return a type field and voice isn't implemented; pin to
+        // 'text' so the sidebar's text-channels section actually renders these.
+        type: 'text',
         isActive: c.id === activeChannelId,
       })),
     [channels, activeChannelId],
@@ -312,10 +410,24 @@ export default function CommunityPage() {
     ? { name: activeChannel.name, description: activeChannel.description, memberCount: members.length }
     : undefined;
 
-  if (!isReady || isLoading) {
+  if (!isReady || (isLoading && !needsPassword)) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-black">
         <p className="text-zinc-400">Loading community…</p>
+      </div>
+    );
+  }
+
+  if (needsPassword) {
+    return (
+      <div className="h-screen w-screen bg-black">
+        <CommunityPasswordPrompt
+          isOpen
+          error={pwError}
+          isSubmitting={pwSubmitting}
+          onSubmit={handlePasswordSubmit}
+          onCancel={handlePasswordCancel}
+        />
       </div>
     );
   }
@@ -338,14 +450,14 @@ export default function CommunityPage() {
         onAddCommunity={() => router.push('/app')}
         onAddChannel={() => setShowCreateChannelModal(true)}
         onUserSettings={handleSettings}
+        onCopyInviteLink={handleCopyInvite}
+        onDeleteCommunity={() => setShowDeleteConfirm(true)}
         onOpenSettings={handleOpenSettings}
         onOpenHelp={handleOpenHelp}
         onOpenPinned={handleOpenPinned}
         onOpenNotifications={handleOpenNotifications}
         onOpenSearch={handleOpenSearch}
         onMemberClick={handleMemberClick}
-        onToggleMute={handleToggleMute}
-        onToggleDeafen={handleToggleDeafen}
       >
         {activeChannelId ? (
           <ChatContainer
@@ -359,7 +471,7 @@ export default function CommunityPage() {
           />
         ) : (
           <div className="h-full flex items-center justify-center">
-            <div className="text-center">
+            <div className="text-center max-w-md">
               <h2 className="text-xl font-semibold text-white mb-2">Welcome to {community?.name}</h2>
               <p className="text-zinc-400">Select a channel from the sidebar to start chatting</p>
             </div>
@@ -382,6 +494,39 @@ export default function CommunityPage() {
         isSubmitting={isCreatingChannel}
         error={createChannelError}
       />
+
+      {/* Delete confirm — destructive + no undo, so a click-twice gate. */}
+      {showDeleteConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+          {...deleteConfirmBackdrop}
+        >
+          <div className="w-full max-w-sm bg-gradient-to-br from-zinc-950 via-zinc-900 to-black rounded-xl shadow-2xl border border-red-900/40 p-6 space-y-4">
+            <h3 className="font-semibold text-white">Delete this community?</h3>
+            <p className="text-sm text-zinc-400">
+              {community?.name ? `"${community.name}"` : 'This community'} and all of its channels
+              will be removed from the server. Locally cached messages on your device stay until
+              you reload. This action cannot be undone.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                disabled={isDeleting}
+                className="px-4 py-2 text-sm text-zinc-400 hover:text-white rounded-lg transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteCommunity}
+                disabled={isDeleting}
+                className="px-4 py-2 text-sm bg-red-600/20 hover:bg-red-600/30 text-red-400 rounded-lg transition-colors disabled:opacity-50"
+              >
+                {isDeleting ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

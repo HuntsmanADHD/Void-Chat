@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
-import { Eye, Lock, Shield, Trash2, UserX, Zap } from 'lucide-react';
+import { Droplets, Eye, Lock, Shield, Trash2, UserX, Zap } from 'lucide-react';
 import { WarrantCanaryBadge } from '@/components/legal/WarrantCanary';
 
 function DecodingText({ text, className }: { text: string; className?: string }) {
@@ -83,7 +83,7 @@ export default function LandingPage() {
   ];
 
   return (
-    <div className="min-h-screen bg-black flex flex-col relative overflow-hidden">
+    <div className="h-screen overflow-y-auto bg-black flex flex-col relative">
       <div
         className="absolute pointer-events-none"
         style={{
@@ -208,6 +208,27 @@ export default function LandingPage() {
             </p>
           </div>
         </div>
+
+        {/* Wash CTA — promote the off-Void encryption tool on the landing */}
+        <div className="max-w-xl mx-auto mt-8 text-center">
+          <div className="bg-gradient-to-r from-zinc-900/40 via-zinc-800/30 to-zinc-700/20 rounded-2xl p-6 border border-white/10 backdrop-blur-md">
+            <h3 className="text-lg font-semibold text-white text-shadow-lg mb-3 flex items-center justify-center gap-2">
+              <Droplets className="w-5 h-5 text-zinc-300" />
+              Wash a phrase
+            </h3>
+            <p className="text-sm text-zinc-400 mb-4">
+              Add a second layer of encryption to invite codes, passwords, or anything you need to
+              send <em>outside</em> Void Chat. Different cipher family from the chat protocol —
+              defense in depth.
+            </p>
+            <Link
+              href="/wash"
+              className="inline-block px-5 py-2 rounded-lg text-sm font-medium text-white bg-gradient-to-r from-zinc-700 to-zinc-500 hover:from-zinc-600 hover:to-zinc-400 border border-white/15 transition-all"
+            >
+              Open Wash
+            </Link>
+          </div>
+        </div>
       </main>
 
       <footer className="relative z-10 w-full px-6 py-6 border-t border-white/5 bg-black/80 backdrop-blur-sm">
@@ -217,6 +238,12 @@ export default function LandingPage() {
             <span className="text-xs text-zinc-500">Void Chat — Privacy-first communication</span>
           </div>
           <div className="flex items-center gap-6 text-xs text-zinc-500">
+            <Link href="/how-it-works" className="hover:text-white transition-colors">
+              How it works
+            </Link>
+            <Link href="/wash" className="hover:text-white transition-colors">
+              Wash
+            </Link>
             <Link href="/terms" className="hover:text-white transition-colors">
               Terms
             </Link>
