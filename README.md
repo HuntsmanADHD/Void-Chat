@@ -1,81 +1,132 @@
 # Void Chat
 
-Anonymous, decentralized messaging. No accounts, no email, no recovery. Your identity is a cryptographic key you generate locally and keep yourself.
+Self-hosted ephemeral messaging. You run it on your own machine, your friends connect to it, and what's said in the void stays in the void.
 
-## What's different
+No accounts. No email. No password. No history. Every browser tab generates a fresh cryptographic identity that disappears when you close it.
 
-- **No identity providers.** You generate a NaCl keypair on your device. The server stores only your `publicId` (a username you pick once and keep forever) and your public key. There is no password, no email, no OAuth, no SSO.
-- **No central moderators.** There are no admins. Members of a community report bad actors; once a threshold of unique reporters is reached, the user is auto-kicked from that community. Kicked from three communities → automatic permanent platform ban. Every member has equal weight.
-- **No recovery.** If you lose your private key, the account is gone. The server has no way to give it back to you because it never had it. The key is shown to you exactly once, at account creation.
-- **Soul art.** During account creation, you draw a small piece of art that gets hashed into your identity. The image itself stays on your device. If you're ever cast out from the Void, the art is what remains as a marker.
+## What it is
 
-## Identity flow
+- **A small server you host yourself.** Designed for a trusted group — a friend circle, a household, a band of collaborators. Not Twitter-scale.
+- **End-to-end encrypted by design.** Every message is `nacl.box`-sealed from the sender's device to one specific recipient's device. The relay sees only ciphertext.
+- **Stateless by design.** The server keeps a list of communities and channels. It does not store messages. It does not store users. Restart it and every roster, every in-flight message, every connected identity is gone.
+- **Ephemeral by design.** Close your tab — your identity is gone. Reload — fresh keypair. There is no account to recover because there was never an account.
 
-1. **Create**: client generates an ed25519 keypair (TweetNaCl). User is shown the raw private key once, picks a permanent `publicId` (3–32 chars, alphanumeric + `_-`), and draws a soul art canvas (≥3 strokes, ≥5 seconds). Server stores `{ publicId, publicKey, artHash }`. One key per lifetime — same key cannot register twice.
-2. **Login**: user pastes their private key into the login page. Client signs a timestamped message (`Void Chat Login\ntimestamp: <ms>`), server verifies the signature against the stored public key. Session token issued (HMAC-SHA256, 24h).
-3. **E2E messaging**: direct messages and channel content are encrypted client-side with `nacl.box` / `nacl.secretbox`. Server stores ciphertext only.
+## What's stored where
 
-## Moderation
+| What | Where | When it's gone |
+|---|---|---|
+| Your private keys | Browser sessionStorage | Tab closes |
+| Your display name | Browser localStorage | You clear it |
+| Messages — in flight | Server RAM, only while routing | Microseconds later |
+| Messages — your view | Browser memory | Page reload (until IndexedDB store ships) |
+| Community + channel directory | SQLite file on the host | You delete it |
 
-- Within a community: any member can file a report. Reports are stored but the running tally is hidden. When unique reporter count hits the community's threshold (default 5, configurable 1–100 by the owner), the user is auto-kicked. Anti-raid: only reports from members who joined the community *before* the reported user count toward the threshold.
-- Across the platform: a user kicked from three communities is permanently blacklisted. Fully automatic, no human review.
-- No appeals. No strikes. No timeouts. No admin panel.
+The relay decrypts nothing. The SQLite file holds only the names of communities and channels you and your friends create — no messages, no users.
+
+## Running it
+
+### With Docker (recommended)
+
+```bash
+git clone https://github.com/HuntsmanADHD/Void-Chat.git
+cd Void-Chat
+cp .env.example .env       # defaults work for localhost
+docker compose up -d
+```
+
+Open <http://localhost:3000>. That's it.
+
+The web app is on `:3000`, the relay on `:3001`. Your data lives in a Docker named volume (`voidchat_data`).
+
+**Back up your server:**
+```bash
+docker run --rm -v voidchat_data:/data -v "$(pwd)":/backup alpine \
+  cp /data/voidchat.db /backup/voidchat-backup.db
+```
+
+**Restore from backup:**
+```bash
+docker compose down
+docker run --rm -v voidchat_data:/data -v "$(pwd)":/backup alpine \
+  cp /backup/voidchat-backup.db /data/voidchat.db
+docker compose up -d
+```
+
+### Without Docker
+
+```bash
+git clone https://github.com/HuntsmanADHD/Void-Chat.git
+cd Void-Chat
+cp .env.example .env
+yarn install
+yarn prisma generate
+yarn prisma db push
+yarn dev:all              # starts Next on :3000 and the relay on :3001
+```
+
+You need Node 18+ and yarn. SQLite is included via Prisma — no separate database to install.
+
+## Inviting friends
+
+Once your server is running, friends join by visiting the URL your machine is reachable at.
+
+**LAN / Tailscale / local network:**
+```
+http://your-hostname.local:3000
+http://192.168.x.y:3000
+http://your-tailnet-name:3000
+```
+
+**Internet-exposed:**
+You're responsible for the TLS termination layer (Caddy with LetsEncrypt, Cloudflare Tunnel, ngrok, etc.). Make sure both ports `3000` (web) and `3001` (relay) reach your container. Update `CORS_ORIGIN` in `.env` to your public URL.
+
+Their browser tab generates an identity on first load. They pick a display name and they're in. Anyone with the URL can join, so share the URL like you'd share a Discord invite — through a channel you trust.
+
+## Joining someone else's server
+
+Open their server's URL in your browser. The app served from their machine talks to their relay. You're now in their void.
+
+You can be in someone else's server without ever running your own — being a host and being a guest are separate concerns.
+
+## Configuration
+
+`.env` — most setups only touch the first two:
+
+```bash
+# Where the SQLite file lives. Inside the Docker container the path resolves
+# to /app/data/voidchat.db (mapped to the `voidchat_data` named volume).
+DATABASE_URL="file:../data/voidchat.db"
+
+# Origins the relay accepts WebSocket connections from. Comma-separated.
+# Use "*" for LAN-only setups; never use "*" on the public internet.
+CORS_ORIGIN="http://localhost:3000"
+
+# If you reverse-proxy the relay through a different host or path,
+# override the URL clients connect to.
+NEXT_PUBLIC_VOID_RELAY_URL=""
+```
+
+`docker-compose.yml` reads `WEB_PORT` and `RELAY_PORT` for port mapping if you need non-default ports.
+
+## Honest limitations
+
+- **Display names are not authenticated.** Anyone can pick "alice." Your friends recognize you by context, not by name.
+- **No message history for new joiners.** When you join a channel, you see messages from that moment forward. Nothing in the past, ever.
+- **No offline DMs.** If your recipient isn't connected when you hit send, the message is dropped. You'll be told.
+- **Channel bandwidth scales with channel size.** A 50-person channel = 50 encrypted copies per message. This is what zero-knowledge fan-out costs.
+- **Spam-resistance is your firewall.** Public hosting without any access control will get spammed. Run it behind a friend-trust boundary.
+
+These are design choices, not bugs to fix later.
 
 ## Tech stack
 
 | Layer | Technology |
 |---|---|
-| Frontend (web) | Next.js 14 (App Router), TypeScript, Tailwind CSS |
-| Frontend (desktop) | Vite + React + Tauri 2 *(in progress, in `client/`)* |
-| Backend (current) | Next.js API routes + Prisma |
-| Backend (rewrite) | Express + Socket.io + Helmet *(in progress, in `server/`)* |
-| Database | PostgreSQL |
-| Real-time | Socket.io |
-| P2P | WebRTC via simple-peer |
-| Crypto | TweetNaCl (ed25519 signing, Curve25519 boxes), @noble/ed25519 |
-| Identifiers | base58 (bs58) |
-
-## Prerequisites
-
-- Node.js >= 18
-- PostgreSQL >= 14
-- npm (or pnpm/yarn)
-
-## Setup
-
-```bash
-git clone https://github.com/HuntsmanADHD/Void-Chat.git
-cd Void-Chat
-npm install
-cp .env.example .env
-# edit .env: set DATABASE_URL, AUTH_TOKEN_SECRET (≥32 chars), ALLOWED_ORIGINS
-npx prisma generate
-npx prisma migrate dev --name init
-npm run dev:all
-```
-
-Open [http://localhost:3000](http://localhost:3000).
-
-## Project layout
-
-```
-void-chat/
-├── prisma/              # Database schema (User, Community, Channel, Membership,
-│                        # Report, CommunityKick, Vouch)
-├── server/              # Standalone Express + Socket.io backend (WIP)
-├── client/              # Vite + React + Tauri desktop client (WIP)
-├── server/socket-server.ts   # Original Next.js-paired Socket.io server
-└── src/
-    ├── app/             # Next.js App Router pages + API routes
-    ├── components/      # React components
-    ├── hooks/           # Custom hooks (useAuth, useRealtime, useEncryption, ...)
-    ├── lib/             # auth, encryption, p2p, moderation, format
-    └── types/           # TypeScript types
-```
-
-## Status
-
-This codebase is mid-rework. See `PROGRESS.md` for what's done and what's next. Build state is not guaranteed to compile cleanly at every commit.
+| Web | Next.js 14 (App Router), TypeScript, Tailwind |
+| Relay | Socket.io, Node 20+ |
+| Crypto | TweetNaCl (ed25519 signing, Curve25519 boxes) |
+| Directory DB | SQLite via Prisma |
+| Identifiers | base58 |
 
 ## License
 

@@ -7,6 +7,7 @@ import { ChatContainer, type ChatHeaderInfo } from '@/components/chat/ChatContai
 import type { MessageData } from '@/components/chat/Message';
 import { useSession } from '@/hooks/useSession';
 import { useChannelRoster, useRealtime, type DecryptedChannelMessage } from '@/hooks/useRealtime';
+import { appendChannel as storeAppendChannel, listChannel as storeListChannel } from '@/lib/messageStore';
 import type { Channel, Community, CurrentUser } from '@/components/layout/Sidebar';
 import type { Member } from '@/components/layout/MemberList';
 
@@ -100,26 +101,57 @@ export default function ChannelPage() {
     return () => leaveChannel(channelId);
   }, [channelId, isReady, joinChannel, leaveChannel]);
 
+  // Hydrate from local store on channel switch, then live updates from the
+  // realtime callback merge in. Optimistic and received messages dedupe by id.
   useEffect(() => {
+    let cancelled = false;
     setMessages([]);
+    void storeListChannel(channelId).then((stored) => {
+      if (cancelled) return;
+      setMessages(
+        stored.map((m) => ({
+          id: m.id,
+          content: m.plaintext,
+          nonce: '',
+          senderId: m.senderSigningPublicKey,
+          sender: { publicId: m.senderSigningPublicKey },
+          channelId,
+          createdAt: new Date(m.ts),
+        })),
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [channelId]);
 
   const handleSend = useCallback(
     async (plaintext: string) => {
       // The relay skips the sender on fan-out, so we never see our own
       // message via onChannelMessage. Append a local copy here so the
-      // sender sees what they just sent. No reconciliation needed —
-      // local-prefixed ids can't collide with server-issued m_* ids.
+      // sender sees what they just sent. Local-prefixed ids can't collide
+      // with server-issued m_* ids on subsequent receives.
+      const id = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const ts = Date.now();
       const optimistic: MessageData = {
-        id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        id,
         content: plaintext,
         nonce: '',
         senderId: publicId,
         sender: { publicId },
         channelId,
-        createdAt: new Date(),
+        createdAt: new Date(ts),
       };
       setMessages((prev) => [...prev, optimistic]);
+      void storeAppendChannel(channelId, {
+        id,
+        ts,
+        senderSigningPublicKey: publicId,
+        senderBoxPublicKey: '',
+        senderDisplayName: '',
+        plaintext,
+        optimistic: true,
+      });
       return sendChannelMessage(channelId, plaintext);
     },
     [channelId, publicId, sendChannelMessage],

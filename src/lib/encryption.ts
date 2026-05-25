@@ -21,15 +21,26 @@ export interface SealedMessage {
 }
 
 /**
+ * Plaintext size cap. 64 KiB is generous for chat, well under typical
+ * WebSocket frame limits, and bounds the per-recipient fan-out blast
+ * radius (256 recipients × 64 KiB ≈ 16 MiB max single send).
+ */
+export const MAX_PLAINTEXT_BYTES = 64 * 1024;
+
+/**
  * Encrypt `plaintext` to a single recipient's box public key (base58),
  * using the sender's session box secret (raw bytes). Returns base64-encoded
- * ciphertext + nonce, or `null` if the recipient pubkey is malformed.
+ * ciphertext + nonce, or `null` if the recipient pubkey is malformed or
+ * the plaintext exceeds MAX_PLAINTEXT_BYTES.
  */
 export function sealForRecipient(
   plaintext: string,
   recipientBoxPublicKeyB58: string,
   senderBoxSecretKey: Uint8Array,
 ): SealedMessage | null {
+  const plainBytes = decodeUTF8(plaintext);
+  if (plainBytes.length > MAX_PLAINTEXT_BYTES) return null;
+
   let recipientPub: Uint8Array;
   try {
     recipientPub = bs58.decode(recipientBoxPublicKeyB58);
@@ -40,7 +51,7 @@ export function sealForRecipient(
   if (senderBoxSecretKey.length !== nacl.box.secretKeyLength) return null;
 
   const nonce = nacl.randomBytes(nacl.box.nonceLength);
-  const sealed = nacl.box(decodeUTF8(plaintext), nonce, recipientPub, senderBoxSecretKey);
+  const sealed = nacl.box(plainBytes, nonce, recipientPub, senderBoxSecretKey);
   if (!sealed) return null;
   return { ciphertext: encodeBase64(sealed), nonce: encodeBase64(nonce) };
 }

@@ -35,13 +35,24 @@ import {
 // ── Config ─────────────────────────────────────────────────────────────────
 
 const PORT = process.env['SOCKET_PORT'] ? parseInt(process.env['SOCKET_PORT'], 10) : 3001;
-const CORS_ORIGIN = process.env['CORS_ORIGIN'] || 'http://localhost:3000';
+
+// Self-host typically has several valid origins (localhost, LAN IP, .local
+// hostname). Accept a comma-separated list. The literal "*" disables the
+// allowlist entirely — convenient for LAN-only setups where you don't care
+// what address your friends type, but DO NOT use over the internet.
+const CORS_RAW = process.env['CORS_ORIGIN'] || 'http://localhost:3000';
+const CORS_ALLOW_ANY = CORS_RAW.trim() === '*';
+const CORS_ORIGIN_LIST = CORS_RAW.split(',').map(s => s.trim()).filter(Boolean);
 
 const ANNOUNCE_MAX_SKEW_MS = 5 * 60 * 1000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX_MESSAGES = 120;
 const RATE_MAX_JOINS = 60;
 const MAX_CHANNEL_RECIPIENTS = 256;
+// 64 KiB plaintext cap → ciphertext is plaintext + 16-byte Poly1305 tag,
+// then base64-expanded by 4/3. Bound it well above what a polite client
+// would ever send to leave room for nonce/json overhead.
+const MAX_CIPHERTEXT_BYTES = 96 * 1024;
 
 // ── In-memory state ────────────────────────────────────────────────────────
 
@@ -65,6 +76,10 @@ const channelRosters = new Map<string, Map<string, RosterMember>>();
 const rateBuckets = new Map<string, RateBucket>();
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+// Reuse one encoder for every announce verification — `TextEncoder` is
+// stateless and reusable, no benefit to per-call allocation.
+const textEncoder = new TextEncoder();
 
 function issueNonce(): string {
   return randomBytes(24).toString('hex');
@@ -137,7 +152,7 @@ function verifyAnnounceSignature(
     const pubBytes = bs58.decode(msg.signingPublicKey);
     if (sigBytes.length !== nacl.sign.signatureLength) return false;
     if (pubBytes.length !== nacl.sign.publicKeyLength) return false;
-    return nacl.sign.detached.verify(new TextEncoder().encode(signed), sigBytes, pubBytes);
+    return nacl.sign.detached.verify(textEncoder.encode(signed), sigBytes, pubBytes);
   } catch {
     return false;
   }
@@ -147,7 +162,11 @@ function verifyAnnounceSignature(
 
 const httpServer = createServer();
 const io = new Server(httpServer, {
-  cors: { origin: CORS_ORIGIN, methods: ['GET', 'POST'], credentials: true },
+  cors: {
+    origin: CORS_ALLOW_ANY ? true : CORS_ORIGIN_LIST,
+    methods: ['GET', 'POST'],
+    credentials: true,
+  },
   pingTimeout: 60_000,
   pingInterval: 25_000,
 });
@@ -173,6 +192,21 @@ io.on('connection', (socket: Socket) => {
     }
     if (Math.abs(Date.now() - raw.ts) > ANNOUNCE_MAX_SKEW_MS) {
       sendError(socket, 'STALE_TIMESTAMP', 'announce timestamp out of skew window');
+      return;
+    }
+    // Validate key shapes before routing — malformed keys would still
+    // pass through to peers and just fail to decrypt anywhere, wasting
+    // bandwidth and confusing the recipient. Reject at the boundary.
+    try {
+      if (
+        bs58.decode(raw.boxPublicKey).length !== nacl.box.publicKeyLength ||
+        bs58.decode(raw.signingPublicKey).length !== nacl.sign.publicKeyLength
+      ) {
+        sendError(socket, 'INVALID_PAYLOAD', 'malformed public key');
+        return;
+      }
+    } catch {
+      sendError(socket, 'INVALID_PAYLOAD', 'public key not valid base58');
       return;
     }
     const expected = socketNonces.get(socket.id);
@@ -298,6 +332,7 @@ io.on('connection', (socket: Socket) => {
         typeof rec.ciphertext !== 'string' ||
         typeof rec.nonce !== 'string'
       ) continue;
+      if (rec.ciphertext.length > MAX_CIPHERTEXT_BYTES) continue;
       if (rec.boxPublicKey === session.boxPublicKey) continue; // don't echo to self
       if (!allowedBoxes.has(rec.boxPublicKey)) continue;
 
@@ -330,6 +365,9 @@ io.on('connection', (socket: Socket) => {
       typeof raw.nonce !== 'string'
     ) {
       return sendError(socket, 'INVALID_PAYLOAD', 'malformed dm:send');
+    }
+    if (raw.ciphertext.length > MAX_CIPHERTEXT_BYTES) {
+      return sendError(socket, 'INVALID_PAYLOAD', 'ciphertext too large');
     }
     if (!rateAllowed(session.boxPublicKey, 'message')) {
       return sendError(socket, 'RATE_LIMITED', 'message rate exceeded');
@@ -398,7 +436,9 @@ setInterval(() => {
 }, RATE_WINDOW_MS);
 
 httpServer.listen(PORT, () => {
-  console.log(`[void-relay] listening on :${PORT} (CORS: ${CORS_ORIGIN})`);
+  console.log(
+    `[void-relay] listening on :${PORT} (CORS: ${CORS_ALLOW_ANY ? '* (any origin)' : CORS_ORIGIN_LIST.join(', ')})`,
+  );
 });
 
 function shutdown(sig: string) {

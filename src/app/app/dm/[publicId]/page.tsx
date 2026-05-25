@@ -9,6 +9,7 @@ import type { MessageData } from '@/components/chat/Message';
 import { useSession } from '@/hooks/useSession';
 import { useRealtime, type DecryptedDMMessage } from '@/hooks/useRealtime';
 import { useApi } from '@/hooks/useApi';
+import { appendDM as storeAppendDM, listDM as storeListDM } from '@/lib/messageStore';
 import type { Community, DirectMessage, CurrentUser } from '@/components/layout/Sidebar';
 import type { Member } from '@/components/layout/MemberList';
 import type { HeaderUser } from '@/components/layout/Header';
@@ -69,6 +70,28 @@ export default function DMPage() {
     if (publicId && recipientSigningKey === publicId) router.push('/app');
   }, [publicId, recipientSigningKey, router]);
 
+  // Hydrate persisted DM history for this peer.
+  useEffect(() => {
+    let cancelled = false;
+    void storeListDM(recipientSigningKey).then((stored) => {
+      if (cancelled) return;
+      setMessages(
+        stored.map((m) => ({
+          id: m.id,
+          content: m.plaintext,
+          nonce: '',
+          senderId: m.senderSigningPublicKey,
+          sender: { publicId: m.senderSigningPublicKey },
+          dmRecipient: m.optimistic ? recipientSigningKey : publicId,
+          createdAt: new Date(m.ts),
+        })),
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [publicId, recipientSigningKey]);
+
   useEffect(() => {
     const load = async () => {
       if (!isReady) return;
@@ -106,16 +129,27 @@ export default function DMPage() {
         return false;
       }
       setSendError(null);
+      const id = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const ts = Date.now();
       const optimistic: MessageData = {
-        id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        id,
         content: plaintext,
         nonce: '',
         senderId: publicId,
         sender: { publicId },
         dmRecipient: recipientSigningKey,
-        createdAt: new Date(),
+        createdAt: new Date(ts),
       };
       setMessages((prev) => [...prev, optimistic]);
+      void storeAppendDM(recipientSigningKey, {
+        id,
+        ts,
+        senderSigningPublicKey: publicId,
+        senderBoxPublicKey: '',
+        senderDisplayName: '',
+        plaintext,
+        optimistic: true,
+      });
       return sendDM(recipientBoxKey, plaintext);
     },
     [publicId, recipientBoxKey, recipientSigningKey, sendDM],

@@ -5,6 +5,7 @@ import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import type { MessageData } from './Message';
 import { useSession } from '@/hooks/useSession';
+import { ConnectionStatusBanner } from './ConnectionStatusBanner';
 
 export type ChatMode = 'channel' | 'dm';
 
@@ -101,6 +102,7 @@ export function ChatContainer({
 
   return (
     <div className={`flex flex-col h-full bg-black ${className}`}>
+      <ConnectionStatusBanner />
       {error && (
         <div className="px-4 py-2 bg-zinc-900/80 border-b border-zinc-800 flex items-center gap-2 text-zinc-400 text-sm">
           <span>{error}</span>

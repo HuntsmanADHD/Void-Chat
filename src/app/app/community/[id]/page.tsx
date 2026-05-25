@@ -7,6 +7,7 @@ import { ChatContainer, type ChatHeaderInfo } from '@/components/chat/ChatContai
 import type { MessageData } from '@/components/chat/Message';
 import { useSession } from '@/hooks/useSession';
 import { useChannelRoster, useRealtime, type DecryptedChannelMessage } from '@/hooks/useRealtime';
+import { appendChannel as storeAppendChannel, listChannel as storeListChannel } from '@/lib/messageStore';
 import type { Channel, Community, CurrentUser } from '@/components/layout/Sidebar';
 import type { Member } from '@/components/layout/MemberList';
 import { UserProfileModal, type UserProfileData } from '@/components/ui';
@@ -130,23 +131,57 @@ export default function CommunityPage() {
     return () => leaveChannel(activeChannelId);
   }, [activeChannelId, isReady, joinChannel, leaveChannel]);
 
+  // Hydrate the channel's locally-stored history when active channel changes.
   useEffect(() => {
+    if (!activeChannelId) {
+      setMessages([]);
+      return;
+    }
+    let cancelled = false;
     setMessages([]);
+    void storeListChannel(activeChannelId).then((stored) => {
+      if (cancelled) return;
+      setMessages(
+        stored.map((m) => ({
+          id: m.id,
+          content: m.plaintext,
+          nonce: '',
+          senderId: m.senderSigningPublicKey,
+          sender: { publicId: m.senderSigningPublicKey },
+          channelId: activeChannelId,
+          createdAt: new Date(m.ts),
+        })),
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [activeChannelId]);
 
   const handleSend = useCallback(
     async (plaintext: string) => {
       if (!activeChannelId) return false;
+      const id = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const ts = Date.now();
       const optimistic: MessageData = {
-        id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        id,
         content: plaintext,
         nonce: '',
         senderId: publicId,
         sender: { publicId },
         channelId: activeChannelId,
-        createdAt: new Date(),
+        createdAt: new Date(ts),
       };
       setMessages((prev) => [...prev, optimistic]);
+      void storeAppendChannel(activeChannelId, {
+        id,
+        ts,
+        senderSigningPublicKey: publicId,
+        senderBoxPublicKey: '',
+        senderDisplayName: '',
+        plaintext,
+        optimistic: true,
+      });
       return sendChannelMessage(activeChannelId, plaintext);
     },
     [activeChannelId, publicId, sendChannelMessage],

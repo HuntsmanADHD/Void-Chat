@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Check, Copy, Eye, Key, Shield, Trash2 } from 'lucide-react';
 import { useSession } from '@/hooks/useSession';
+import { destroyActiveSession } from '@/lib/messageStore';
 
 function SettingsSection({
   title,
@@ -89,13 +90,14 @@ export default function SettingsPage() {
     if (trimmed && trimmed !== displayName) setDisplayName(trimmed);
   }, [draftName, displayName, setDisplayName]);
 
-  const handleEndSession = useCallback(() => {
-    // In ephemeral mode there is no "logout" — clearing sessionStorage
-    // drops the keypair, and reloading regenerates a fresh identity.
-    if (typeof window !== 'undefined') {
-      sessionStorage.clear();
-      window.location.assign('/');
-    }
+  const handleEndSession = useCallback(async () => {
+    // In ephemeral mode there is no "logout" — wiping sessionStorage
+    // drops the keypair, dropping the IndexedDB wipes message history,
+    // and reloading regenerates a fresh identity.
+    if (typeof window === 'undefined') return;
+    await destroyActiveSession().catch(() => {});
+    sessionStorage.clear();
+    window.location.assign('/');
   }, []);
 
   if (!isReady || !session) {
