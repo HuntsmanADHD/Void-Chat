@@ -7,8 +7,6 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { CommunityCard, type CommunityData } from '@/components/community/CommunityCard';
 import { CreateCommunityModal, type CreateCommunityFormData } from '@/components/community/CreateCommunityModal';
 import { useSession } from '@/hooks/useSession';
-import { useEncryption } from '@/hooks/useEncryption';
-import { useRealtime } from '@/hooks/useRealtime';
 import { useApi } from '@/hooks/useApi';
 import { useToast } from '@/components/ui/Toast';
 /** Truncate a public ID for display */
@@ -75,9 +73,6 @@ export default function AppDashboard() {
   const { session, isReady } = useSession();
   const publicId = session?.signingPublicKey ?? '';
   const isAuthenticated = isReady;
-  const isBlacklisted = false;
-  const { getOrCreateKeyPair, isInitialized } = useEncryption();
-  const { isUserOnline } = useRealtime({ autoConnect: isAuthenticated });
   const api = useApi();
   const { success: showSuccess, error: showError } = useToast();
 
@@ -89,27 +84,26 @@ export default function AppDashboard() {
   const [isCreating, setIsCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  useEffect(() => { if (!isAuthenticated) { router.push('/'); } }, [isAuthenticated, router]);
-  useEffect(() => { if (isAuthenticated && !isInitialized) { getOrCreateKeyPair(); } }, [isAuthenticated, isInitialized, getOrCreateKeyPair]);
-
   useEffect(() => {
     const fetchData = async () => {
       if (!isAuthenticated || !publicId) return;
       setIsLoading(true);
-      const communitiesResponse = await api.get<{ communities: Array<{ id: string; name: string; description?: string; avatar?: string; memberCount: number; ownerId?: string }> }>('/api/communities', { showErrorToast: false });
+      const communitiesResponse = await api.get<{ communities: Array<{ id: string; name: string; description?: string; avatar?: string; channelCount?: number }> }>('/api/communities', { showErrorToast: false });
       if (communitiesResponse.success && communitiesResponse.data?.communities) {
-        const transformedCommunities: CommunityData[] = communitiesResponse.data.communities.map((c) => ({ id: c.id, name: c.name, description: c.description, icon: c.avatar, memberCount: c.memberCount, ownerId: c.ownerId }));
+        // CommunityCard's `memberCount` field is repurposed as channel count
+        // in the ephemeral model — there's no membership concept, so the
+        // most meaningful directory stat is "how many channels exist."
+        const transformedCommunities: CommunityData[] = communitiesResponse.data.communities.map((c) => ({ id: c.id, name: c.name, description: c.description, icon: c.avatar, memberCount: c.channelCount ?? 0 }));
         const communityList: Community[] = transformedCommunities.map((c) => ({ id: c.id, name: c.name, icon: c.icon, unreadCount: 0 }));
         setCommunities(communityList);
         setCommunityData(transformedCommunities);
       }
-      // DM list will be populated from socket events later
       setDirectMessages([]);
       if (!communitiesResponse.success) { showError('Failed to load some data. Please refresh the page.'); }
       setIsLoading(false);
     };
     fetchData();
-  }, [isAuthenticated, publicId, isUserOnline, api, showError]);
+  }, [isAuthenticated, publicId, api, showError]);
 
   const handleSelectCommunity = useCallback((communityId: string) => { router.push(`/app/community/${communityId}`); }, [router]);
   const handleSelectDM = useCallback((dmId: string) => { router.push(`/app/dm/${dmId}`); }, [router]);
@@ -137,10 +131,6 @@ export default function AppDashboard() {
 
   if (!isAuthenticated || isLoading) {
     return (<div className="h-screen w-screen flex items-center justify-center bg-black"><div className="text-center"><div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-zinc-700 via-zinc-600 to-zinc-500 flex items-center justify-center mb-4 mx-auto animate-pulse border border-zinc-500/30"><span className="text-zinc-100 font-bold text-2xl">C</span></div><p className="text-zinc-400">Loading Void Chat...</p></div></div>);
-  }
-
-  if (isBlacklisted) {
-    return (<div className="h-screen w-screen flex items-center justify-center bg-black"><div className="text-center max-w-md px-8"><div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-zinc-800 to-zinc-700 flex items-center justify-center mb-4 mx-auto border border-red-900/50"><span className="text-red-400 font-bold text-2xl">!</span></div><h1 className="text-2xl font-bold text-zinc-100 mb-2">Access Denied</h1><p className="text-zinc-400">Your account has been blacklisted due to violations of community guidelines. If you believe this is an error, please contact support.</p></div></div>);
   }
 
   const hasContent = communities.length > 0 || directMessages.length > 0;
