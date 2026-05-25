@@ -1,24 +1,14 @@
 'use client';
 
-import { useEffect, useState, useCallback, useMemo } from 'react';
-import { useRouter, useParams } from 'next/navigation';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { ChatContainer, type ChatHeaderInfo } from '@/components/chat/ChatContainer';
 import type { MessageData } from '@/components/chat/Message';
 import { useSession } from '@/hooks/useSession';
-import { useEncryption } from '@/hooks/useEncryption';
-import { useRealtime, type OnMessageReceived } from '@/hooks/useRealtime';
-import type { Community, Channel, CurrentUser } from '@/components/layout/Sidebar';
+import { useChannelRoster, useRealtime, type DecryptedChannelMessage } from '@/hooks/useRealtime';
+import type { Channel, Community, CurrentUser } from '@/components/layout/Sidebar';
 import type { Member } from '@/components/layout/MemberList';
-
-interface CommunityDetail {
-  id: string;
-  name: string;
-  icon?: string | null;
-  description?: string;
-  ownerId: string;
-  memberCount: number;
-}
 
 interface ChannelDetail {
   id: string;
@@ -27,9 +17,6 @@ interface ChannelDetail {
   type: 'text' | 'voice';
 }
 
-/**
- * Channel view page
- */
 export default function ChannelPage() {
   const router = useRouter();
   const params = useParams();
@@ -38,179 +25,138 @@ export default function ChannelPage() {
 
   const { session, isReady } = useSession();
   const publicId = session?.signingPublicKey ?? '';
-  const isAuthenticated = isReady;
-  const { } = useEncryption();
 
-  // State
-  const [community, setCommunity] = useState<CommunityDetail | null>(null);
   const [channels, setChannels] = useState<ChannelDetail[]>([]);
-  const [members, setMembers] = useState<Member[]>([]);
   const [messages, setMessages] = useState<MessageData[]>([]);
   const [communities, setCommunities] = useState<Community[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Handle incoming realtime messages
-  const handleMessage: OnMessageReceived = useCallback((message) => {
-    if (message.channelId === channelId) {
-      const msgAny = message as { encrypted?: string; nonce?: string };
-      const newMessage: MessageData = {
-        id: message.id,
-        content: msgAny.encrypted || '',
-        nonce: msgAny.nonce || '',
-        senderId: message.senderId,
-        sender: {
-          publicId: message.senderId,
-        },
-        channelId: message.channelId,
-        createdAt: new Date(message.timestamp),
-      };
-      setMessages((prev) => [...prev, newMessage]);
-    }
-  }, [channelId]);
+  const handleChannelMessage = useCallback(
+    (msg: DecryptedChannelMessage) => {
+      if (msg.channelId !== channelId) return;
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === msg.msgId)) return prev;
+        const decoded: MessageData = {
+          id: msg.msgId,
+          content: msg.plaintext,
+          nonce: '',
+          senderId: msg.senderSigningPublicKey,
+          sender: { publicId: msg.senderSigningPublicKey },
+          channelId: msg.channelId,
+          createdAt: new Date(msg.ts),
+        };
+        return [...prev, decoded];
+      });
+    },
+    [channelId],
+  );
 
-  const {
-    joinChannel,
-    leaveChannel,
-    sendChannelMessage,
-    isUserOnline,
-  } = useRealtime({
-    onMessage: handleMessage,
-    autoConnect: isAuthenticated,
-  });
+  const { joinChannel, leaveChannel, sendChannelMessage, isReady: isRealtimeReady } =
+    useRealtime({ onChannelMessage: handleChannelMessage });
 
-  // Redirect if not authenticated
-  useEffect(() => {
-    if (!isAuthenticated) {
-      router.push('/');
-    }
-  }, [isAuthenticated, router]);
+  const roster = useChannelRoster(channelId);
 
-  // Fetch community and channel details
   useEffect(() => {
     const fetchData = async () => {
-      if (!isAuthenticated || !publicId || !communityId || !session) return;
-
-      const authHeaders = {
-        'x-public-id': session.publicId,
-        'x-signature': session.signature,
-      };
-
+      if (!isReady || !communityId) return;
       setIsLoading(true);
       try {
-        const communityResponse = await fetch(`/api/communities/${communityId}`, {
-          headers: authHeaders,
-        });
-
-        if (!communityResponse.ok) {
-          if (communityResponse.status === 404) {
-            router.push('/app');
-            return;
-          }
-          throw new Error('Failed to fetch community');
+        const [channelsRes, allRes] = await Promise.all([
+          fetch(`/api/communities/${communityId}/channels`),
+          fetch('/api/communities'),
+        ]);
+        if (!channelsRes.ok) {
+          // 404 here means the community itself doesn't exist (the channels
+          // route 404s on missing community); bounce back to the dashboard.
+          if (channelsRes.status === 404) router.push('/app');
+          return;
         }
-
-        const communityData = await communityResponse.json();
-        setCommunity({
-          ...communityData.community,
-        });
-
-        const channelsResponse = await fetch(`/api/communities/${communityId}/channels`, {
-          headers: authHeaders,
-        });
-
-        if (channelsResponse.ok) {
-          const channelsData = await channelsResponse.json();
-          setChannels(channelsData.channels || []);
+        const chData = await channelsRes.json();
+        setChannels(chData.channels || []);
+        if (allRes.ok) {
+          const allData = await allRes.json();
+          const list: Community[] =
+            allData.communities?.map((c: { id: string; name: string; icon?: string }) => ({
+              id: c.id,
+              name: c.name,
+              icon: c.icon || null,
+              unreadCount: 0,
+            })) || [];
+          setCommunities(list);
         }
-
-        const membersResponse = await fetch(`/api/communities/${communityId}/members`, {
-          headers: authHeaders,
-        });
-
-        if (membersResponse.ok) {
-          const membersData = await membersResponse.json();
-          const memberList: Member[] = membersData.members?.map((m: { publicId: string; role?: string }) => ({
-            id: m.publicId,
-            publicId: m.publicId,
-            role: m.role || 'MEMBER',
-            isOnline: isUserOnline(m.publicId),
-          })) || [];
-          setMembers(memberList);
-        }
-
-        const allCommunitiesResponse = await fetch('/api/communities', {
-          headers: authHeaders,
-        });
-
-        if (allCommunitiesResponse.ok) {
-          const allData = await allCommunitiesResponse.json();
-          const communityList: Community[] = allData.communities?.map((c: { id: string; name: string; icon?: string }) => ({
-            id: c.id,
-            name: c.name,
-            icon: c.icon || null,
-            unreadCount: 0,
-          })) || [];
-          setCommunities(communityList);
-        }
-      } catch (error) {
-        console.error('Failed to fetch data:', error);
+      } catch (err) {
+        console.error('Failed to fetch channel data:', err);
         router.push('/app');
       } finally {
         setIsLoading(false);
       }
     };
-
     fetchData();
-  }, [isAuthenticated, publicId, communityId, router, isUserOnline, session]);
+  }, [isReady, communityId, router]);
 
-  // Join channel when component mounts
   useEffect(() => {
-    if (channelId && isAuthenticated) {
-      joinChannel(channelId);
-      return () => {
-        leaveChannel(channelId);
+    if (!channelId || !isReady) return;
+    joinChannel(channelId);
+    return () => leaveChannel(channelId);
+  }, [channelId, isReady, joinChannel, leaveChannel]);
+
+  useEffect(() => {
+    setMessages([]);
+  }, [channelId]);
+
+  const handleSend = useCallback(
+    async (plaintext: string) => {
+      // The relay skips the sender on fan-out, so we never see our own
+      // message via onChannelMessage. Append a local copy here so the
+      // sender sees what they just sent. No reconciliation needed —
+      // local-prefixed ids can't collide with server-issued m_* ids.
+      const optimistic: MessageData = {
+        id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        content: plaintext,
+        nonce: '',
+        senderId: publicId,
+        sender: { publicId },
+        channelId,
+        createdAt: new Date(),
       };
-    }
-    return undefined;
-  }, [channelId, isAuthenticated, joinChannel, leaveChannel]);
+      setMessages((prev) => [...prev, optimistic]);
+      return sendChannelMessage(channelId, plaintext);
+    },
+    [channelId, publicId, sendChannelMessage],
+  );
 
-  // Messages come from socket events only — no server-side storage
-  // On mount, start with an empty message list. New messages arrive via handleMessage.
+  const handleSelectChannel = useCallback(
+    (newChannelId: string) => router.push(`/app/community/${communityId}/channel/${newChannelId}`),
+    [communityId, router],
+  );
+  const handleSelectCommunity = useCallback(
+    (newCommunityId: string) => router.push(`/app/community/${newCommunityId}`),
+    [router],
+  );
+  const handleSelectDM = useCallback(
+    (dmId: string) => router.push(`/app/dm/${dmId}`),
+    [router],
+  );
+  const handleSwitchToDMs = useCallback(() => router.push('/app'), [router]);
+  const handleMemberClick = useCallback(
+    (member: Member) => {
+      if (member.publicId !== publicId) router.push(`/app/dm/${member.publicId}`);
+    },
+    [publicId, router],
+  );
+  const handleSettings = useCallback(() => router.push('/app/settings'), [router]);
 
-  const handleSelectChannel = useCallback((newChannelId: string) => {
-    router.push(`/app/community/${communityId}/channel/${newChannelId}`);
-  }, [communityId, router]);
+  const members: Member[] = useMemo(
+    () =>
+      roster.map((m) => ({
+        id: m.signingPublicKey,
+        publicId: m.signingPublicKey,
+        role: 'MEMBER',
+        isOnline: true,
+      })),
+    [roster],
+  );
 
-  const handleSelectCommunity = useCallback((newCommunityId: string) => {
-    router.push(`/app/community/${newCommunityId}`);
-  }, [router]);
-
-  const handleSelectDM = useCallback((dmId: string) => {
-    router.push(`/app/dm/${dmId}`);
-  }, [router]);
-
-  const handleSwitchToDMs = useCallback(() => {
-    router.push('/app');
-  }, [router]);
-
-  const handleMessageSent = useCallback((message: { content: string; nonce: string }) => {
-    sendChannelMessage(channelId, message.content, message.nonce);
-  }, [channelId, sendChannelMessage]);
-
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const handleReport = useCallback((_messageId: string, _senderId: string) => {}, []);
-
-  const handleMemberClick = useCallback((member: Member) => {
-    if (member.publicId !== publicId) {
-      router.push(`/app/dm/${member.publicId}`);
-    }
-  }, [router, publicId]);
-
-  const handleSettings = useCallback(() => {
-    router.push('/app/settings');
-  }, [router]);
-
-  // Current user
   const currentUser: CurrentUser = {
     publicId: publicId || '',
     imageUrl: null,
@@ -219,39 +165,37 @@ export default function ChannelPage() {
 
   const activeChannel = useMemo(() => {
     const channel = channels.find((c) => c.id === channelId);
-    if (!channel) return null;
-    return { id: channel.id, name: channel.name, description: channel.description };
+    return channel ? { id: channel.id, name: channel.name, description: channel.description } : null;
   }, [channelId, channels]);
 
-  const sidebarChannels: Channel[] = useMemo(() => {
-    return channels.map((c) => ({
-      id: c.id, name: c.name, type: c.type, isActive: c.id === channelId,
-    }));
-  }, [channels, channelId]);
+  const sidebarChannels: Channel[] = useMemo(
+    () =>
+      channels.map((c) => ({
+        id: c.id,
+        name: c.name,
+        type: c.type,
+        isActive: c.id === channelId,
+      })),
+    [channels, channelId],
+  );
 
-  const headerInfo: ChatHeaderInfo | undefined = activeChannel ? {
-    name: activeChannel.name, description: activeChannel.description, memberCount: members.length,
-  } : undefined;
+  const headerInfo: ChatHeaderInfo | undefined = activeChannel
+    ? { name: activeChannel.name, description: activeChannel.description, memberCount: members.length }
+    : undefined;
 
-  if (!isAuthenticated || isLoading) {
+  if (!isReady || isLoading) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-black">
-        <div className="text-center">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-zinc-700 via-zinc-600 to-zinc-500 flex items-center justify-center mb-4 mx-auto animate-pulse border border-zinc-500/30">
-            <span className="text-zinc-100 font-bold text-2xl">C</span>
-          </div>
-          <p className="text-zinc-400">Loading channel...</p>
-        </div>
+        <p className="text-zinc-400">Loading channel…</p>
       </div>
     );
   }
 
-  if (!activeChannel && !isLoading) {
+  if (!activeChannel) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-black">
         <div className="text-center">
           <h2 className="text-xl font-semibold text-white mb-2">Channel Not Found</h2>
-          <p className="text-zinc-400 mb-4">This channel does not exist or you do not have access.</p>
           <button
             onClick={() => router.push(`/app/community/${communityId}`)}
             className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white rounded-lg transition-colors"
@@ -272,7 +216,6 @@ export default function ChannelPage() {
       currentUser={currentUser}
       activeChannel={activeChannel}
       members={members}
-      communityOwnerId={community?.ownerId}
       isDMView={false}
       onSelectCommunity={handleSelectCommunity}
       onSelectChannel={handleSelectChannel}
@@ -288,11 +231,8 @@ export default function ChannelPage() {
         headerInfo={headerInfo}
         messages={messages}
         isLoading={false}
-        hasMore={false}
-        onLoadMore={() => {}}
-        onMessageSent={handleMessageSent}
-        onReport={handleReport}
-        isTimedOut={false}
+        onSend={handleSend}
+        isSendReady={isRealtimeReady}
       />
     </AppLayout>
   );

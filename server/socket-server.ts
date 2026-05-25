@@ -1,989 +1,411 @@
 /**
- * Socket.io Server for Void Chat
- * Handles real-time communication, WebRTC signaling, and message relay
+ * Void Chat ephemeral relay.
  *
- * Features:
- * - PublicId-based authentication
- * - Room management (channels and DMs)
- * - P2P signal relay for WebRTC
- * - Encrypted message relay (never decrypted server-side)
- * - Online status broadcasting
- * - Typing indicators
- * - Rate limiting per user
+ * The server holds NO persistent state. Its only job:
+ *   1. Authenticate a session by verifying a signed announcement that's
+ *      bound to a connection-specific nonce (replay-immune).
+ *   2. Keep an in-memory roster of who's currently in each channel.
+ *   3. Fan out per-recipient channel ciphertexts and route DM ciphertexts.
  *
- * Run separately: npx ts-node server/socket-server.ts
- * Or integrate with custom Next.js server
+ * Nothing is logged to disk. Nothing is decrypted. Restart the process and
+ * every session, roster, and in-flight message is gone.
+ *
+ * Run via `yarn socket` (tsx).
  */
 
-import { Server, Socket } from 'socket.io';
 import { createServer } from 'http';
-import { verify } from '@noble/ed25519';
-import bs58 from 'bs58';
 import { randomBytes } from 'crypto';
-import { PrismaClient } from '@prisma/client';
+import { Server, Socket } from 'socket.io';
+import nacl from 'tweetnacl';
+import bs58 from 'bs58';
 
-const prisma = new PrismaClient();
+import {
+  WIRE,
+  type ChannelJoinMessage,
+  type ChannelLeaveMessage,
+  type ChannelMessageRelay,
+  type ChannelSendMessage,
+  type DMMessageRelay,
+  type DMSendMessage,
+  type RosterMember,
+  type SessionAnnounceMessage,
+  type WireErrorMessage,
+} from '../src/types/wire';
 
-/**
- * Configuration
- */
-const PORT = process.env['SOCKET_PORT'] ? parseInt(process.env['SOCKET_PORT']) : 3001;
+// ── Config ─────────────────────────────────────────────────────────────────
+
+const PORT = process.env['SOCKET_PORT'] ? parseInt(process.env['SOCKET_PORT'], 10) : 3001;
 const CORS_ORIGIN = process.env['CORS_ORIGIN'] || 'http://localhost:3000';
 
-/**
- * Rate limiting configuration
- */
-const RATE_LIMIT = {
-  windowMs: 60000, // 1 minute window
-  maxMessages: 60, // Max 60 messages per minute
-  maxSignals: 100, // Max 100 signals per minute (for WebRTC)
-};
+const ANNOUNCE_MAX_SKEW_MS = 5 * 60 * 1000;
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX_MESSAGES = 120;
+const RATE_MAX_JOINS = 60;
+const MAX_CHANNEL_RECIPIENTS = 256;
 
-/**
- * Types
- */
-interface P2PSignal {
-  type: 'offer' | 'answer' | 'ice-candidate';
-  sdp?: string;
-  candidate?: RTCIceCandidate;
+// ── In-memory state ────────────────────────────────────────────────────────
+
+interface SessionInfo {
+  signingPublicKey: string;
+  boxPublicKey: string;
+  displayName: string;
+  joinedAt: number;
 }
 
-interface AuthenticatedSocket extends Socket {
-  publicId?: string;
-  authenticated?: boolean;
-}
-
-interface RateLimitEntry {
+interface RateBucket {
   messages: number;
-  signals: number;
+  joins: number;
   windowStart: number;
 }
 
-interface OnlineUser {
-  publicId: string;
-  socketId: string;
-  connectedAt: number;
-  lastSeen: number;
+const socketSessions = new Map<string, SessionInfo>();
+const socketNonces = new Map<string, string>();
+const boxToSockets = new Map<string, Set<string>>();
+const channelRosters = new Map<string, Map<string, RosterMember>>();
+const rateBuckets = new Map<string, RateBucket>();
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function issueNonce(): string {
+  return randomBytes(24).toString('hex');
 }
 
-/**
- * In-memory stores
- * In production, consider using Redis for scalability
- */
-const onlineUsers: Map<string, OnlineUser> = new Map();
-const socketToUser: Map<string, string> = new Map();
-const rateLimits: Map<string, RateLimitEntry> = new Map();
-const typingUsers: Map<string, Set<string>> = new Map(); // roomId -> Set<publicId>
-
-/**
- * Ephemeral store-and-forward buffer for offline users.
- * Messages are held in memory with a TTL and delivered when the user comes online.
- * Nothing is persisted to disk — if the server restarts, buffered messages are lost.
- * This is intentional: zero data at rest.
- */
-const MESSAGE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
-const MAX_BUFFERED_PER_USER = 500; // Max messages buffered per offline user
-
-interface BufferedMessage {
-  id: string;
-  type: 'channel' | 'dm';
-  payload: Record<string, unknown>;
-  timestamp: number;
-  expiresAt: number;
+function msgId(): string {
+  return `m_${Date.now().toString(36)}_${randomBytes(6).toString('hex')}`;
 }
 
-const offlineBuffer: Map<string, BufferedMessage[]> = new Map();
-
-/**
- * Create HTTP server and Socket.io instance
- */
-const httpServer = createServer();
-const io = new Server(httpServer, {
-  cors: {
-    origin: CORS_ORIGIN,
-    methods: ['GET', 'POST'],
-    credentials: true,
-  },
-  pingTimeout: 60000,
-  pingInterval: 25000,
-});
-
-/**
- * Generate unique message ID
- */
-function generateMessageId(): string {
-  const timestamp = Date.now();
-  const randomPart = randomBytes(8).toString('hex');
-  return `msg-${timestamp}-${randomPart}`;
-}
-
-/**
- * Get or create DM room ID (deterministic based on both publicIds)
- */
-function getDMRoomId(id1: string, id2: string): string {
-  // Sort publicIds to ensure consistent room ID regardless of who initiates
-  const sorted = [id1, id2].sort();
-  return `dm:${sorted[0]}:${sorted[1]}`;
-}
-
-/**
- * Get channel room ID
- */
-function getChannelRoomId(channelId: string): string {
-  return `channel:${channelId}`;
-}
-
-/**
- * Check and update rate limit
- */
-function checkRateLimit(publicId: string, type: 'message' | 'signal'): boolean {
+function rateAllowed(bucketKey: string, kind: 'message' | 'join'): boolean {
   const now = Date.now();
-  let entry = rateLimits.get(publicId);
-
-  if (!entry || now - entry.windowStart > RATE_LIMIT.windowMs) {
-    // Reset window
-    entry = {
-      messages: 0,
-      signals: 0,
-      windowStart: now,
-    };
-    rateLimits.set(publicId, entry);
+  let bucket = rateBuckets.get(bucketKey);
+  if (!bucket || now - bucket.windowStart > RATE_WINDOW_MS) {
+    bucket = { messages: 0, joins: 0, windowStart: now };
+    rateBuckets.set(bucketKey, bucket);
   }
-
-  if (type === 'message') {
-    if (entry.messages >= RATE_LIMIT.maxMessages) {
-      return false;
-    }
-    entry.messages++;
+  if (kind === 'message') {
+    if (bucket.messages >= RATE_MAX_MESSAGES) return false;
+    bucket.messages++;
   } else {
-    if (entry.signals >= RATE_LIMIT.maxSignals) {
-      return false;
-    }
-    entry.signals++;
+    if (bucket.joins >= RATE_MAX_JOINS) return false;
+    bucket.joins++;
   }
-
   return true;
 }
 
-/**
- * Verify NaCl signature for authentication
- */
-async function verifySignature(
-  publicKey: string,
-  signature: string,
-  message: string
-): Promise<boolean> {
-  try {
-    const publicKeyBytes = bs58.decode(publicKey);
-    const signatureBytes = bs58.decode(signature);
-    const messageBytes = new TextEncoder().encode(message);
+function sendError(socket: Socket, code: WireErrorMessage['code'], message: string): void {
+  const payload: WireErrorMessage = { code, message };
+  socket.emit(WIRE.ERROR, payload);
+}
 
-    // Verify using ed25519
-    const isValid = await verify(signatureBytes, messageBytes, publicKeyBytes);
-    return isValid;
-  } catch (error) {
-    console.error('[Socket Server] Signature verification failed:', error);
+function registerSocketForBox(socketId: string, boxPublicKey: string): void {
+  let set = boxToSockets.get(boxPublicKey);
+  if (!set) {
+    set = new Set();
+    boxToSockets.set(boxPublicKey, set);
+  }
+  set.add(socketId);
+}
+
+function unregisterSocketForBox(socketId: string, boxPublicKey: string): void {
+  const set = boxToSockets.get(boxPublicKey);
+  if (!set) return;
+  set.delete(socketId);
+  if (set.size === 0) boxToSockets.delete(boxPublicKey);
+}
+
+function broadcastToChannel(
+  channelId: string,
+  event: string,
+  payload: unknown,
+  exceptSocketId?: string,
+): void {
+  const roster = channelRosters.get(channelId);
+  if (!roster) return;
+  for (const socketId of roster.keys()) {
+    if (socketId === exceptSocketId) continue;
+    io.sockets.sockets.get(socketId)?.emit(event, payload);
+  }
+}
+
+function verifyAnnounceSignature(
+  msg: SessionAnnounceMessage,
+  expectedNonce: string,
+): boolean {
+  if (msg.nonce !== expectedNonce) return false;
+  try {
+    const signed = `${msg.nonce}|${msg.boxPublicKey}|${msg.displayName}|${msg.ts}`;
+    const sigBytes = bs58.decode(msg.sig);
+    const pubBytes = bs58.decode(msg.signingPublicKey);
+    if (sigBytes.length !== nacl.sign.signatureLength) return false;
+    if (pubBytes.length !== nacl.sign.publicKeyLength) return false;
+    return nacl.sign.detached.verify(new TextEncoder().encode(signed), sigBytes, pubBytes);
+  } catch {
     return false;
   }
 }
 
-function bufferForOfflineUser(targetPublicId: string, type: 'channel' | 'dm', payload: Record<string, unknown>): void {
-  const now = Date.now();
-  const msg: BufferedMessage = {
-    id: generateMessageId(),
-    type,
-    payload,
-    timestamp: now,
-    expiresAt: now + MESSAGE_TTL_MS,
-  };
+// ── Server ─────────────────────────────────────────────────────────────────
 
-  let buffer = offlineBuffer.get(targetPublicId);
-  if (!buffer) {
-    buffer = [];
-    offlineBuffer.set(targetPublicId, buffer);
-  }
+const httpServer = createServer();
+const io = new Server(httpServer, {
+  cors: { origin: CORS_ORIGIN, methods: ['GET', 'POST'], credentials: true },
+  pingTimeout: 60_000,
+  pingInterval: 25_000,
+});
 
-  // Evict expired messages
-  const valid = buffer.filter(m => m.expiresAt > now);
+io.on('connection', (socket: Socket) => {
+  const nonce = issueNonce();
+  socketNonces.set(socket.id, nonce);
+  socket.emit(WIRE.CONNECTION_NONCE, { nonce });
 
-  // Cap buffer size
-  if (valid.length >= MAX_BUFFERED_PER_USER) {
-    valid.shift(); // Drop oldest
-  }
-
-  valid.push(msg);
-  offlineBuffer.set(targetPublicId, valid);
-}
-
-function flushOfflineBuffer(publicId: string, socket: AuthenticatedSocket): void {
-  const buffer = offlineBuffer.get(publicId);
-  if (!buffer || buffer.length === 0) return;
-
-  const now = Date.now();
-  const valid = buffer.filter(m => m.expiresAt > now);
-
-  for (const msg of valid) {
-    socket.emit(`message:${msg.type}`, msg.payload);
-  }
-
-  // Clear the buffer
-  offlineBuffer.delete(publicId);
-
-  if (valid.length > 0) {
-    console.log(`[Socket Server] Flushed ${valid.length} buffered messages to ${publicId}`);
-  }
-}
-
-/**
- * Broadcast online users list to all connected clients
- */
-function broadcastOnlineUsers(): void {
-  const publicIds = Array.from(onlineUsers.keys());
-  io.emit('users:online', publicIds);
-}
-
-/**
- * Handle socket connection
- */
-io.on('connection', (socket: AuthenticatedSocket) => {
-  console.log(`[Socket Server] Client connected: ${socket.id}`);
-
-  /**
-   * Authentication handler
-   */
-  socket.on('authenticate', async (data: { publicId: string; signature: string; message: string }) => {
-    try {
-      const { publicId, signature, message } = data;
-
-      // Validate inputs
-      if (!publicId || !signature || !message) {
-        socket.emit('authenticated', { success: false, error: 'Missing authentication data' });
-        return;
-      }
-
-      // Validate message timestamp to prevent replay attacks
-      const timestampMatch = message.match(/timestamp:\s*(\d+)/i);
-      if (timestampMatch) {
-        const messageTimestamp = parseInt(timestampMatch[1]);
-        const currentTime = Date.now();
-        const timeDiff = Math.abs(currentTime - messageTimestamp);
-        const MAX_TIME_DIFF = 5 * 60 * 1000;
-
-        if (timeDiff > MAX_TIME_DIFF) {
-          socket.emit('authenticated', { success: false, error: 'Authentication message expired' });
-          return;
-        }
-      }
-
-      // Ephemeral pivot: no user table. Accept the announced public key
-      // as-is — server doesn't authenticate, it just relays. The full
-      // ephemeral roster + per-recipient channel protocol is the next
-      // rewrite of this file.
-      const user = { publicKey: '', isBlacklisted: false };
-      void user;
-
-      // Verify signature using NaCl
-      const isValid = await verifySignature(user.publicKey, signature, message);
-
-      if (!isValid) {
-        socket.emit('authenticated', { success: false, error: 'Invalid signature' });
-        return;
-      }
-
-      // Check if user is already connected (disconnect old connection)
-      const existingUser = onlineUsers.get(publicId);
-      if (existingUser && existingUser.socketId !== socket.id) {
-        const oldSocket = io.sockets.sockets.get(existingUser.socketId);
-        if (oldSocket) {
-          oldSocket.emit('error', { code: 'DUPLICATE_SESSION', message: 'Connected from another location' });
-          oldSocket.disconnect(true);
-        }
-      }
-
-      // Store authentication
-      socket.publicId = publicId;
-      socket.authenticated = true;
-      socketToUser.set(socket.id, publicId);
-
-      // Add to online users
-      onlineUsers.set(publicId, {
-        publicId,
-        socketId: socket.id,
-        connectedAt: Date.now(),
-        lastSeen: Date.now(),
-      });
-
-      // Notify success
-      socket.emit('authenticated', { success: true });
-
-      // Broadcast user online
-      socket.broadcast.emit('user:online', publicId);
-      broadcastOnlineUsers();
-
-      // Deliver any buffered messages
-      flushOfflineBuffer(publicId, socket);
-
-      console.log(`[Socket Server] User authenticated: ${publicId}`);
-    } catch (error) {
-      console.error('[Socket Server] Authentication error:', error);
-      socket.emit('authenticated', { success: false, error: 'Authentication failed' });
+  // ── Announce ─────────────────────────────────────────────────────────
+  socket.on(WIRE.SESSION_ANNOUNCE, (raw: SessionAnnounceMessage) => {
+    if (
+      !raw ||
+      typeof raw.signingPublicKey !== 'string' ||
+      typeof raw.boxPublicKey !== 'string' ||
+      typeof raw.displayName !== 'string' ||
+      typeof raw.ts !== 'number' ||
+      typeof raw.sig !== 'string' ||
+      typeof raw.nonce !== 'string'
+    ) {
+      sendError(socket, 'INVALID_PAYLOAD', 'malformed announce');
+      return;
     }
-  });
-
-  /**
-   * Join channel room
-   */
-  socket.on('join:channel', (channelId: string) => {
-    if (!socket.authenticated) {
-      socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
+    if (Math.abs(Date.now() - raw.ts) > ANNOUNCE_MAX_SKEW_MS) {
+      sendError(socket, 'STALE_TIMESTAMP', 'announce timestamp out of skew window');
+      return;
+    }
+    const expected = socketNonces.get(socket.id);
+    if (!expected) {
+      sendError(socket, 'BAD_NONCE', 'no nonce issued for this socket');
+      return;
+    }
+    const ok = verifyAnnounceSignature(raw, expected);
+    if (!ok) {
+      sendError(socket, 'BAD_SIGNATURE', 'announce signature invalid');
       return;
     }
 
-    const roomId = getChannelRoomId(channelId);
-    socket.join(roomId);
-    console.log(`[Socket Server] ${socket.publicId} joined channel: ${channelId}`);
-  });
-
-  /**
-   * Leave channel room
-   */
-  socket.on('leave:channel', (channelId: string) => {
-    const roomId = getChannelRoomId(channelId);
-    socket.leave(roomId);
-
-    // Remove from typing users
-    const typing = typingUsers.get(roomId);
-    if (typing && socket.publicId) {
-      typing.delete(socket.publicId);
-    }
-  });
-
-  /**
-   * Join DM room
-   */
-  socket.on('join:dm', (recipientId: string) => {
-    if (!socket.authenticated || !socket.publicId) {
-      socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
-      return;
-    }
-
-    const roomId = getDMRoomId(socket.publicId, recipientId);
-    socket.join(roomId);
-    console.log(`[Socket Server] ${socket.publicId} joined DM with: ${recipientId}`);
-  });
-
-  /**
-   * Leave DM room
-   */
-  socket.on('leave:dm', (recipientId: string) => {
-    if (!socket.publicId) return;
-
-    const roomId = getDMRoomId(socket.publicId, recipientId);
-    socket.leave(roomId);
-
-    // Remove from typing users
-    const typing = typingUsers.get(roomId);
-    if (typing) {
-      typing.delete(socket.publicId);
-    }
-  });
-
-  /**
-   * Handle channel message (relay encrypted, never decrypt)
-   */
-  socket.on('message:channel', (data: {
-    channelId: string;
-    encrypted: string;
-    nonce: string;
-    senderId: string;
-  }) => {
-    if (!socket.authenticated || !socket.publicId) {
-      socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
-      return;
-    }
-
-    // Rate limit check
-    if (!checkRateLimit(socket.publicId, 'message')) {
-      socket.emit('rate-limited', { retryAfter: RATE_LIMIT.windowMs });
-      return;
-    }
-
-    // Verify sender matches authenticated user
-    if (data.senderId !== socket.publicId) {
-      socket.emit('error', { code: 'INVALID_SENDER', message: 'Sender mismatch' });
-      return;
-    }
-
-    const roomId = getChannelRoomId(data.channelId);
-    const message = {
-      id: generateMessageId(),
-      channelId: data.channelId,
-      encrypted: data.encrypted,
-      nonce: data.nonce,
-      senderId: data.senderId,
-      timestamp: Date.now(),
+    // Trim display name defensively (clients should do this too).
+    const displayName = raw.displayName.trim().slice(0, 32) || 'anon';
+    const info: SessionInfo = {
+      signingPublicKey: raw.signingPublicKey,
+      boxPublicKey: raw.boxPublicKey,
+      displayName,
+      joinedAt: Date.now(),
     };
 
-    // Broadcast to channel (including sender for confirmation)
-    io.to(roomId).emit('message:channel', message);
-
-    // Update last seen
-    const user = onlineUsers.get(socket.publicId);
-    if (user) {
-      user.lastSeen = Date.now();
+    // If this socket had a previous session entry (rare, but possible if a
+    // client re-announces on the same socket), tear it down first.
+    const prior = socketSessions.get(socket.id);
+    if (prior && prior.boxPublicKey !== info.boxPublicKey) {
+      unregisterSocketForBox(socket.id, prior.boxPublicKey);
     }
+    socketSessions.set(socket.id, info);
+    registerSocketForBox(socket.id, info.boxPublicKey);
+    // Nonce is single-use; clear so a replay on the same socket would also fail.
+    socketNonces.delete(socket.id);
+
+    socket.emit(WIRE.SESSION_ACK, { ok: true });
   });
 
-  /**
-   * Handle DM message (relay encrypted, never decrypt)
-   */
-  socket.on('message:dm', (data: {
-    recipientId: string;
-    encrypted: string;
-    nonce: string;
-    senderId: string;
-  }) => {
-    if (!socket.authenticated || !socket.publicId) {
-      socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
-      return;
+  // ── Channel join ─────────────────────────────────────────────────────
+  socket.on(WIRE.CHANNEL_JOIN, (raw: ChannelJoinMessage) => {
+    const session = socketSessions.get(socket.id);
+    if (!session) return sendError(socket, 'NOT_READY', 'announce before joining');
+    if (!raw || typeof raw.channelId !== 'string') {
+      return sendError(socket, 'INVALID_PAYLOAD', 'channelId required');
+    }
+    if (!rateAllowed(session.boxPublicKey, 'join')) {
+      return sendError(socket, 'RATE_LIMITED', 'too many joins, slow down');
     }
 
-    // Rate limit check
-    if (!checkRateLimit(socket.publicId, 'message')) {
-      socket.emit('rate-limited', { retryAfter: RATE_LIMIT.windowMs });
-      return;
+    let roster = channelRosters.get(raw.channelId);
+    if (!roster) {
+      roster = new Map();
+      channelRosters.set(raw.channelId, roster);
     }
 
-    // Verify sender matches authenticated user
-    if (data.senderId !== socket.publicId) {
-      socket.emit('error', { code: 'INVALID_SENDER', message: 'Sender mismatch' });
-      return;
-    }
-
-    const roomId = getDMRoomId(socket.publicId, data.recipientId);
-    const message = {
-      id: generateMessageId(),
-      encrypted: data.encrypted,
-      nonce: data.nonce,
-      senderId: data.senderId,
-      timestamp: Date.now(),
+    const member: RosterMember = {
+      signingPublicKey: session.signingPublicKey,
+      boxPublicKey: session.boxPublicKey,
+      displayName: session.displayName,
     };
 
-    // Send to DM room
-    io.to(roomId).emit('message:dm', message);
+    const alreadyIn = roster.has(socket.id);
+    roster.set(socket.id, member);
 
-    // If recipient is offline, buffer for later delivery
-    if (!onlineUsers.has(data.recipientId)) {
-      bufferForOfflineUser(data.recipientId, 'dm', message);
-    }
-
-    // Update last seen
-    const user = onlineUsers.get(socket.publicId);
-    if (user) {
-      user.lastSeen = Date.now();
-    }
-  });
-
-  /**
-   * P2P Signal: Offer
-   */
-  socket.on('signal:offer', (data: { targetId: string; signal: P2PSignal }) => {
-    if (!socket.authenticated || !socket.publicId) {
-      socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
-      return;
-    }
-
-    // Rate limit check
-    if (!checkRateLimit(socket.publicId, 'signal')) {
-      socket.emit('rate-limited', { retryAfter: RATE_LIMIT.windowMs });
-      return;
-    }
-
-    const targetUser = onlineUsers.get(data.targetId);
-    if (!targetUser) {
-      socket.emit('error', { code: 'USER_OFFLINE', message: 'Target user is not online' });
-      return;
-    }
-
-    const targetSocket = io.sockets.sockets.get(targetUser.socketId);
-    if (targetSocket) {
-      targetSocket.emit('signal:offer', {
-        fromId: socket.publicId,
-        signal: data.signal,
-      });
-    }
-  });
-
-  /**
-   * P2P Signal: Answer
-   */
-  socket.on('signal:answer', (data: { targetId: string; signal: P2PSignal }) => {
-    if (!socket.authenticated || !socket.publicId) {
-      socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
-      return;
-    }
-
-    // Rate limit check
-    if (!checkRateLimit(socket.publicId, 'signal')) {
-      socket.emit('rate-limited', { retryAfter: RATE_LIMIT.windowMs });
-      return;
-    }
-
-    const targetUser = onlineUsers.get(data.targetId);
-    if (!targetUser) {
-      socket.emit('error', { code: 'USER_OFFLINE', message: 'Target user is not online' });
-      return;
-    }
-
-    const targetSocket = io.sockets.sockets.get(targetUser.socketId);
-    if (targetSocket) {
-      targetSocket.emit('signal:answer', {
-        fromId: socket.publicId,
-        signal: data.signal,
-      });
-    }
-  });
-
-  /**
-   * P2P Signal: ICE Candidate
-   */
-  socket.on('signal:ice', (data: { targetId: string; candidate: RTCIceCandidate }) => {
-    if (!socket.authenticated || !socket.publicId) {
-      socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
-      return;
-    }
-
-    // Rate limit check
-    if (!checkRateLimit(socket.publicId, 'signal')) {
-      socket.emit('rate-limited', { retryAfter: RATE_LIMIT.windowMs });
-      return;
-    }
-
-    const targetUser = onlineUsers.get(data.targetId);
-    if (!targetUser) {
-      return; // Silently ignore if target is offline (ICE can fail gracefully)
-    }
-
-    const targetSocket = io.sockets.sockets.get(targetUser.socketId);
-    if (targetSocket) {
-      targetSocket.emit('signal:ice', {
-        fromId: socket.publicId,
-        candidate: data.candidate,
-      });
-    }
-  });
-
-  /**
-   * Typing: Start
-   */
-  socket.on('typing:start', (data: { channelId?: string; dmRecipientId?: string }) => {
-    if (!socket.authenticated || !socket.publicId) return;
-
-    let roomId: string;
-    if (data.channelId) {
-      roomId = getChannelRoomId(data.channelId);
-    } else if (data.dmRecipientId) {
-      roomId = getDMRoomId(socket.publicId, data.dmRecipientId);
-    } else {
-      return;
-    }
-
-    // Add to typing users
-    if (!typingUsers.has(roomId)) {
-      typingUsers.set(roomId, new Set());
-    }
-    typingUsers.get(roomId)!.add(socket.publicId);
-
-    // Broadcast to room
-    socket.to(roomId).emit('typing:update', {
-      channelId: data.channelId,
-      dmRecipientId: data.dmRecipientId,
-      publicId: socket.publicId,
-      isTyping: true,
+    socket.emit(WIRE.CHANNEL_ROSTER, {
+      channelId: raw.channelId,
+      members: Array.from(roster.values()),
     });
+
+    if (!alreadyIn) {
+      broadcastToChannel(
+        raw.channelId,
+        WIRE.CHANNEL_MEMBER_JOINED,
+        { channelId: raw.channelId, member },
+        socket.id,
+      );
+    }
   });
 
-  /**
-   * Reaction: Add/Remove
-   * Broadcasts reaction changes to room members
-   */
-  socket.on('reaction', (data: {
-    messageId: string;
-    channelId?: string;
-    dmRecipientId?: string;
-    emoji: string;
-    action: 'add' | 'remove';
-  }) => {
-    if (!socket.authenticated || !socket.publicId) {
-      socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
-      return;
-    }
-
-    let roomId: string;
-    if (data.channelId) {
-      roomId = getChannelRoomId(data.channelId);
-    } else if (data.dmRecipientId) {
-      roomId = getDMRoomId(socket.publicId, data.dmRecipientId);
-    } else {
-      return;
-    }
-
-    // Broadcast reaction to room (including sender for confirmation)
-    io.to(roomId).emit('reaction', {
-      messageId: data.messageId,
-      emoji: data.emoji,
-      action: data.action,
-      userId: socket.publicId,
-      timestamp: Date.now(),
+  // ── Channel leave ────────────────────────────────────────────────────
+  socket.on(WIRE.CHANNEL_LEAVE, (raw: ChannelLeaveMessage) => {
+    const session = socketSessions.get(socket.id);
+    if (!session || !raw || typeof raw.channelId !== 'string') return;
+    const roster = channelRosters.get(raw.channelId);
+    if (!roster || !roster.has(socket.id)) return;
+    roster.delete(socket.id);
+    broadcastToChannel(raw.channelId, WIRE.CHANNEL_MEMBER_LEFT, {
+      channelId: raw.channelId,
+      signingPublicKey: session.signingPublicKey,
     });
+    if (roster.size === 0) channelRosters.delete(raw.channelId);
   });
 
-  /**
-   * Notification: Send to specific user
-   * Used by the server to push notifications to connected clients
-   */
-  socket.on('notification:send', (data: {
-    targetId: string;
-    notification: {
-      id: string;
-      type: string;
-      title: string;
-      body?: string;
-      messageId?: string;
-      channelId?: string;
-      communityId?: string;
-      senderId?: string;
-      senderHandle?: string;
-    };
-  }) => {
-    // This event is typically emitted from server-side code
-    // Find the target user's socket and send them the notification
-    const targetUser = onlineUsers.get(data.targetId);
-    if (targetUser) {
-      const targetSocket = io.sockets.sockets.get(targetUser.socketId);
-      if (targetSocket) {
-        targetSocket.emit('notification', {
-          ...data.notification,
-          timestamp: Date.now(),
-        });
+  // ── Channel send ─────────────────────────────────────────────────────
+  socket.on(WIRE.CHANNEL_SEND, (raw: ChannelSendMessage) => {
+    const session = socketSessions.get(socket.id);
+    if (!session) return sendError(socket, 'NOT_READY', 'announce before sending');
+    if (!raw || typeof raw.channelId !== 'string' || !Array.isArray(raw.recipients)) {
+      return sendError(socket, 'INVALID_PAYLOAD', 'malformed channel:send');
+    }
+    if (raw.recipients.length === 0 || raw.recipients.length > MAX_CHANNEL_RECIPIENTS) {
+      return sendError(socket, 'INVALID_PAYLOAD', 'recipients length out of range');
+    }
+    const roster = channelRosters.get(raw.channelId);
+    if (!roster || !roster.has(socket.id)) {
+      return sendError(socket, 'NOT_IN_CHANNEL', 'join the channel before sending');
+    }
+    if (!rateAllowed(session.boxPublicKey, 'message')) {
+      return sendError(socket, 'RATE_LIMITED', 'message rate exceeded');
+    }
+
+    // Build the set of valid box pubkeys for this channel (one snapshot).
+    // Filtering against the roster prevents the relay from being a
+    // pubkey-presence oracle for arbitrary boxPublicKeys.
+    const allowedBoxes = new Set<string>();
+    for (const m of roster.values()) allowedBoxes.add(m.boxPublicKey);
+
+    const id = msgId();
+    const ts = Date.now();
+
+    for (const rec of raw.recipients) {
+      if (
+        !rec ||
+        typeof rec.boxPublicKey !== 'string' ||
+        typeof rec.ciphertext !== 'string' ||
+        typeof rec.nonce !== 'string'
+      ) continue;
+      if (rec.boxPublicKey === session.boxPublicKey) continue; // don't echo to self
+      if (!allowedBoxes.has(rec.boxPublicKey)) continue;
+
+      const targets = boxToSockets.get(rec.boxPublicKey);
+      if (!targets) continue;
+      const payload: ChannelMessageRelay = {
+        channelId: raw.channelId,
+        senderBoxPublicKey: session.boxPublicKey,
+        senderSigningPublicKey: session.signingPublicKey,
+        senderDisplayName: session.displayName,
+        ciphertext: rec.ciphertext,
+        nonce: rec.nonce,
+        msgId: id,
+        ts,
+      };
+      for (const targetSocketId of targets) {
+        io.sockets.sockets.get(targetSocketId)?.emit(WIRE.CHANNEL_MESSAGE, payload);
       }
     }
   });
 
-  /**
-   * Typing: Stop
-   */
-  socket.on('typing:stop', (data: { channelId?: string; dmRecipientId?: string }) => {
-    if (!socket.authenticated || !socket.publicId) return;
+  // ── DM send ──────────────────────────────────────────────────────────
+  socket.on(WIRE.DM_SEND, (raw: DMSendMessage) => {
+    const session = socketSessions.get(socket.id);
+    if (!session) return sendError(socket, 'NOT_READY', 'announce before sending');
+    if (
+      !raw ||
+      typeof raw.recipientBoxPublicKey !== 'string' ||
+      typeof raw.ciphertext !== 'string' ||
+      typeof raw.nonce !== 'string'
+    ) {
+      return sendError(socket, 'INVALID_PAYLOAD', 'malformed dm:send');
+    }
+    if (!rateAllowed(session.boxPublicKey, 'message')) {
+      return sendError(socket, 'RATE_LIMITED', 'message rate exceeded');
+    }
 
-    let roomId: string;
-    if (data.channelId) {
-      roomId = getChannelRoomId(data.channelId);
-    } else if (data.dmRecipientId) {
-      roomId = getDMRoomId(socket.publicId, data.dmRecipientId);
-    } else {
+    const targets = boxToSockets.get(raw.recipientBoxPublicKey);
+    if (!targets || targets.size === 0) {
+      socket.emit(WIRE.DM_OFFLINE, { recipientBoxPublicKey: raw.recipientBoxPublicKey });
       return;
     }
 
-    // Remove from typing users
-    const typing = typingUsers.get(roomId);
-    if (typing) {
-      typing.delete(socket.publicId);
-    }
-
-    // Broadcast to room
-    socket.to(roomId).emit('typing:update', {
-      channelId: data.channelId,
-      dmRecipientId: data.dmRecipientId,
-      publicId: socket.publicId,
-      isTyping: false,
-    });
-  });
-
-  /**
-   * Heartbeat: Ping
-   */
-  socket.on('ping', () => {
-    socket.emit('pong');
-
-    // Update last seen
-    if (socket.publicId) {
-      const user = onlineUsers.get(socket.publicId);
-      if (user) {
-        user.lastSeen = Date.now();
-      }
+    const payload: DMMessageRelay = {
+      senderBoxPublicKey: session.boxPublicKey,
+      senderSigningPublicKey: session.signingPublicKey,
+      senderDisplayName: session.displayName,
+      ciphertext: raw.ciphertext,
+      nonce: raw.nonce,
+      msgId: msgId(),
+      ts: Date.now(),
+    };
+    for (const targetSocketId of targets) {
+      io.sockets.sockets.get(targetSocketId)?.emit(WIRE.DM_MESSAGE, payload);
     }
   });
 
-  /**
-   * Handle disconnection
-   */
-  socket.on('disconnect', (reason) => {
-    console.log(`[Socket Server] Client disconnected: ${socket.id}, reason: ${reason}`);
+  // ── Disconnect cleanup ───────────────────────────────────────────────
+  socket.on('disconnect', () => {
+    const session = socketSessions.get(socket.id);
+    socketSessions.delete(socket.id);
+    socketNonces.delete(socket.id);
+    if (!session) return;
+    unregisterSocketForBox(socket.id, session.boxPublicKey);
 
-    const publicId = socketToUser.get(socket.id);
-    if (publicId) {
-      // Remove from online users
-      onlineUsers.delete(publicId);
-      socketToUser.delete(socket.id);
-
-      // Remove from all typing sets
-      typingUsers.forEach((users, roomId) => {
-        if (users.has(publicId)) {
-          users.delete(publicId);
-          // Broadcast typing stop
-          io.to(roomId).emit('typing:update', {
-            publicId,
-            isTyping: false,
-          });
+    for (const [channelId, roster] of channelRosters) {
+      if (!roster.delete(socket.id)) continue;
+      // Suppress member-left if the same identity still has another socket
+      // in this channel (e.g., the client re-handshaked to update their
+      // displayName: a new socket joined before the old one finished
+      // tearing down). Otherwise the stale member-left would erase the
+      // freshly-joined entry from every other client's roster.
+      let identityStillPresent = false;
+      for (const m of roster.values()) {
+        if (m.signingPublicKey === session.signingPublicKey) {
+          identityStillPresent = true;
+          break;
         }
-      });
-
-      // Broadcast user offline
-      io.emit('user:offline', publicId);
-      broadcastOnlineUsers();
-
-      console.log(`[Socket Server] User disconnected: ${publicId}`);
-    }
-  });
-
-  // ===========================================================================
-  // VOICE/VIDEO CALL EVENTS
-  // ===========================================================================
-
-  /**
-   * Call: Initiate a call
-   */
-  socket.on('call:initiate', (data: {
-    callId: string;
-    type: 'voice' | 'video';
-    targetId: string;
-    channelId?: string;
-    communityId?: string;
-  }) => {
-    if (!socket.authenticated || !socket.publicId) {
-      socket.emit('call:error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
-      return;
-    }
-
-    const targetUser = onlineUsers.get(data.targetId);
-    if (!targetUser) {
-      socket.emit('call:error', { code: 'USER_OFFLINE', message: 'Target user is not online' });
-      return;
-    }
-
-    const targetSocket = io.sockets.sockets.get(targetUser.socketId);
-    if (targetSocket) {
-      targetSocket.emit('call:incoming', {
-        callId: data.callId,
-        type: data.type,
-        callerId: socket.publicId,
-        channelId: data.channelId,
-        communityId: data.communityId,
-        timestamp: Date.now(),
-      });
-      console.log(`[Socket Server] Call initiated: ${socket.publicId} -> ${data.targetId}`);
-    }
-  });
-
-  /**
-   * Call: Accept an incoming call
-   */
-  socket.on('call:accept', (data: { callId: string; initiatorId: string }) => {
-    if (!socket.authenticated || !socket.publicId) {
-      socket.emit('call:error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
-      return;
-    }
-
-    const initiatorUser = onlineUsers.get(data.initiatorId);
-    if (initiatorUser) {
-      const initiatorSocket = io.sockets.sockets.get(initiatorUser.socketId);
-      if (initiatorSocket) {
-        initiatorSocket.emit('call:accepted', {
-          callId: data.callId,
-          accepterId: socket.publicId,
-        });
-        console.log(`[Socket Server] Call accepted: ${data.callId}`);
       }
-    }
-  });
-
-  /**
-   * Call: Reject an incoming call
-   */
-  socket.on('call:reject', (data: { callId: string; initiatorId: string; reason?: string }) => {
-    if (!socket.authenticated || !socket.publicId) {
-      socket.emit('call:error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
-      return;
-    }
-
-    const initiatorUser = onlineUsers.get(data.initiatorId);
-    if (initiatorUser) {
-      const initiatorSocket = io.sockets.sockets.get(initiatorUser.socketId);
-      if (initiatorSocket) {
-        initiatorSocket.emit('call:rejected', {
-          callId: data.callId,
-          rejecterId: socket.publicId,
-          reason: data.reason,
+      if (!identityStillPresent) {
+        broadcastToChannel(channelId, WIRE.CHANNEL_MEMBER_LEFT, {
+          channelId,
+          signingPublicKey: session.signingPublicKey,
         });
-        console.log(`[Socket Server] Call rejected: ${data.callId}`);
       }
+      if (roster.size === 0) channelRosters.delete(channelId);
     }
-  });
-
-  /**
-   * Call: End an active call
-   */
-  socket.on('call:end', (data: { callId: string; reason: string }) => {
-    if (!socket.authenticated || !socket.publicId) {
-      socket.emit('call:error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
-      return;
-    }
-
-    // Broadcast to all participants
-    socket.broadcast.emit('call:ended', {
-      callId: data.callId,
-      enderId: socket.publicId,
-      reason: data.reason,
-    });
-    console.log(`[Socket Server] Call ended: ${data.callId}`);
-  });
-
-  /**
-   * Call: Toggle media (mute/unmute, camera on/off, screen share)
-   */
-  socket.on('call:media-toggle', (data: {
-    callId: string;
-    peerId: string;
-    mediaType: 'audio' | 'video' | 'screen';
-    enabled: boolean;
-  }) => {
-    if (!socket.authenticated || !socket.publicId) return;
-    socket.broadcast.emit('call:media-toggle', data);
-  });
-
-  /**
-   * Call: Join a voice channel
-   */
-  socket.on('call:join-voice-channel', (data: { channelId: string }) => {
-    if (!socket.authenticated || !socket.publicId) {
-      socket.emit('call:error', { code: 'NOT_AUTHENTICATED', message: 'Please authenticate first' });
-      return;
-    }
-
-    const roomId = `voice:${data.channelId}`;
-    socket.join(roomId);
-
-    io.to(roomId).emit('call:participant-joined', {
-      callId: `voice-channel-${data.channelId}`,
-      participant: {
-        peerId: socket.publicId,
-        joinedAt: Date.now(),
-        mediaState: { audioEnabled: true, videoEnabled: false, screenSharing: false, audioMuted: false },
-        audioLevel: 0,
-        speaking: false,
-        connectionQuality: { quality: 'good', packetLoss: 0, latency: 0, jitter: 0, bandwidth: 0 },
-      },
-    });
-    console.log(`[Socket Server] User ${socket.publicId} joined voice channel ${data.channelId}`);
-  });
-
-  /**
-   * Call: Leave a voice channel
-   */
-  socket.on('call:leave-voice-channel', (data: { channelId: string }) => {
-    if (!socket.authenticated || !socket.publicId) return;
-
-    const roomId = `voice:${data.channelId}`;
-
-    io.to(roomId).emit('call:participant-left', {
-      callId: `voice-channel-${data.channelId}`,
-      peerId: socket.publicId,
-    });
-
-    socket.leave(roomId);
-    console.log(`[Socket Server] User ${socket.publicId} left voice channel ${data.channelId}`);
-  });
-
-  /**
-   * Handle errors
-   */
-  socket.on('error', (error) => {
-    console.error(`[Socket Server] Socket error for ${socket.id}:`, error);
   });
 });
 
-/**
- * Clean up stale rate limit entries periodically
- */
+// Periodic GC of stale rate buckets (sockets that disconnected leave nothing,
+// but a long-idle socket could hold a stale bucket past its window).
 setInterval(() => {
   const now = Date.now();
-  rateLimits.forEach((entry, id) => {
-    if (now - entry.windowStart > RATE_LIMIT.windowMs * 2) {
-      rateLimits.delete(id);
-    }
-  });
-}, RATE_LIMIT.windowMs);
+  for (const [id, bucket] of rateBuckets) {
+    if (now - bucket.windowStart > RATE_WINDOW_MS * 2) rateBuckets.delete(id);
+  }
+}, RATE_WINDOW_MS);
 
-/**
- * Clean up empty typing sets periodically
- */
-setInterval(() => {
-  typingUsers.forEach((users, roomId) => {
-    if (users.size === 0) {
-      typingUsers.delete(roomId);
-    }
-  });
-}, 60000);
-
-/**
- * Clean up expired buffered messages periodically
- */
-setInterval(() => {
-  const now = Date.now();
-  offlineBuffer.forEach((buffer, publicId) => {
-    const valid = buffer.filter(m => m.expiresAt > now);
-    if (valid.length === 0) {
-      offlineBuffer.delete(publicId);
-    } else {
-      offlineBuffer.set(publicId, valid);
-    }
-  });
-}, 5 * 60 * 1000); // Every 5 minutes
-
-/**
- * Start the server
- */
 httpServer.listen(PORT, () => {
-  console.log(`[Socket Server] Running on port ${PORT}`);
-  console.log(`[Socket Server] CORS enabled for: ${CORS_ORIGIN}`);
+  console.log(`[void-relay] listening on :${PORT} (CORS: ${CORS_ORIGIN})`);
 });
 
-/**
- * Graceful shutdown
- */
-process.on('SIGTERM', () => {
-  console.log('[Socket Server] SIGTERM received, shutting down...');
-
-  io.close(() => {
-    console.log('[Socket Server] All connections closed');
-    httpServer.close(() => {
-      console.log('[Socket Server] HTTP server closed');
-      process.exit(0);
-    });
-  });
-});
-
-process.on('SIGINT', () => {
-  console.log('[Socket Server] SIGINT received, shutting down...');
-
-  io.close(() => {
-    console.log('[Socket Server] All connections closed');
-    httpServer.close(() => {
-      console.log('[Socket Server] HTTP server closed');
-      process.exit(0);
-    });
-  });
-});
+function shutdown(sig: string) {
+  console.log(`[void-relay] ${sig} received, closing`);
+  io.close(() => httpServer.close(() => process.exit(0)));
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 export { io, httpServer };

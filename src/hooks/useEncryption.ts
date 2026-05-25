@@ -1,102 +1,29 @@
 'use client';
 
 /**
- * useEncryption — STUB (ephemeral pivot, phase 1).
+ * Thin convenience hook exposing the session's box public key + a
+ * ready flag, useful for UI that wants to display the key or gate
+ * rendering until the session has loaded.
  *
- * Returns no-op placeholders for both the new ephemeral API
- * (encryptForRecipient/encryptForRecipients/decrypt) and the legacy API
- * still referenced by old pages (hasKeypair/getOrCreateKeyPair/clearKeyPair/
- * encryptForUser/encryptForChannel/decryptFromUser/decryptFromChannel).
- * Real implementation comes in the next phase.
+ * Actual encryption happens inside `useRealtime` / the relay client,
+ * which has access to the per-channel roster needed for fan-out.
+ * If you need to encrypt or decrypt directly, import the pure
+ * functions from `@/lib/encryption`.
  */
 
-import { useCallback } from 'react';
 import { useSession } from './useSession';
 
-export function useEncryption() {
-  const { session, isReady } = useSession();
-
-  // ── New ephemeral API (per-recipient + DM) ──────────────────────────
-  const encryptForRecipient = useCallback(
-    async (_plaintext: string, _recipientBoxPubkey: string): Promise<{ ciphertext: string; nonce: string } | null> => {
-      return null;
-    },
-    []
-  );
-
-  const encryptForRecipients = useCallback(
-    async (_plaintext: string, recipientBoxPubkeys: string[]) => {
-      return recipientBoxPubkeys.map((pk) => ({ recipientPubkey: pk, ciphertext: '', nonce: '' }));
-    },
-    []
-  );
-
-  const decrypt = useCallback(
-    async (_ciphertext: string, _nonce: string, _senderBoxPubkey: string): Promise<string | null> => {
-      return null;
-    },
-    []
-  );
-
-  // ── Legacy API (no-op stubs so old pages compile) ───────────────────
-  const hasKeypair = isReady;
-  const publicKey = session?.boxPublicKey ?? null;
-
-  const getOrCreateKeyPair = useCallback(async (): Promise<{ publicKey: string; secretKey: string } | null> => {
-    return null;
-  }, []);
-
-  const clearKeyPair = useCallback(() => {}, []);
-
-  const encryptForUser = useCallback(
-    async (_message: string, _recipientPublicKey: string): Promise<{ encrypted: string; nonce: string } | null> => {
-      return null;
-    },
-    []
-  );
-
-  const encryptForChannel = useCallback(
-    async (_message: string, _channelId: string): Promise<{ encrypted: string; nonce: string } | null> => {
-      return null;
-    },
-    []
-  );
-
-  const decryptFromUser = useCallback(
-    async (_encrypted: string, _nonce: string, _senderPublicKey: string): Promise<string | null> => {
-      return null;
-    },
-    []
-  );
-
-  const decryptFromChannel = useCallback(
-    async (_encrypted: string, _nonce: string, _channelId: string): Promise<string | null> => {
-      return null;
-    },
-    []
-  );
-
-  return {
-    isInitialized: isReady,
-    sessionBoxPublicKey: session?.boxPublicKey ?? null,
-    encryptForRecipient,
-    encryptForRecipients,
-    decrypt,
-    // legacy:
-    hasKeypair,
-    publicKey,
-    getOrCreateKeyPair,
-    clearKeyPair,
-    encryptForUser,
-    encryptForChannel,
-    decryptFromUser,
-    decryptFromChannel,
-  };
+export interface UseEncryptionReturn {
+  isReady: boolean;
+  boxPublicKey: string | null;
 }
 
-export function useEncryptionReady(): boolean {
-  const { isReady } = useSession();
-  return isReady;
+export function useEncryption(): UseEncryptionReturn {
+  const { session, isReady } = useSession();
+  return {
+    isReady,
+    boxPublicKey: session?.boxPublicKey ?? null,
+  };
 }
 
 export default useEncryption;

@@ -1,77 +1,140 @@
 'use client';
 
 /**
- * useRealtime — STUB (ephemeral pivot, phase 1).
+ * Thin React surface over the module-level realtime client.
  *
- * The real implementation will:
- *  - Connect to the socket server with no auth.
- *  - Send `session:announce` { signingPublicKey, boxPublicKey, displayName } on connect.
- *  - Join/leave channels and DMs.
- *  - Receive channel rosters on join (member pubkeys + display names).
- *  - Fan-out send: encrypt each outgoing channel message to every current
- *    member's box public key, send the array of { recipientPubkey, ciphertext }
- *    to the server.
- *  - Receive single ciphertext per delivery, hand to useEncryption for decrypt.
- *  - Append decrypted plaintext to local IndexedDB messageStore.
+ * The client owns the socket, state machine, rosters, and encryption.
+ * This hook wires the React lifecycle to it: initialize the client when
+ * a session is available, expose a stable API, subscribe to messages and
+ * rosters for the current page.
  *
- * Until then, this is a stub so consumers compile.
+ * Multiple components can call `useRealtime()` concurrently — they all
+ * share one socket connection. A channel stays joined as long as any
+ * mounted component holds a reference.
  */
 
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  getRealtimeClient,
+  type ConnectionState,
+  type DecryptedChannelMessage,
+  type DecryptedDMMessage,
+} from '@/lib/realtimeClient';
+import { useSession } from './useSession';
+import type { RosterMember } from '@/types/wire';
 
-export interface OnMessageReceived {
-  (message: {
-    id: string;
-    senderId: string;
-    senderPublicKey?: string;
-    channelId?: string;
-    dmRecipientId?: string;
-    timestamp: number;
-    encrypted?: string;
-    nonce?: string;
-  }): void;
-}
+export type { DecryptedChannelMessage, DecryptedDMMessage, ConnectionState };
 
 export interface UseRealtimeOptions {
-  onMessage?: OnMessageReceived;
-  autoConnect?: boolean;
-  preferP2P?: boolean;
+  /** Subscribe to channel message deliveries while this component is mounted. */
+  onChannelMessage?: (msg: DecryptedChannelMessage) => void;
+  /** Subscribe to DM deliveries while this component is mounted. */
+  onDMMessage?: (msg: DecryptedDMMessage) => void;
+  /** Called when a DM send failed because the recipient is offline. */
+  onDMOffline?: (recipientBoxPublicKey: string) => void;
 }
 
-export function useRealtime(_options: UseRealtimeOptions = {}) {
-  const noop = useCallback(() => {}, []);
-  const noopAsync = useCallback(async (): Promise<boolean> => false, []);
-  const falseFn = useCallback((_id: string) => false, []);
+export interface UseRealtimeReturn {
+  connectionState: ConnectionState;
+  isReady: boolean;
+  joinChannel: (channelId: string) => void;
+  leaveChannel: (channelId: string) => void;
+  sendChannelMessage: (channelId: string, plaintext: string) => Promise<boolean>;
+  sendDM: (recipientBoxPublicKey: string, plaintext: string) => Promise<boolean>;
+  /** Current roster snapshot for a channel (empty if not joined or roster not received yet). */
+  getChannelRoster: (channelId: string) => RosterMember[];
+  /** Look up a peer's box public key by signing public key across all joined channels. */
+  lookupBoxKey: (signingPublicKey: string) => string | null;
+}
+
+export function useRealtime(options: UseRealtimeOptions = {}): UseRealtimeReturn {
+  const { session } = useSession();
+  const client = getRealtimeClient();
+  const [connectionState, setConnectionState] = useState<ConnectionState>(client.getState());
+
+  // Pin callbacks in refs so subscription effect doesn't churn on every render.
+  const channelCbRef = useRef(options.onChannelMessage);
+  const dmCbRef = useRef(options.onDMMessage);
+  const offlineCbRef = useRef(options.onDMOffline);
+  channelCbRef.current = options.onChannelMessage;
+  dmCbRef.current = options.onDMMessage;
+  offlineCbRef.current = options.onDMOffline;
+
+  // Initialize the singleton when the session becomes available.
+  useEffect(() => {
+    if (!session) return;
+    client.init(session);
+  }, [client, session]);
+
+  // Mirror connection state into React state so consumers re-render.
+  useEffect(() => {
+    setConnectionState(client.getState());
+    return client.onStateChange(setConnectionState);
+  }, [client]);
+
+  // Subscribe to message streams while this hook instance is mounted.
+  useEffect(() => {
+    const offChannel = client.onChannelMessage((m) => channelCbRef.current?.(m));
+    const offDM = client.onDMMessage((m) => dmCbRef.current?.(m));
+    const offOffline = client.onDMOffline((k) => offlineCbRef.current?.(k));
+    return () => {
+      offChannel();
+      offDM();
+      offOffline();
+    };
+  }, [client]);
+
+  const joinChannel = useCallback((channelId: string) => client.joinChannel(channelId), [client]);
+  const leaveChannel = useCallback((channelId: string) => client.leaveChannel(channelId), [client]);
+  const sendChannelMessage = useCallback(
+    (channelId: string, plaintext: string) => client.sendChannelMessage(channelId, plaintext),
+    [client],
+  );
+  const sendDM = useCallback(
+    (recipientBoxPublicKey: string, plaintext: string) =>
+      client.sendDM(recipientBoxPublicKey, plaintext),
+    [client],
+  );
+  const getChannelRoster = useCallback(
+    (channelId: string) => client.getRoster(channelId),
+    [client],
+  );
+  const lookupBoxKey = useCallback(
+    (signingPublicKey: string) => client.lookupBoxKey(signingPublicKey),
+    [client],
+  );
 
   return {
-    isConnected: false,
-    isReady: false,
-    roster: [] as Array<{ signingPublicKey: string; boxPublicKey: string; displayName: string }>,
-    joinChannel: noop as (channelId: string) => void,
-    leaveChannel: noop as (channelId: string) => void,
-    joinDM: noop as (recipientPublicKey: string) => void,
-    leaveDM: noop as (recipientPublicKey: string) => void,
-    sendMessage: noopAsync as (
-      target: string,
-      ciphertext: string,
-      nonce: string,
-      opts?: { preferP2P?: boolean }
-    ) => Promise<boolean>,
-    isUserOnline: falseFn,
-    isPeerConnected: falseFn,
-    initiatePeerConnection: noop as (peerId: string) => void,
-    // legacy aliases used by older pages:
-    sendChannelMessage: noopAsync as (
-      channelId: string,
-      ciphertext: string,
-      nonce: string
-    ) => Promise<boolean>,
-    sendDM: noopAsync as (
-      recipientPublicKey: string,
-      ciphertext: string,
-      nonce: string
-    ) => Promise<boolean>,
+    connectionState,
+    isReady: connectionState === 'ready',
+    joinChannel,
+    leaveChannel,
+    sendChannelMessage,
+    sendDM,
+    getChannelRoster,
+    lookupBoxKey,
   };
+}
+
+/** Subscribe to per-channel roster updates. Re-renders when the roster changes. */
+export function useChannelRoster(channelId: string | null): RosterMember[] {
+  const client = getRealtimeClient();
+  const [roster, setRoster] = useState<RosterMember[]>(() =>
+    channelId ? client.getRoster(channelId) : [],
+  );
+
+  useEffect(() => {
+    if (!channelId) {
+      setRoster([]);
+      return;
+    }
+    setRoster(client.getRoster(channelId));
+    return client.onRosterChange((id, members) => {
+      if (id === channelId) setRoster(members);
+    });
+  }, [client, channelId]);
+
+  return roster;
 }
 
 export default useRealtime;

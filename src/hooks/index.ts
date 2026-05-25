@@ -1,13 +1,9 @@
-/**
- * Central exports for React hooks
- */
-
 export { useSession } from './useSession';
-export { useEncryption, useEncryptionReady } from './useEncryption';
-
-// Real-time messaging hooks
-export { useRealtime } from './useRealtime';
-export type { OnMessageReceived } from './useRealtime';
-
-// API hook
+export { useEncryption } from './useEncryption';
+export { useRealtime, useChannelRoster } from './useRealtime';
+export type {
+  ConnectionState,
+  DecryptedChannelMessage,
+  DecryptedDMMessage,
+} from './useRealtime';
 export { useApi } from './useApi';
