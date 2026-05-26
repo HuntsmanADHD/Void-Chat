@@ -7,3 +7,4 @@ export type {
   DecryptedDMMessage,
 } from './useRealtime';
 export { useApi } from './useApi';
+export { useBackdropClose } from './useBackdropClose';

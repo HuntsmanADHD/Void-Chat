@@ -14,7 +14,7 @@ import {
   createErrorResponse,
   createSuccessResponse,
   OPTIONS,
-} from '@/lib/auth';
+} from '@/lib/api';
 import { verifyPassword } from '@/lib/communityPassword';
 
 async function ensureCommunityAccess(

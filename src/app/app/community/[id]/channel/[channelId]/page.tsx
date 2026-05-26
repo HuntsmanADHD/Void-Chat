@@ -16,7 +16,7 @@ import {
 } from '@/lib/communityPasswordStore';
 import { CommunityPasswordPrompt } from '@/components/community/CommunityPasswordPrompt';
 import { useToast } from '@/components/ui/Toast';
-import { useBackdropClose } from '@/components/ui/useBackdropClose';
+import { useBackdropClose } from '@/hooks/useBackdropClose';
 
 
 import type { Channel, Community, CurrentUser } from '@/components/layout/Sidebar';

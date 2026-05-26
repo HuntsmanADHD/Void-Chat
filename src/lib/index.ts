@@ -1,9 +1,6 @@
 /**
- * Central exports for lib utilities.
- *
- * Ephemeral identity model: most legacy auth/moderation/keystore/p2p
- * utilities have been removed. Add exports back here only when a downstream
- * file actually imports them via the barrel.
+ * Central exports for lib utilities. Add exports here only when a
+ * downstream file actually imports them via the barrel.
  */
 
 export { prisma } from './prisma';
@@ -19,6 +16,6 @@ export {
   OPTIONS,
   createErrorResponse,
   createSuccessResponse,
-} from './auth';
+} from './api';
 
 export { formatPublicId, truncatePublicId } from './format';
