@@ -37,6 +37,7 @@ import {
   ConnectionNonceSchema,
   DMMessageRelaySchema,
   DMOfflineSchema,
+  SessionAckSchema,
   WireErrorSchema,
   safeParse,
 } from './wireSchemas';
@@ -469,7 +470,12 @@ class RealtimeClient {
       this.sendAnnounce();
     });
 
-    socket.on(WIRE.SESSION_ACK, () => {
+    socket.on(WIRE.SESSION_ACK, (rawIn: unknown) => {
+      // Validate the shape for consistency with the rest of the
+      // handlers, even though the payload (just `{ ok: true }`) is
+      // ignored. Cheap, keeps the relay-not-trusted invariant
+      // uniform across every event.
+      if (!safeParse(SessionAckSchema, rawIn, 'session:ack')) return;
       this.setState('ready');
       // Replay channel joins (covers reconnects too).
       for (const channelId of this.channels.keys()) {

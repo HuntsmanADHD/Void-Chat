@@ -63,6 +63,46 @@ const SESSION_ANNOUNCE_SCHEMA = z
     nonce: z.string().min(1).max(128),
   })
   .strict();
+
+/** Wire schemas for the rest of the client→server events. All are
+ *  `.strict()` so attackers can't smuggle unknown fields adjacent to
+ *  legitimate ones (e.g. extra props on a recipient object that some
+ *  future relay code might trustingly read). Same length caps as the
+ *  client-side wireSchemas use. */
+const CHANNEL_JOIN_SCHEMA = z
+  .object({
+    channelId: z.string().min(1).max(256),
+  })
+  .strict();
+
+const CHANNEL_LEAVE_SCHEMA = CHANNEL_JOIN_SCHEMA;
+
+const CHANNEL_RECIPIENT_SCHEMA = z
+  .object({
+    boxPublicKey: z.string().min(1).max(128),
+    ciphertext: z.string().min(1).max(256 * 1024),
+    nonce: z.string().min(1).max(128),
+  })
+  .strict();
+
+// Cap is duplicated here because MAX_CHANNEL_RECIPIENTS is declared
+// below in the constants block — keeping schemas at the top of state
+// for visibility. Both must stay in sync; the post-parse handler
+// already enforces MAX_CHANNEL_RECIPIENTS as a defense in depth.
+const CHANNEL_SEND_SCHEMA = z
+  .object({
+    channelId: z.string().min(1).max(256),
+    recipients: z.array(CHANNEL_RECIPIENT_SCHEMA).min(1).max(256),
+  })
+  .strict();
+
+const DM_SEND_SCHEMA = z
+  .object({
+    recipientBoxPublicKey: z.string().min(1).max(128),
+    ciphertext: z.string().min(1).max(256 * 1024),
+    nonce: z.string().min(1).max(128),
+  })
+  .strict();
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX_MESSAGES = 120;
 const RATE_MAX_JOINS = 60;
@@ -123,15 +163,25 @@ const lastChannelActivity = new Map<string, number>();
 const rateBuckets = new Map<string, RateBucket>();
 
 /**
- * Bad-announce attempts per socket. Each invalid announce forces a
- * tweetnacl verify (~1ms of CPU); without a cap, a flooder can
- * monopolize the event loop without ever passing the bouncer. Tor
- * NATs all clients to localhost, so we can't IP-throttle the flood.
+ * Bad-announce attempts per socket within a sliding window. Each
+ * invalid announce forces a tweetnacl verify (~1ms of CPU); without
+ * a cap, a flooder can monopolize the event loop without ever
+ * passing the bouncer. Tor NATs all clients to localhost, so we
+ * can't IP-throttle.
  *
- * Sockets that exceed MAX_BAD_ANNOUNCES_PER_SOCKET get disconnected.
+ * Sockets that exceed MAX_BAD_ANNOUNCES_PER_SOCKET inside
+ * BAD_ANNOUNCE_WINDOW_MS get disconnected. A long-running socket
+ * that hits one bad announce, then another hours later (transient
+ * corruption, post-restart races) won't get punished — the window
+ * decays before the count accumulates.
  */
-const badAnnounceCounts = new Map<string, number>();
+interface BadAnnounceEntry {
+  count: number;
+  windowStart: number;
+}
+const badAnnounceCounts = new Map<string, BadAnnounceEntry>();
 const MAX_BAD_ANNOUNCES_PER_SOCKET = 5;
+const BAD_ANNOUNCE_WINDOW_MS = 5 * 60 * 1000;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -255,13 +305,20 @@ const io = new Server(httpServer, {
   },
   pingTimeout: 60_000,
   pingInterval: 25_000,
-  // Cap inbound frame size. Default is 1 MB which is wildly more than
-  // any of our events need (the biggest legitimate payload is a
-  // channel:send with N recipient ciphertexts, capped elsewhere by
-  // MAX_CHANNEL_RECIPIENTS × MAX_CIPHERTEXT_BYTES). 256 KB is plenty
-  // for a 50-recipient channel send and cuts memory pressure for an
-  // attacker spamming large junk frames.
-  maxHttpBufferSize: 256 * 1024,
+  // Cap inbound frame size. The biggest legitimate payload is a
+  // channel:send with N recipient ciphertexts (capped by
+  // MAX_CHANNEL_RECIPIENTS × ciphertext size). 1 MiB covers roughly
+  // 10 recipients with full-cap ciphertexts (~96 KiB each), which
+  // is the realistic friend-group fan-out. The earlier 256 KiB was
+  // tight enough that any group of 4+ exchanging long messages
+  // would silently drop frames and the H5 ack-gating would mark
+  // them failed — a UX cliff that wasn't earning meaningful
+  // additional DoS protection over 1 MiB.
+  //
+  // For larger rooms, future work: sender-side recipient chunking
+  // (multiple emits with a shared logical msgId) so the per-frame
+  // budget stays tight while supporting wider fan-out.
+  maxHttpBufferSize: 1024 * 1024,
 });
 
 io.on('connection', (socket: Socket) => {
@@ -285,9 +342,15 @@ io.on('connection', (socket: Socket) => {
     message: string,
   ) => {
     sendError(socket, code, message);
-    const next = (badAnnounceCounts.get(socket.id) ?? 0) + 1;
-    badAnnounceCounts.set(socket.id, next);
-    if (next >= MAX_BAD_ANNOUNCES_PER_SOCKET) {
+    const now = Date.now();
+    let entry = badAnnounceCounts.get(socket.id);
+    if (!entry || now - entry.windowStart > BAD_ANNOUNCE_WINDOW_MS) {
+      // Fresh window — older bad-attempts have aged out, start over.
+      entry = { count: 0, windowStart: now };
+      badAnnounceCounts.set(socket.id, entry);
+    }
+    entry.count++;
+    if (entry.count >= MAX_BAD_ANNOUNCES_PER_SOCKET) {
       socket.disconnect(true);
     }
   };
@@ -372,12 +435,14 @@ io.on('connection', (socket: Socket) => {
   });
 
   // ── Channel join ─────────────────────────────────────────────────────
-  socket.on(WIRE.CHANNEL_JOIN, (raw: ChannelJoinMessage) => {
+  socket.on(WIRE.CHANNEL_JOIN, (rawIn: unknown) => {
     const session = socketSessions.get(socket.id);
     if (!session) return sendError(socket, 'NOT_READY', 'announce before joining');
-    if (!raw || typeof raw.channelId !== 'string') {
+    const parsed = CHANNEL_JOIN_SCHEMA.safeParse(rawIn);
+    if (!parsed.success) {
       return sendError(socket, 'INVALID_PAYLOAD', 'channelId required');
     }
+    const raw: ChannelJoinMessage = parsed.data;
     if (!rateAllowed(session.boxPublicKey, 'join')) {
       return sendError(socket, 'RATE_LIMITED', 'too many joins, slow down');
     }
@@ -438,9 +503,12 @@ io.on('connection', (socket: Socket) => {
   });
 
   // ── Channel leave ────────────────────────────────────────────────────
-  socket.on(WIRE.CHANNEL_LEAVE, (raw: ChannelLeaveMessage) => {
+  socket.on(WIRE.CHANNEL_LEAVE, (rawIn: unknown) => {
     const session = socketSessions.get(socket.id);
-    if (!session || !raw || typeof raw.channelId !== 'string') return;
+    if (!session) return;
+    const parsed = CHANNEL_LEAVE_SCHEMA.safeParse(rawIn);
+    if (!parsed.success) return;
+    const raw: ChannelLeaveMessage = parsed.data;
     const roster = channelRosters.get(raw.channelId);
     if (!roster || !roster.has(socket.id)) return;
     roster.delete(socket.id);
@@ -459,7 +527,7 @@ io.on('connection', (socket: Socket) => {
   // the relay refused it (rate-limited, not in channel, malformed) —
   // which is the kind of UX lie that's actively dangerous in a
   // privacy app.
-  socket.on(WIRE.CHANNEL_SEND, (raw: ChannelSendMessage, ack?: (resp: { ok: boolean; error?: string }) => void) => {
+  socket.on(WIRE.CHANNEL_SEND, (rawIn: unknown, ack?: (resp: { ok: boolean; error?: string }) => void) => {
     const respond = (ok: boolean, error?: string) => {
       if (typeof ack === 'function') ack(error ? { ok, error } : { ok });
     };
@@ -469,16 +537,17 @@ io.on('connection', (socket: Socket) => {
       respond(false, 'NOT_READY');
       return;
     }
-    if (!raw || typeof raw.channelId !== 'string' || !Array.isArray(raw.recipients)) {
+    // Schema validation covers shape, length caps, AND rejects extra
+    // fields (`.strict()`). The previous manual typeof check accepted
+    // unknown fields silently — fine today, dangerous later if some
+    // adjacent code starts reading them.
+    const parsed = CHANNEL_SEND_SCHEMA.safeParse(rawIn);
+    if (!parsed.success) {
       sendError(socket, 'INVALID_PAYLOAD', 'malformed channel:send');
       respond(false, 'INVALID_PAYLOAD');
       return;
     }
-    if (raw.recipients.length === 0 || raw.recipients.length > MAX_CHANNEL_RECIPIENTS) {
-      sendError(socket, 'INVALID_PAYLOAD', 'recipients length out of range');
-      respond(false, 'INVALID_PAYLOAD');
-      return;
-    }
+    const raw: ChannelSendMessage = parsed.data;
     const roster = channelRosters.get(raw.channelId);
     if (!roster || !roster.has(socket.id)) {
       sendError(socket, 'NOT_IN_CHANNEL', 'join the channel before sending');
@@ -540,7 +609,7 @@ io.on('connection', (socket: Socket) => {
   //   ok=false — relay rejected (not announced, malformed, rate-limited).
   // Sender only commits optimistic UI on ok=true; without an ack the
   // sender would see "delivered" for a rejected message.
-  socket.on(WIRE.DM_SEND, (raw: DMSendMessage, ack?: (resp: { ok: boolean; error?: string }) => void) => {
+  socket.on(WIRE.DM_SEND, (rawIn: unknown, ack?: (resp: { ok: boolean; error?: string }) => void) => {
     const respond = (ok: boolean, error?: string) => {
       if (typeof ack === 'function') ack(error ? { ok, error } : { ok });
     };
@@ -550,16 +619,13 @@ io.on('connection', (socket: Socket) => {
       respond(false, 'NOT_READY');
       return;
     }
-    if (
-      !raw ||
-      typeof raw.recipientBoxPublicKey !== 'string' ||
-      typeof raw.ciphertext !== 'string' ||
-      typeof raw.nonce !== 'string'
-    ) {
+    const parsed = DM_SEND_SCHEMA.safeParse(rawIn);
+    if (!parsed.success) {
       sendError(socket, 'INVALID_PAYLOAD', 'malformed dm:send');
       respond(false, 'INVALID_PAYLOAD');
       return;
     }
+    const raw: DMSendMessage = parsed.data;
     if (raw.ciphertext.length > MAX_CIPHERTEXT_BYTES) {
       sendError(socket, 'INVALID_PAYLOAD', 'ciphertext too large');
       respond(false, 'INVALID_PAYLOAD');

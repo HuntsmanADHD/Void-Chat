@@ -661,8 +661,25 @@ fn watch_stdout(
         let _ = app.emit("tor://status", snapshot);
     }
 
-    log::info!("[tor] auto-restarting in {}s (attempt {restart_count})", RESTART_BACKOFF.as_secs());
-    thread::sleep(RESTART_BACKOFF);
+    // Add ±500ms jitter to the backoff. Single-user desktop = no
+    // thundering-herd concern in practice, but cheap hygiene if we
+    // ever ship a multi-instance build (or two app windows somehow
+    // race the same Tor port). Uses the time component of the
+    // current nanos for randomness — cryptographic strength isn't
+    // needed here, just decorrelation between identical processes.
+    let jitter_ms: u64 = {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64)
+            .unwrap_or(0);
+        nanos % 1000
+    };
+    let actual_backoff = RESTART_BACKOFF + Duration::from_millis(jitter_ms.saturating_sub(500));
+    log::info!(
+        "[tor] auto-restarting in ~{}s (attempt {restart_count})",
+        actual_backoff.as_secs()
+    );
+    thread::sleep(actual_backoff);
     if let Err(e) = start(&app) {
         log::error!("[tor] auto-restart failed: {e}");
     }

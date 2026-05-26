@@ -291,11 +291,12 @@ If you see orphan `tor` processes lingering between runs (`pgrep -a tor` shows o
 
 - **No display-name authentication.** Anyone can pick "alice." Recognize friends by their public key fingerprint (Settings shows yours), not by name.
 - **No message history for new joiners.** You see what arrives after you connect. Past messages, even from yesterday, are gone.
-- **No offline DMs.** Recipient not connected = the send fails with a banner. Channel messages similarly require the recipient to be online when you send.
+- **No offline DMs, no offline indicator.** Recipient not connected = the send is silently dropped (looks identical to "delivered but no reply" — that's intentional; the previous offline indicator was a presence oracle). Channel messages similarly require the recipient to be online when you send.
 - **Channel bandwidth is O(N).** A 50-person channel = your client encrypts 50 copies of every message. That's what zero-knowledge fan-out costs.
 - **Tor latency.** First-hop SOCKS handshake + 3-hop circuit + hidden-service rendezvous = real round-trip cost vs. local relay. Expect 200ms–2s per request for cross-host.
 - **Cross-host communities aren't surfaced in the sidebar yet.** Joining one navigates to it; reload the tab and you'll need to paste the invite again. (Tracked for the next iteration.)
 - **Bridges work out of the box** if you used the bundled Tor runtime (`scripts/fetch-tor-binaries.sh`) — the Expert Bundle ships `lyrebird`, the modern obfs4proxy replacement. Settings → "Tor bridges" lets you paste lines from <https://bridges.torproject.org>. If you skipped the script and are using a system Tor, install `obfs4proxy` separately: `pacman -S obfs4proxy` / `apt install obfs4proxy` / `brew install obfs4proxy`.
+- **Windows file permissions on the .onion private key inherit the user-profile ACL.** On Linux and macOS we explicitly `chmod 0700` the HiddenServiceDir and `0600` the secret key file. On Windows the equivalent ACL hardening isn't applied — the key inherits whatever your user profile uses, which is usually fine for single-user machines but isn't equivalent to Unix's `0600`. Don't share a Windows user account with someone you wouldn't want impersonating your .onion.
 
 ---
 

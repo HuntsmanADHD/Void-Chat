@@ -4,7 +4,7 @@ import bs58 from 'bs58';
 import type { Session } from '@/types/session';
 
 const SESSION_KEYS_STORAGE = 'voidchat_session_keys'; // sessionStorage
-const DISPLAY_NAME_STORAGE = 'voidchat_display_name'; // localStorage
+const DISPLAY_NAME_STORAGE = 'voidchat_display_name'; // sessionStorage (per-tab)
 
 interface StoredKeys {
   signingPublicKey: string;
@@ -84,7 +84,9 @@ interface UseSessionReturn {
 /**
  * Ephemeral session hook. Generates a fresh signing + box keypair on first
  * load of a tab, persists keys to sessionStorage (gone on tab close), and
- * persists only the display name to localStorage as a convenience.
+ * persists only the display name to sessionStorage (per-tab) so a
+ * chosen name survives reloads in the same tab but resets when the
+ * tab closes — matching the rest of the ephemeral-identity story.
  */
 export function useSession(): UseSessionReturn {
   const [session, setSession] = useState<Session | null>(null);
