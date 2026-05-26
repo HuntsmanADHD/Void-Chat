@@ -140,8 +140,58 @@ fn read_bridges(data_dir: &Path) -> Vec<String> {
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter(|l| is_safe_bridge_line(l))
         .map(String::from)
         .collect()
+}
+
+/// Whitelist filter for bridge lines before they get concatenated into
+/// the torrc. The bridges file is local-user-only today, but any
+/// future paste-from-clipboard / import-from-invite path turns this
+/// into a Tor-config-injection vector if we don't sanitize:
+///
+///   - a newline lets the attacker append arbitrary torrc directives
+///     (e.g. `SocksPort 0.0.0.0:9050` to expose Tor publicly, or
+///     `DisableNetwork 1` to silently break connectivity)
+///   - a `\r` similarly splits the directive on some parsers
+///   - non-printable bytes hide intent in a log review
+///
+/// Shape check: must start with a known transport name or be a bare
+/// IP:port. Tor itself validates the rest at startup, so any
+/// malformed-but-shape-valid line will produce a bootstrap failure
+/// (visible in the stall-detection UI) rather than a silent injection.
+fn is_safe_bridge_line(line: &str) -> bool {
+    // Control-character reject (covers \n, \r, \t, etc.).
+    if line.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    // Reject anything with non-printable bytes that snuck past the
+    // control-character check (some unicode whitespace, BOMs, etc.).
+    if !line.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
+        return false;
+    }
+    // Length cap — real bridge lines are ~250 chars max; anything
+    // bigger is suspicious and not worth processing.
+    if line.len() > 1024 {
+        return false;
+    }
+    // Shape: bare-IP `Bridge <ip>:<port> …` (line as we wrote it in
+    // torrc starts after "Bridge ", but the file content is just the
+    // bridge body) or `<transport> <ip>:<port> …` where transport is
+    // one of the ones we accept.
+    let first_token = line.split_ascii_whitespace().next().unwrap_or("");
+    if matches!(first_token, "obfs4" | "webtunnel" | "meek_lite" | "snowflake" | "scramblesuit") {
+        return true;
+    }
+    // Bare IP:port form — first token contains a `:` and no letters.
+    if first_token.contains(':')
+        && first_token
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | ':' | '[' | ']'))
+    {
+        return true;
+    }
+    false
 }
 
 /// Resolve where the bundled Tor runtime lives. Returns the runtime
@@ -297,13 +347,23 @@ fn write_torrc(
     // "Bootstrapped N%" from there; the file is kept for after-the-fact
     // diagnostics. A single `Log notice file ...` would silence stdout
     // entirely (the watcher would never detect hostname readiness).
+    // RelayBandwidthRate caps the SOCKS port's data rate so a
+    // misbehaving local process (or a future bug in our own proxy)
+    // can't drain Tor circuits at full speed. Numbers are bytes/sec;
+    // 5 MiB/s sustained with 10 MiB burst is well above any
+    // legitimate chat traffic but caps a runaway pipe. CookieAuthFile
+    // path is explicit so the cookie's perms can be enforced.
+    let cookie_path = tor_dir.join("control_auth_cookie");
     let mut torrc = format!(
         "DataDirectory {data}\n\
          Log notice stdout\n\
          Log notice file {notices}\n\
          SocksPort 127.0.0.1:{socks}\n\
+         BandwidthRate 5242880\n\
+         BandwidthBurst 10485760\n\
          ControlPort 127.0.0.1:{control}\n\
          CookieAuthentication 1\n\
+         CookieAuthFile {cookie}\n\
          HiddenServiceDir {hs}\n\
          HiddenServiceVersion 3\n\
          HiddenServicePort {virt} 127.0.0.1:{relay}\n",
@@ -311,6 +371,7 @@ fn write_torrc(
         notices = notices_path.display(),
         socks = SOCKS_PORT,
         control = CONTROL_PORT,
+        cookie = cookie_path.display(),
         hs = hs_dir.display(),
         virt = HS_VIRT_PORT,
         relay = RELAY_LOCAL_PORT,
@@ -382,7 +443,16 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
         status.hostname = Some(existing_hostname.clone());
         let snapshot = status.clone();
         drop(status);
-        log::info!("[tor] reusing existing hidden service: {existing_hostname}");
+        // Log only a truncated fingerprint, not the full onion. The
+        // hostname IS your connect string — semi-public, but writing
+        // it in plaintext to a log file (which tor also does) is one
+        // more recovery surface for an attacker who only gains read
+        // access to the data dir. Truncated form is enough for ops
+        // identification.
+        log::info!(
+            "[tor] reusing existing hidden service: {}…",
+            &existing_hostname.get(..8).unwrap_or(&existing_hostname)
+        );
         let _ = app.emit("tor://status", snapshot);
     }
 
@@ -520,7 +590,10 @@ fn watch_stdout(
                         status.hostname = Some(hostname.clone());
                         let snapshot = status.clone();
                         drop(status);
-                        log::info!("[tor] hidden service ready at {hostname}");
+                        log::info!(
+                            "[tor] hidden service ready (fingerprint {}…)",
+                            &hostname.get(..8).unwrap_or(&hostname)
+                        );
                         let _ = app.emit("tor://status", snapshot);
                         hostname_emitted = true;
                     }

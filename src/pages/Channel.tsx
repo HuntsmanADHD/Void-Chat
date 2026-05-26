@@ -240,6 +240,21 @@ export default function Channel() {
         createdAt: new Date(ts),
       };
       setMessages((prev) => [...prev, optimistic]);
+      const accepted = await sendChannelMessage(channelId, plaintext);
+      if (!accepted) {
+        // Relay rejected or never acked (rate-limited, dropped, Tor
+        // hiccup). Pull the optimistic message back out so the sender
+        // doesn't think a private message landed when it didn't —
+        // that's the kind of UX lie that's actively dangerous here.
+        // Persistence is deferred to *after* ack precisely so we
+        // don't have to do a parallel IDB-delete here; the rolled-back
+        // message never made it to disk in the first place.
+        setMessages((prev) => prev.filter((m) => m.id !== id));
+        toastError('Message could not be sent. Try again.');
+        return accepted;
+      }
+      // Only persist on confirmed accept — otherwise a rolled-back
+      // message would re-hydrate from IDB on next channel open.
       void storeAppendChannel(channelId, {
         id,
         ts,
@@ -249,9 +264,9 @@ export default function Channel() {
         plaintext,
         optimistic: true,
       });
-      return sendChannelMessage(channelId, plaintext);
+      return accepted;
     },
-    [channelId, publicId, session, sendChannelMessage],
+    [channelId, publicId, session, sendChannelMessage, toastError],
   );
 
   const handleSelectChannel = useCallback(

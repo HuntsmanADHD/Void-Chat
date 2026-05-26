@@ -191,6 +191,7 @@ export default function Community() {
   const handleSend = useCallback(
     async (plaintext: string) => {
       if (!activeChannelId) return false;
+      const activeChannel = activeChannelId; // capture for the rollback closure
       const id = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const ts = Date.now();
       const localName = session?.displayName || '';
@@ -200,11 +201,20 @@ export default function Community() {
         nonce: '',
         senderId: publicId,
         sender: { publicId, displayName: localName },
-        channelId: activeChannelId,
+        channelId: activeChannel,
         createdAt: new Date(ts),
       };
       setMessages((prev) => [...prev, optimistic]);
-      void storeAppendChannel(activeChannelId, {
+      const accepted = await sendChannelMessage(activeChannel, plaintext);
+      if (!accepted) {
+        setMessages((prev) => prev.filter((m) => m.id !== id));
+        toastError('Message could not be sent. Try again.');
+        return accepted;
+      }
+      // Only persist on confirmed accept — see Channel.tsx for full
+      // rationale. Persisting before ack means a rolled-back message
+      // re-hydrates from IDB on next channel open.
+      void storeAppendChannel(activeChannel, {
         id,
         ts,
         senderSigningPublicKey: publicId,
@@ -213,9 +223,9 @@ export default function Community() {
         plaintext,
         optimistic: true,
       });
-      return sendChannelMessage(activeChannelId, plaintext);
+      return accepted;
     },
-    [activeChannelId, publicId, session, sendChannelMessage],
+    [activeChannelId, publicId, session, sendChannelMessage, toastError],
   );
 
   const handleSelectChannel = useCallback(

@@ -140,6 +140,18 @@ export default function DM() {
         createdAt: new Date(ts),
       };
       setMessages((prev) => [...prev, optimistic]);
+      const accepted = await sendDM(recipientBoxKey, plaintext);
+      if (!accepted) {
+        // Same rationale as Channel.tsx: pulling the optimistic
+        // message back out is safer than leaving a "delivered"-looking
+        // ghost — for DMs especially, the user might assume privacy
+        // properties about a message that never actually went out.
+        // IDB write is deferred to after ack so a rolled-back message
+        // doesn't re-hydrate on the next thread open.
+        setMessages((prev) => prev.filter((m) => m.id !== id));
+        setSendError('Message could not be sent. The recipient may be offline or your relay rejected it.');
+        return accepted;
+      }
       void storeAppendDM(recipientSigningKey, {
         id,
         ts,
@@ -149,7 +161,7 @@ export default function DM() {
         plaintext,
         optimistic: true,
       });
-      return sendDM(recipientBoxKey, plaintext);
+      return accepted;
     },
     [publicId, recipientBoxKey, recipientSigningKey, session, sendDM],
   );

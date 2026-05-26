@@ -1,11 +1,29 @@
+use std::sync::Arc;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Runtime;
+use tokio::sync::Semaphore;
+use tokio::time::timeout;
 use tokio_socks::tcp::Socks5Stream;
 
 use crate::tor::SOCKS_PORT;
+
+/// How long we wait for SOCKS5 → onion handshake before giving up.
+/// 30s is comfortable for normal Tor circuits (which usually complete
+/// in 2–10s); past that the onion is likely down or our circuit is
+/// broken. Without this, a stale invite link to a dead onion would
+/// hang the browser tab forever and leak a file descriptor.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Cap on concurrent in-flight proxy connections. Each connection
+/// holds an FD, a tokio task, and a SOCKS circuit; without a cap a
+/// malicious page could trigger thousands of slow dials and exhaust
+/// any of those. 256 is comfortably above any realistic peer count
+/// while preventing accidental fork-bomb resource use.
+const MAX_CONCURRENT_CONNECTIONS: usize = 256;
 
 /// Where the frontend dials to send traffic at a remote onion. Picked
 /// well above the usual ephemeral range so it can't collide with the
@@ -110,30 +128,53 @@ fn runtime() -> &'static Runtime {
     })
 }
 
-/// Spawn the forward proxy listener. Returns immediately; the listener
-/// runs forever inside the proxy runtime.
+/// Spawn the forward proxy listener.
+///
+/// `bind()` is done synchronously via `std::net::TcpListener` so a
+/// port-already-in-use error propagates as a real `Err` to the caller
+/// (lib.rs surfaces it via the `proxy://status` event). The previous
+/// "bind inside the spawned task" pattern silently swallowed bind
+/// failures.
+///
+/// Why not `runtime.block_on(tokio::net::TcpListener::bind(...))`:
+/// that would block the Tauri setup thread on a different runtime,
+/// risking a cold-start deadlock between the two runtimes' worker
+/// pools. The std bind avoids the runtime crossing — we hand the
+/// resulting raw socket to tokio inside the spawned task via
+/// `TcpListener::from_std`.
 pub fn start() -> std::io::Result<()> {
     init_proxy_token();
+    let std_listener = std::net::TcpListener::bind(("127.0.0.1", PROXY_PORT))?;
+    std_listener.set_nonblocking(true)?;
+    log::info!("[onion-proxy] listening on 127.0.0.1:{PROXY_PORT}");
     let rt = runtime();
-    let handle = rt.handle().clone();
-    handle.spawn(async {
-        match TcpListener::bind(("127.0.0.1", PROXY_PORT)).await {
-            Ok(listener) => {
-                log::info!("[onion-proxy] listening on 127.0.0.1:{PROXY_PORT}");
-                accept_loop(listener).await;
-            }
-            Err(e) => {
-                log::error!("[onion-proxy] could not bind 127.0.0.1:{PROXY_PORT}: {e}");
-            }
+    rt.handle().spawn(async move {
+        match TcpListener::from_std(std_listener) {
+            Ok(listener) => accept_loop(listener).await,
+            Err(e) => log::error!("[onion-proxy] failed to adopt listener: {e}"),
         }
     });
     Ok(())
 }
 
 async fn accept_loop(listener: TcpListener) {
+    // Concurrency cap — every connection takes a permit; new connections
+    // block until an in-flight one drops. Prevents an attacker page
+    // from issuing thousands of slow `fetch()` calls and exhausting our
+    // SOCKS circuits / file descriptors.
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
     loop {
         match listener.accept().await {
             Ok((socket, peer)) => {
+                let permit = match semaphore.clone().acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => {
+                        // Semaphore closed — should never happen unless
+                        // the proxy is shutting down.
+                        log::warn!("[onion-proxy] semaphore closed, exiting accept loop");
+                        return;
+                    }
+                };
                 tokio::spawn(async move {
                     if let Err(e) = handle_connection(socket).await {
                         // Most errors here are "browser closed mid-stream"
@@ -141,13 +182,14 @@ async fn accept_loop(listener: TcpListener) {
                         // enough to print every time, so debug-level only.
                         log::debug!("[onion-proxy] {peer}: {e}");
                     }
+                    drop(permit); // explicit for clarity
                 });
             }
             Err(e) => {
                 log::warn!("[onion-proxy] accept failed: {e}");
                 // Brief backoff so we don't busy-loop on a permanently
                 // broken socket.
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }
     }
@@ -272,12 +314,31 @@ async fn handle_connection(mut client: TcpStream) -> std::io::Result<()> {
     let (onion, rewritten_line) = split_request_line(request_line)
         .ok_or_else(|| std::io::Error::other("path must be /o/<onion>/..."))?;
 
-    // 3) Open SOCKS5 → onion:80 via Tor.
+    // 3) Open SOCKS5 → onion:80 via Tor. Bounded by CONNECT_TIMEOUT —
+    //    a dead onion would otherwise hang the dial indefinitely (and
+    //    a misbehaving page could pile up many slow dials, exhausting
+    //    file descriptors).
     let socks_addr = format!("127.0.0.1:{}", SOCKS_PORT);
     let target = (onion.as_str(), HIDDEN_SERVICE_VIRT_PORT);
-    let upstream = Socks5Stream::connect(socks_addr.as_str(), target)
-        .await
-        .map_err(|e| std::io::Error::other(format!("SOCKS5 connect to {onion} failed: {e}")))?;
+    let upstream = match timeout(
+        CONNECT_TIMEOUT,
+        Socks5Stream::connect(socks_addr.as_str(), target),
+    )
+    .await
+    {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            return Err(std::io::Error::other(format!(
+                "SOCKS5 connect to {onion} failed: {e}"
+            )));
+        }
+        Err(_) => {
+            return Err(std::io::Error::other(format!(
+                "SOCKS5 connect to {onion} timed out after {}s",
+                CONNECT_TIMEOUT.as_secs()
+            )));
+        }
+    };
     let mut upstream = upstream.into_inner();
 
     // 4) Send the rewritten request line, host-fixed headers, then any

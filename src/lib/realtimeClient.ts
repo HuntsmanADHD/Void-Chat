@@ -24,19 +24,22 @@ import { appendChannel as storeAppendChannel, appendDM as storeAppendDM, setActi
 import type { Session } from '@/types/session';
 import {
   WIRE,
-  type ChannelMemberJoinedMessage,
-  type ChannelMemberLeftMessage,
-  type ChannelMessageRelay,
-  type ChannelRosterMessage,
   type ChannelSendMessage,
-  type ConnectionNonceMessage,
-  type DMMessageRelay,
-  type DMOfflineMessage,
   type DMSendMessage,
   type RosterMember,
   type SessionAnnounceMessage,
-  type WireErrorMessage,
 } from '@/types/wire';
+import {
+  ChannelMemberJoinedSchema,
+  ChannelMemberLeftSchema,
+  ChannelMessageRelaySchema,
+  ChannelRosterSchema,
+  ConnectionNonceSchema,
+  DMMessageRelaySchema,
+  DMOfflineSchema,
+  WireErrorSchema,
+  safeParse,
+} from './wireSchemas';
 
 export type ConnectionState =
   | 'disconnected'
@@ -76,6 +79,38 @@ interface ChannelEntry {
 }
 
 const RELAY_PORT = 3001;
+
+/**
+ * Emit a socket.io event with a server-side ack, resolved as a bool.
+ * Resolves false on timeout or on `{ ok: false }` from the relay; true
+ * only on explicit `{ ok: true }`. Caller decides what to do on false
+ * (rollback optimistic UI, surface a toast, etc.).
+ *
+ * 10s is long enough for a Tor-mediated send-and-ack round-trip in
+ * the worst case; faster than the user clicking the message a second
+ * time wondering if it landed.
+ */
+const SEND_ACK_TIMEOUT_MS = 10_000;
+
+function emitWithAck(
+  socket: Socket,
+  event: string,
+  payload: unknown,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (v: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(v);
+    };
+    const timer = setTimeout(() => settle(false), SEND_ACK_TIMEOUT_MS);
+    socket.emit(event, payload, (resp: { ok?: unknown } | undefined) => {
+      clearTimeout(timer);
+      settle(!!(resp && resp.ok === true));
+    });
+  });
+}
 
 /**
  * Verify that a roster entry's `boxPublicKey` was actually chosen by the
@@ -357,8 +392,11 @@ class RealtimeClient {
     // append already landed, so report success.
     if (!hadAnyRecipient) return true;
     if (sealed.recipients.length === 0) return false;
-    this.socket.emit(WIRE.CHANNEL_SEND, sealed);
-    return true;
+    // Ack-gated send: only return true if the relay confirms it
+    // accepted the message for fan-out. Without this, a sender sees
+    // "delivered" even when the relay rate-limits, the channel was
+    // GC'd, or the socket buffer dropped the frame.
+    return emitWithAck(this.socket, WIRE.CHANNEL_SEND, sealed);
   }
 
   async sendDM(recipientBoxPublicKey: string, plaintext: string): Promise<boolean> {
@@ -370,8 +408,7 @@ class RealtimeClient {
       ciphertext: out.ciphertext,
       nonce: out.nonce,
     };
-    this.socket.emit(WIRE.DM_SEND, payload);
-    return true;
+    return emitWithAck(this.socket, WIRE.DM_SEND, payload);
   }
 
   // ── subscriptions ─────────────────────────────────────────────────
@@ -425,8 +462,10 @@ class RealtimeClient {
       this.setState('connecting');
     });
 
-    socket.on(WIRE.CONNECTION_NONCE, (raw: ConnectionNonceMessage) => {
-      this.pendingNonce = raw?.nonce ?? null;
+    socket.on(WIRE.CONNECTION_NONCE, (raw: unknown) => {
+      const parsed = safeParse(ConnectionNonceSchema, raw, 'connection:nonce');
+      if (!parsed) return;
+      this.pendingNonce = parsed.nonce;
       this.sendAnnounce();
     });
 
@@ -438,40 +477,48 @@ class RealtimeClient {
       }
     });
 
-    socket.on(WIRE.CHANNEL_ROSTER, (raw: ChannelRosterMessage) => {
-      const entry = this.channels.get(raw.channelId);
+    socket.on(WIRE.CHANNEL_ROSTER, (raw: unknown) => {
+      const parsed = safeParse(ChannelRosterSchema, raw, 'channel:roster');
+      if (!parsed) return;
+      const entry = this.channels.get(parsed.channelId);
       if (!entry) return;
       entry.roster.clear();
-      for (const m of raw.members) {
-        if (!verifyRosterMember(m)) continue; // drop unverified entries
-        entry.roster.set(m.boxPublicKey, m);
-        this.rememberPeer(m);
+      for (const m of parsed.members) {
+        if (!verifyRosterMember(m as RosterMember)) continue;
+        entry.roster.set(m.boxPublicKey, m as RosterMember);
+        this.rememberPeer(m as RosterMember);
       }
-      this.emitRoster(raw.channelId);
+      this.emitRoster(parsed.channelId);
     });
 
-    socket.on(WIRE.CHANNEL_MEMBER_JOINED, (raw: ChannelMemberJoinedMessage) => {
-      const entry = this.channels.get(raw.channelId);
+    socket.on(WIRE.CHANNEL_MEMBER_JOINED, (raw: unknown) => {
+      const parsed = safeParse(ChannelMemberJoinedSchema, raw, 'channel:member-joined');
+      if (!parsed) return;
+      const entry = this.channels.get(parsed.channelId);
       if (!entry) return;
-      if (!verifyRosterMember(raw.member)) return;
-      entry.roster.set(raw.member.boxPublicKey, raw.member);
-      this.rememberPeer(raw.member);
-      this.emitRoster(raw.channelId);
+      if (!verifyRosterMember(parsed.member as RosterMember)) return;
+      entry.roster.set(parsed.member.boxPublicKey, parsed.member as RosterMember);
+      this.rememberPeer(parsed.member as RosterMember);
+      this.emitRoster(parsed.channelId);
     });
 
-    socket.on(WIRE.CHANNEL_MEMBER_LEFT, (raw: ChannelMemberLeftMessage) => {
-      const entry = this.channels.get(raw.channelId);
+    socket.on(WIRE.CHANNEL_MEMBER_LEFT, (raw: unknown) => {
+      const parsed = safeParse(ChannelMemberLeftSchema, raw, 'channel:member-left');
+      if (!parsed) return;
+      const entry = this.channels.get(parsed.channelId);
       if (!entry) return;
       for (const [box, member] of entry.roster) {
-        if (member.signingPublicKey === raw.signingPublicKey) {
+        if (member.signingPublicKey === parsed.signingPublicKey) {
           entry.roster.delete(box);
           break;
         }
       }
-      this.emitRoster(raw.channelId);
+      this.emitRoster(parsed.channelId);
     });
 
-    socket.on(WIRE.CHANNEL_MESSAGE, (raw: ChannelMessageRelay) => {
+    socket.on(WIRE.CHANNEL_MESSAGE, (rawIn: unknown) => {
+      const raw = safeParse(ChannelMessageRelaySchema, rawIn, 'channel:message');
+      if (!raw) return;
       if (!this.session) return;
       const plaintext = openFromSender(
         raw.ciphertext,
@@ -523,7 +570,9 @@ class RealtimeClient {
       for (const fn of this.channelMessageListeners) fn(decoded);
     });
 
-    socket.on(WIRE.DM_MESSAGE, (raw: DMMessageRelay) => {
+    socket.on(WIRE.DM_MESSAGE, (rawIn: unknown) => {
+      const raw = safeParse(DMMessageRelaySchema, rawIn, 'dm:message');
+      if (!raw) return;
       if (!this.session) return;
       const plaintext = openFromSender(
         raw.ciphertext,
@@ -563,11 +612,15 @@ class RealtimeClient {
       for (const fn of this.dmMessageListeners) fn(decoded);
     });
 
-    socket.on(WIRE.DM_OFFLINE, (raw: DMOfflineMessage) => {
+    socket.on(WIRE.DM_OFFLINE, (rawIn: unknown) => {
+      const raw = safeParse(DMOfflineSchema, rawIn, 'dm:offline');
+      if (!raw) return;
       for (const fn of this.offlineDMListeners) fn(raw.recipientBoxPublicKey);
     });
 
-    socket.on(WIRE.ERROR, (raw: WireErrorMessage) => {
+    socket.on(WIRE.ERROR, (rawIn: unknown) => {
+      const raw = safeParse(WireErrorSchema, rawIn, 'wire:error');
+      if (!raw) return;
       console.warn('[realtime]', raw.code, raw.message);
     });
   }

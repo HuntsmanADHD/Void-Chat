@@ -18,6 +18,7 @@ import { randomBytes } from 'crypto';
 import { Server, Socket } from 'socket.io';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
+import { z } from 'zod';
 
 import {
   WIRE,
@@ -47,6 +48,21 @@ const CORS_ALLOW_ANY = CORS_RAW.trim() === '*';
 const CORS_ORIGIN_LIST = CORS_RAW.split(',').map(s => s.trim()).filter(Boolean);
 
 const ANNOUNCE_MAX_SKEW_MS = 5 * 60 * 1000;
+
+/** Wire schema for SESSION_ANNOUNCE. `.strict()` rejects unknown
+ *  fields so an attacker can't tunnel extra unsigned data through the
+ *  same path the legitimate announce uses. Length caps are loose — the
+ *  cryptographic verify is the real check, this is the framing gate. */
+const SESSION_ANNOUNCE_SCHEMA = z
+  .object({
+    signingPublicKey: z.string().min(1).max(128),
+    boxPublicKey: z.string().min(1).max(128),
+    displayName: z.string().max(64),
+    ts: z.number().int(),
+    sig: z.string().min(1).max(128),
+    nonce: z.string().min(1).max(128),
+  })
+  .strict();
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX_MESSAGES = 120;
 const RATE_MAX_JOINS = 60;
@@ -55,6 +71,18 @@ const MAX_CHANNEL_RECIPIENTS = 256;
 // then base64-expanded by 4/3. Bound it well above what a polite client
 // would ever send to leave room for nonce/json overhead.
 const MAX_CIPHERTEXT_BYTES = 96 * 1024;
+
+// ── DoS bounds ─────────────────────────────────────────────────────────────
+// Caps on in-memory state to prevent a single misbehaving client (or a
+// flooder using fresh Tor identities, which are free to rotate) from
+// consuming unbounded memory. Picked generous enough that no realistic
+// friend-group use case bumps into them — these are the wall against
+// resource-exhaustion attacks, not policy.
+const MAX_RATE_BUCKETS = 50_000;
+const MAX_CHANNELS = 10_000;
+const MAX_MEMBERS_PER_CHANNEL = 1_000;
+const SOCKET_NONCE_TTL_MS = 5 * 60 * 1000;
+const IDLE_CHANNEL_TTL_MS = 24 * 60 * 60 * 1000; // 24h with no activity
 
 // ── In-memory state ────────────────────────────────────────────────────────
 
@@ -81,9 +109,29 @@ interface RateBucket {
 
 const socketSessions = new Map<string, SessionInfo>();
 const socketNonces = new Map<string, string>();
+/** When each nonce was issued — used by the sweeper to expire nonces
+ *  whose sockets disconnected before announcing. Without this, the
+ *  socketNonces map grew unbounded. */
+const socketNonceIssuedAt = new Map<string, number>();
 const boxToSockets = new Map<string, Set<string>>();
 const channelRosters = new Map<string, Map<string, RosterMember>>();
+/** Last-activity timestamp per channel — joins, sends, etc. all bump
+ *  this. The idle-channel sweeper drops channels with no activity for
+ *  IDLE_CHANNEL_TTL_MS to prevent unbounded growth from joiners who
+ *  silently disconnect without leaving. */
+const lastChannelActivity = new Map<string, number>();
 const rateBuckets = new Map<string, RateBucket>();
+
+/**
+ * Bad-announce attempts per socket. Each invalid announce forces a
+ * tweetnacl verify (~1ms of CPU); without a cap, a flooder can
+ * monopolize the event loop without ever passing the bouncer. Tor
+ * NATs all clients to localhost, so we can't IP-throttle the flood.
+ *
+ * Sockets that exceed MAX_BAD_ANNOUNCES_PER_SOCKET get disconnected.
+ */
+const badAnnounceCounts = new Map<string, number>();
+const MAX_BAD_ANNOUNCES_PER_SOCKET = 5;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -103,6 +151,15 @@ function rateAllowed(bucketKey: string, kind: 'message' | 'join'): boolean {
   const now = Date.now();
   let bucket = rateBuckets.get(bucketKey);
   if (!bucket || now - bucket.windowStart > RATE_WINDOW_MS) {
+    // Cap total bucket count. Tor identity rotation is free, so a
+    // flooder could otherwise create unbounded buckets by churning
+    // box keys faster than the time-based GC sweeps them. When we
+    // hit the cap, evict the oldest entry (Map iteration order ==
+    // insertion order in JS, so the first key is the oldest).
+    if (rateBuckets.size >= MAX_RATE_BUCKETS) {
+      const oldest = rateBuckets.keys().next().value;
+      if (oldest !== undefined) rateBuckets.delete(oldest);
+    }
     bucket = { messages: 0, joins: 0, windowStart: now };
     rateBuckets.set(bucketKey, bucket);
   }
@@ -198,29 +255,55 @@ const io = new Server(httpServer, {
   },
   pingTimeout: 60_000,
   pingInterval: 25_000,
+  // Cap inbound frame size. Default is 1 MB which is wildly more than
+  // any of our events need (the biggest legitimate payload is a
+  // channel:send with N recipient ciphertexts, capped elsewhere by
+  // MAX_CHANNEL_RECIPIENTS × MAX_CIPHERTEXT_BYTES). 256 KB is plenty
+  // for a 50-recipient channel send and cuts memory pressure for an
+  // attacker spamming large junk frames.
+  maxHttpBufferSize: 256 * 1024,
 });
 
 io.on('connection', (socket: Socket) => {
   const nonce = issueNonce();
   socketNonces.set(socket.id, nonce);
+  socketNonceIssuedAt.set(socket.id, Date.now());
   socket.emit(WIRE.CONNECTION_NONCE, { nonce });
 
   // ── Announce ─────────────────────────────────────────────────────────
-  socket.on(WIRE.SESSION_ANNOUNCE, (raw: SessionAnnounceMessage) => {
-    if (
-      !raw ||
-      typeof raw.signingPublicKey !== 'string' ||
-      typeof raw.boxPublicKey !== 'string' ||
-      typeof raw.displayName !== 'string' ||
-      typeof raw.ts !== 'number' ||
-      typeof raw.sig !== 'string' ||
-      typeof raw.nonce !== 'string'
-    ) {
-      sendError(socket, 'INVALID_PAYLOAD', 'malformed announce');
+  // Helper closed over `socket` — every failed-announce path goes
+  // through here so we can disconnect after N bad attempts. Without
+  // this, a flooder can pin the event loop with verify work without
+  // ever passing the bouncer (Tor NATs all clients to localhost so
+  // we can't IP-throttle).
+  const failAnnounce = (
+    code:
+      | 'INVALID_PAYLOAD'
+      | 'BAD_SIGNATURE'
+      | 'STALE_TIMESTAMP'
+      | 'BAD_NONCE',
+    message: string,
+  ) => {
+    sendError(socket, code, message);
+    const next = (badAnnounceCounts.get(socket.id) ?? 0) + 1;
+    badAnnounceCounts.set(socket.id, next);
+    if (next >= MAX_BAD_ANNOUNCES_PER_SOCKET) {
+      socket.disconnect(true);
+    }
+  };
+
+  socket.on(WIRE.SESSION_ANNOUNCE, (rawIn: unknown) => {
+    // Strict schema rejects unknown fields — without this an attacker
+    // could smuggle extra unsigned data that downstream code might one
+    // day read, defeating the bind-everything-into-the-sig protection.
+    const parseResult = SESSION_ANNOUNCE_SCHEMA.safeParse(rawIn);
+    if (!parseResult.success) {
+      failAnnounce('INVALID_PAYLOAD', 'malformed announce');
       return;
     }
+    const raw: SessionAnnounceMessage = parseResult.data;
     if (Math.abs(Date.now() - raw.ts) > ANNOUNCE_MAX_SKEW_MS) {
-      sendError(socket, 'STALE_TIMESTAMP', 'announce timestamp out of skew window');
+      failAnnounce('STALE_TIMESTAMP', 'announce timestamp out of skew window');
       return;
     }
     // Validate key shapes before routing — malformed keys would still
@@ -231,21 +314,21 @@ io.on('connection', (socket: Socket) => {
         bs58.decode(raw.boxPublicKey).length !== nacl.box.publicKeyLength ||
         bs58.decode(raw.signingPublicKey).length !== nacl.sign.publicKeyLength
       ) {
-        sendError(socket, 'INVALID_PAYLOAD', 'malformed public key');
+        failAnnounce('INVALID_PAYLOAD', 'malformed public key');
         return;
       }
     } catch {
-      sendError(socket, 'INVALID_PAYLOAD', 'public key not valid base58');
+      failAnnounce('INVALID_PAYLOAD', 'public key not valid base58');
       return;
     }
     const expected = socketNonces.get(socket.id);
     if (!expected) {
-      sendError(socket, 'BAD_NONCE', 'no nonce issued for this socket');
+      failAnnounce('BAD_NONCE', 'no nonce issued for this socket');
       return;
     }
     const ok = verifyAnnounceSignature(raw, expected);
     if (!ok) {
-      sendError(socket, 'BAD_SIGNATURE', 'announce signature invalid');
+      failAnnounce('BAD_SIGNATURE', 'announce signature invalid');
       return;
     }
 
@@ -257,8 +340,7 @@ io.on('connection', (socket: Socket) => {
     // through the announce-size limits and clients always trim on input.)
     const displayName = raw.displayName.slice(0, 32) || 'anon';
     if (displayName !== raw.displayName) {
-      sendError(
-        socket,
+      failAnnounce(
         'INVALID_PAYLOAD',
         'displayName too long — clients must trim and sign the trimmed value',
       );
@@ -284,6 +366,7 @@ io.on('connection', (socket: Socket) => {
     registerSocketForBox(socket.id, info.boxPublicKey);
     // Nonce is single-use; clear so a replay on the same socket would also fail.
     socketNonces.delete(socket.id);
+    socketNonceIssuedAt.delete(socket.id);
 
     socket.emit(WIRE.SESSION_ACK, { ok: true });
   });
@@ -301,8 +384,29 @@ io.on('connection', (socket: Socket) => {
 
     let roster = channelRosters.get(raw.channelId);
     if (!roster) {
+      // Cap total channel count. Without this, a single client could
+      // spam-join arbitrary channel IDs forever and exhaust memory.
+      if (channelRosters.size >= MAX_CHANNELS) {
+        return sendError(
+          socket,
+          'RATE_LIMITED',
+          'relay is at channel capacity — retry later',
+        );
+      }
       roster = new Map();
       channelRosters.set(raw.channelId, roster);
+      lastChannelActivity.set(raw.channelId, Date.now());
+    }
+
+    // Per-channel member cap. Once a channel hits the cap, joiners get
+    // a clear error rather than silently being added (which would make
+    // every CHANNEL_SEND fan-out O(huge) and risk OOM).
+    if (!roster.has(socket.id) && roster.size >= MAX_MEMBERS_PER_CHANNEL) {
+      return sendError(
+        socket,
+        'RATE_LIMITED',
+        'channel is full — retry later',
+      );
     }
 
     const member: RosterMember = {
@@ -316,6 +420,7 @@ io.on('connection', (socket: Socket) => {
 
     const alreadyIn = roster.has(socket.id);
     roster.set(socket.id, member);
+    lastChannelActivity.set(raw.channelId, Date.now());
 
     socket.emit(WIRE.CHANNEL_ROSTER, {
       channelId: raw.channelId,
@@ -347,21 +452,43 @@ io.on('connection', (socket: Socket) => {
   });
 
   // ── Channel send ─────────────────────────────────────────────────────
-  socket.on(WIRE.CHANNEL_SEND, (raw: ChannelSendMessage) => {
+  // Accepts an optional socket.io ack callback as the last argument.
+  // The client uses it to gate optimistic UI: only commit the "sent"
+  // state once the server has confirmed acceptance for fan-out.
+  // Without acks, a sender could see a "delivered" message even when
+  // the relay refused it (rate-limited, not in channel, malformed) —
+  // which is the kind of UX lie that's actively dangerous in a
+  // privacy app.
+  socket.on(WIRE.CHANNEL_SEND, (raw: ChannelSendMessage, ack?: (resp: { ok: boolean; error?: string }) => void) => {
+    const respond = (ok: boolean, error?: string) => {
+      if (typeof ack === 'function') ack(error ? { ok, error } : { ok });
+    };
     const session = socketSessions.get(socket.id);
-    if (!session) return sendError(socket, 'NOT_READY', 'announce before sending');
+    if (!session) {
+      sendError(socket, 'NOT_READY', 'announce before sending');
+      respond(false, 'NOT_READY');
+      return;
+    }
     if (!raw || typeof raw.channelId !== 'string' || !Array.isArray(raw.recipients)) {
-      return sendError(socket, 'INVALID_PAYLOAD', 'malformed channel:send');
+      sendError(socket, 'INVALID_PAYLOAD', 'malformed channel:send');
+      respond(false, 'INVALID_PAYLOAD');
+      return;
     }
     if (raw.recipients.length === 0 || raw.recipients.length > MAX_CHANNEL_RECIPIENTS) {
-      return sendError(socket, 'INVALID_PAYLOAD', 'recipients length out of range');
+      sendError(socket, 'INVALID_PAYLOAD', 'recipients length out of range');
+      respond(false, 'INVALID_PAYLOAD');
+      return;
     }
     const roster = channelRosters.get(raw.channelId);
     if (!roster || !roster.has(socket.id)) {
-      return sendError(socket, 'NOT_IN_CHANNEL', 'join the channel before sending');
+      sendError(socket, 'NOT_IN_CHANNEL', 'join the channel before sending');
+      respond(false, 'NOT_IN_CHANNEL');
+      return;
     }
     if (!rateAllowed(session.boxPublicKey, 'message')) {
-      return sendError(socket, 'RATE_LIMITED', 'message rate exceeded');
+      sendError(socket, 'RATE_LIMITED', 'message rate exceeded');
+      respond(false, 'RATE_LIMITED');
+      return;
     }
 
     // Build the set of valid box pubkeys for this channel (one snapshot).
@@ -400,25 +527,48 @@ io.on('connection', (socket: Socket) => {
         io.sockets.sockets.get(targetSocketId)?.emit(WIRE.CHANNEL_MESSAGE, payload);
       }
     }
+    // Channel was just used — bump its idle timer.
+    lastChannelActivity.set(raw.channelId, Date.now());
+    respond(true);
   });
 
   // ── DM send ──────────────────────────────────────────────────────────
-  socket.on(WIRE.DM_SEND, (raw: DMSendMessage) => {
+  // Ack semantics:
+  //   ok=true  — relay accepted + attempted delivery (recipient may be
+  //              offline, sender can't tell — that's by design, see
+  //              the presence-oracle comment in the targets-empty branch).
+  //   ok=false — relay rejected (not announced, malformed, rate-limited).
+  // Sender only commits optimistic UI on ok=true; without an ack the
+  // sender would see "delivered" for a rejected message.
+  socket.on(WIRE.DM_SEND, (raw: DMSendMessage, ack?: (resp: { ok: boolean; error?: string }) => void) => {
+    const respond = (ok: boolean, error?: string) => {
+      if (typeof ack === 'function') ack(error ? { ok, error } : { ok });
+    };
     const session = socketSessions.get(socket.id);
-    if (!session) return sendError(socket, 'NOT_READY', 'announce before sending');
+    if (!session) {
+      sendError(socket, 'NOT_READY', 'announce before sending');
+      respond(false, 'NOT_READY');
+      return;
+    }
     if (
       !raw ||
       typeof raw.recipientBoxPublicKey !== 'string' ||
       typeof raw.ciphertext !== 'string' ||
       typeof raw.nonce !== 'string'
     ) {
-      return sendError(socket, 'INVALID_PAYLOAD', 'malformed dm:send');
+      sendError(socket, 'INVALID_PAYLOAD', 'malformed dm:send');
+      respond(false, 'INVALID_PAYLOAD');
+      return;
     }
     if (raw.ciphertext.length > MAX_CIPHERTEXT_BYTES) {
-      return sendError(socket, 'INVALID_PAYLOAD', 'ciphertext too large');
+      sendError(socket, 'INVALID_PAYLOAD', 'ciphertext too large');
+      respond(false, 'INVALID_PAYLOAD');
+      return;
     }
     if (!rateAllowed(session.boxPublicKey, 'message')) {
-      return sendError(socket, 'RATE_LIMITED', 'message rate exceeded');
+      sendError(socket, 'RATE_LIMITED', 'message rate exceeded');
+      respond(false, 'RATE_LIMITED');
+      return;
     }
 
     const targets = boxToSockets.get(raw.recipientBoxPublicKey);
@@ -435,6 +585,7 @@ io.on('connection', (socket: Socket) => {
       // replied" — closes the oracle. Side effect: senders no longer
       // get the "recipient is offline" UI banner. That UX trade-off is
       // documented in the README's "honest limitations" section.
+      respond(true);
       return;
     }
 
@@ -450,6 +601,7 @@ io.on('connection', (socket: Socket) => {
     for (const targetSocketId of targets) {
       io.sockets.sockets.get(targetSocketId)?.emit(WIRE.DM_MESSAGE, payload);
     }
+    respond(true);
   });
 
   // ── Disconnect cleanup ───────────────────────────────────────────────
@@ -457,6 +609,8 @@ io.on('connection', (socket: Socket) => {
     const session = socketSessions.get(socket.id);
     socketSessions.delete(socket.id);
     socketNonces.delete(socket.id);
+    socketNonceIssuedAt.delete(socket.id);
+    badAnnounceCounts.delete(socket.id);
     if (!session) return;
     unregisterSocketForBox(socket.id, session.boxPublicKey);
 
@@ -485,18 +639,41 @@ io.on('connection', (socket: Socket) => {
   });
 });
 
-// Periodic GC of stale rate buckets (sockets that disconnected leave nothing,
-// but a long-idle socket could hold a stale bucket past its window).
+// Periodic GC sweeper. Runs every RATE_WINDOW_MS and trims four maps
+// that would otherwise grow unbounded under adversarial conditions:
+//   - rateBuckets: stale rate windows (size-capped at insertion too)
+//   - socketNonces: nonces issued to sockets that disconnected
+//     before announcing
+//   - lastChannelActivity / channelRosters: channels with no recent
+//     join/send activity (also dropped here for memory hygiene)
 setInterval(() => {
   const now = Date.now();
   for (const [id, bucket] of rateBuckets) {
     if (now - bucket.windowStart > RATE_WINDOW_MS * 2) rateBuckets.delete(id);
   }
+  for (const [socketId, issuedAt] of socketNonceIssuedAt) {
+    if (now - issuedAt > SOCKET_NONCE_TTL_MS) {
+      socketNonces.delete(socketId);
+      socketNonceIssuedAt.delete(socketId);
+    }
+  }
+  for (const [channelId, lastTouched] of lastChannelActivity) {
+    if (now - lastTouched > IDLE_CHANNEL_TTL_MS) {
+      channelRosters.delete(channelId);
+      lastChannelActivity.delete(channelId);
+    }
+  }
 }, RATE_WINDOW_MS);
 
-httpServer.listen(PORT, () => {
+// Pin to loopback. Without the explicit host, node binds 0.0.0.0 —
+// which means every device on the LAN (and the open internet, if the
+// port is ever forwarded) could reach the relay directly, bypassing
+// the Tor hidden-service entrypoint that the entire privacy model
+// depends on. Only the local renderer + the local Rust onion proxy
+// need to hit this listener.
+httpServer.listen(PORT, '127.0.0.1', () => {
   console.log(
-    `[void-relay] listening on :${PORT} (CORS: ${CORS_ALLOW_ANY ? '* (any origin)' : CORS_ORIGIN_LIST.join(', ')})`,
+    `[void-relay] listening on 127.0.0.1:${PORT} (CORS: ${CORS_ALLOW_ANY ? '* (any origin)' : CORS_ORIGIN_LIST.join(', ')})`,
   );
 });
 

@@ -15,10 +15,15 @@ const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
 
+// Per audit M5: never log 'query'. Even in dev, query logs print
+// community names + channel metadata to stdout, which then bleeds
+// into terminal scrollback / bundled relay logs. The privacy model
+// of the app means even directory metadata shouldn't leak via logs.
+// 'error' alone is enough — schema problems still surface.
 export const prisma =
   globalForPrisma.prisma ??
   new PrismaClient({
-    log: process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error'],
+    log: ['error'],
   });
 
 if (process.env.NODE_ENV !== 'production') {

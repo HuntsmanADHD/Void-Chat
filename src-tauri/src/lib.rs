@@ -1,7 +1,7 @@
 mod proxy;
 mod tor;
 
-use tauri::{Manager, RunEvent};
+use tauri::{Emitter, Manager, RunEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -37,11 +37,24 @@ pub fn run() {
                 log::warn!("tor failed to start: {e}");
             }
             // Start the localhost forward proxy that lets the frontend
-            // reach remote .onion relays via SOCKS5 through Tor. Same
-            // failure mode: log and continue — proxy unavailability just
-            // means cross-host joins won't work this session.
+            // reach remote .onion relays via SOCKS5 through Tor. If
+            // the bind fails (port collision, sandbox restriction)
+            // cross-host comms won't work — surface that to the UI
+            // via the `proxy://status` event so the user sees a real
+            // failure mode instead of "I clicked a remote invite and
+            // it just hung".
             if let Err(e) = proxy::start() {
-                log::warn!("onion proxy failed to start: {e}");
+                let msg = format!("Onion proxy failed to start: {e}. Cross-host invites will not work this session.");
+                log::error!("{msg}");
+                let _ = app.handle().emit(
+                    "proxy://status",
+                    serde_json::json!({ "ok": false, "error": msg }),
+                );
+            } else {
+                let _ = app.handle().emit(
+                    "proxy://status",
+                    serde_json::json!({ "ok": true, "error": null }),
+                );
             }
             // Install a Ctrl-C / SIGTERM handler so terminal kills shut
             // tor down cleanly. Tauri's RunEvent::Exit fires only on

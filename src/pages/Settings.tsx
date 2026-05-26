@@ -4,6 +4,7 @@ import { ArrowLeft, Check, Copy, Download, Eye, Globe, Key, Shield, Trash2, Uplo
 import { useSession } from '@/hooks/useSession';
 import { destroyActiveSession } from '@/lib/messageStore';
 import { useTorStatus } from '@/hooks/useTorStatus';
+import { useProxyStatus } from '@/hooks/useProxyStatus';
 import {
   buildEncryptedBackup,
   downloadBackupFile,
@@ -430,6 +431,7 @@ export default function Settings() {
   const navigate = useNavigate();
   const { session, displayName, setDisplayName, isReady } = useSession();
   const tor = useTorStatus();
+  const proxy = useProxyStatus();
   const [draftName, setDraftName] = useState(displayName);
 
   useEffect(() => setDraftName(displayName), [displayName]);
@@ -568,6 +570,18 @@ export default function Settings() {
             </p>
           )}
         </SettingsSection>
+
+        {proxy.available && proxy.error && (
+          <div className="p-4 bg-red-900/30 border border-red-800 rounded-lg">
+            <p className="text-sm font-semibold text-red-200 mb-1">Cross-host comms disabled</p>
+            <p className="text-xs text-red-300">{proxy.error}</p>
+            <p className="text-xs text-red-300/70 mt-2">
+              Local communities still work; joining a remote .onion will fail until this is fixed.
+              Most common cause: another process is holding port 11811. Check with{' '}
+              <code>ss -tlnp | grep 11811</code> and kill the conflicting process.
+            </p>
+          </div>
+        )}
 
         {tor.available && <BridgesSection />}
 

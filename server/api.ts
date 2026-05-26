@@ -84,8 +84,16 @@ setInterval(() => {
 }, RATE_WINDOW_MS);
 
 function clientIp(req: IncomingMessage): string {
-  const fwd = req.headers['x-forwarded-for'];
-  if (typeof fwd === 'string') return fwd.split(',')[0]!.trim();
+  // Deliberately ignore `X-Forwarded-For`. The relay is pinned to
+  // loopback (see socket-server.ts) — any connection has to come
+  // through 127.0.0.1, either from the local renderer / Tauri proxy
+  // or from the Tor hidden-service in-port. There is no legitimate
+  // upstream proxy to trust.
+  //
+  // Trusting XFF here would let any local process (or any caller
+  // through the .onion) forge an arbitrary IP via the header to
+  // evade the per-IP rate-limit buckets — defeating the only
+  // throttle we have against abuse.
   return req.socket.remoteAddress || 'unknown';
 }
 
@@ -138,11 +146,18 @@ async function readBody(req: IncomingMessage, max = 512 * 1024): Promise<unknown
     req.on('end', () => {
       const raw = Buffer.concat(chunks).toString('utf8');
       if (!raw) return resolve({});
-      try {
-        resolve(JSON.parse(raw));
-      } catch {
-        reject(new Error('invalid-json'));
-      }
+      // Yield to the event loop before parsing. JSON.parse on a 512KB
+      // body blocks the loop for ~5-10ms; under load this stalls every
+      // other in-flight request including the socket.io WebSocket
+      // pings. setImmediate gives the loop a tick to drain queued
+      // network events between accept and parse.
+      setImmediate(() => {
+        try {
+          resolve(JSON.parse(raw));
+        } catch {
+          reject(new Error('invalid-json'));
+        }
+      });
     });
     req.on('error', reject);
   });

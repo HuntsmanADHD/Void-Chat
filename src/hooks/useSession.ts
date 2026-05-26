@@ -94,9 +94,15 @@ export function useSession(): UseSessionReturn {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    const storedName = localStorage.getItem(DISPLAY_NAME_STORAGE) || randomDisplayName();
-    if (!localStorage.getItem(DISPLAY_NAME_STORAGE)) {
-      localStorage.setItem(DISPLAY_NAME_STORAGE, storedName);
+    // Per audit M2: displayName moved from localStorage (persists
+    // across tab close → stable cross-session identifier, undermines
+    // the "fresh identity per session" model) to sessionStorage.
+    // Users get a fresh random name each new tab; if they want a
+    // chosen name they can re-enter it in Settings. The trade-off
+    // matches the rest of the ephemeral-identity story.
+    const storedName = sessionStorage.getItem(DISPLAY_NAME_STORAGE) || randomDisplayName();
+    if (!sessionStorage.getItem(DISPLAY_NAME_STORAGE)) {
+      sessionStorage.setItem(DISPLAY_NAME_STORAGE, storedName);
     }
     setDisplayNameState(storedName);
 
@@ -112,7 +118,7 @@ export function useSession(): UseSessionReturn {
   const setDisplayName = useCallback((name: string) => {
     const trimmed = name.trim().slice(0, 32);
     if (!trimmed) return;
-    localStorage.setItem(DISPLAY_NAME_STORAGE, trimmed);
+    sessionStorage.setItem(DISPLAY_NAME_STORAGE, trimmed);
     setDisplayNameState(trimmed);
     setSession((prev) => (prev ? { ...prev, displayName: trimmed } : prev));
   }, []);
