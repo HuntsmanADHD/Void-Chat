@@ -7,7 +7,12 @@ use tauri::{Manager, RunEvent};
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(tor::TorState::new())
-        .invoke_handler(tauri::generate_handler![tor::tor_status, tor::tor_onion])
+        .invoke_handler(tauri::generate_handler![
+            tor::tor_status,
+            tor::tor_onion,
+            tor::tor_backup_keys,
+            tor::tor_restore_keys,
+        ])
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(

@@ -261,6 +261,89 @@ pub fn shutdown(state: &TorState) {
     let _ = child.wait();
 }
 
+// ---------------- Backup / restore ----------------
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TorBackup {
+    /// Tor's v3 hidden-service key format is exact-bytes-required, so
+    /// we ship them base64-encoded to survive JSON transit.
+    pub public_key_b64: String,
+    pub secret_key_b64: String,
+    pub hostname: String,
+    /// Bump if the backup file format ever changes (e.g. we add v4 onions).
+    pub format_version: u32,
+}
+
+const BACKUP_FORMAT_VERSION: u32 = 1;
+
+fn base64_encode(bytes: &[u8]) -> String {
+    // Hand-rolled to avoid pulling a base64 crate just for this. Standard
+    // RFC 4648 alphabet, no line wrap.
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = if chunk.len() > 1 { chunk[1] } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] } else { 0 };
+        out.push(ALPHABET[(b0 >> 2) as usize] as char);
+        out.push(ALPHABET[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[(b2 & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+fn base64_decode(s: &str) -> Result<Vec<u8>, &'static str> {
+    fn val(c: u8) -> Result<u8, &'static str> {
+        match c {
+            b'A'..=b'Z' => Ok(c - b'A'),
+            b'a'..=b'z' => Ok(c - b'a' + 26),
+            b'0'..=b'9' => Ok(c - b'0' + 52),
+            b'+' => Ok(62),
+            b'/' => Ok(63),
+            _ => Err("invalid base64 char"),
+        }
+    }
+    let bytes: Vec<u8> = s.bytes().filter(|&b| !b.is_ascii_whitespace()).collect();
+    if bytes.len() % 4 != 0 {
+        return Err("base64 length not multiple of 4");
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    for chunk in bytes.chunks(4) {
+        let pad0 = chunk[2] == b'=';
+        let pad1 = chunk[3] == b'=';
+        let v0 = val(chunk[0])?;
+        let v1 = val(chunk[1])?;
+        out.push((v0 << 2) | (v1 >> 4));
+        if !pad0 {
+            let v2 = val(chunk[2])?;
+            out.push((v1 << 4) | (v2 >> 2));
+            if !pad1 {
+                let v3 = val(chunk[3])?;
+                out.push((v2 << 6) | v3);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn hs_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("could not resolve app data dir: {e}"))?;
+    Ok(data_dir.join("tor").join("hs"))
+}
+
 // ---------------- Tauri commands ----------------
 
 #[tauri::command]
@@ -271,4 +354,92 @@ pub fn tor_status(state: tauri::State<'_, TorState>) -> TorStatus {
 #[tauri::command]
 pub fn tor_onion(state: tauri::State<'_, TorState>) -> Option<String> {
     state.status.lock().expect("tor status mutex poisoned").hostname.clone()
+}
+
+/// Read the hidden-service key files and return them as a base64-encoded
+/// backup payload. The caller is expected to wrap this in passphrase
+/// encryption (via the existing Wash flow) before writing to disk — the
+/// raw secret key reproduces this identity for anyone who possesses it.
+#[tauri::command]
+pub fn tor_backup_keys(app: AppHandle) -> Result<TorBackup, String> {
+    let dir = hs_dir(&app)?;
+    let public = fs::read(dir.join("hs_ed25519_public_key"))
+        .map_err(|e| format!("could not read public key: {e}"))?;
+    let secret = fs::read(dir.join("hs_ed25519_secret_key"))
+        .map_err(|e| format!("could not read secret key: {e}"))?;
+    let hostname = fs::read_to_string(dir.join("hostname"))
+        .map_err(|e| format!("could not read hostname: {e}"))?
+        .trim()
+        .to_string();
+    Ok(TorBackup {
+        public_key_b64: base64_encode(&public),
+        secret_key_b64: base64_encode(&secret),
+        hostname,
+        format_version: BACKUP_FORMAT_VERSION,
+    })
+}
+
+/// Replace the local hidden-service identity with the one in `backup`.
+/// Stops the running Tor process, writes the keys atomically, then
+/// respawns Tor against the new identity. The .onion address surfaced
+/// via `tor_status` will change to match the imported keys.
+///
+/// The user is responsible for understanding that this overwrites their
+/// current identity — old invites pointing at the previous .onion will
+/// stop resolving.
+#[tauri::command]
+pub fn tor_restore_keys(app: AppHandle, backup: TorBackup) -> Result<(), String> {
+    if backup.format_version != BACKUP_FORMAT_VERSION {
+        return Err(format!(
+            "unsupported backup format version {} (this build expects {BACKUP_FORMAT_VERSION})",
+            backup.format_version
+        ));
+    }
+    let public = base64_decode(&backup.public_key_b64)
+        .map_err(|e| format!("public key not valid base64: {e}"))?;
+    let secret = base64_decode(&backup.secret_key_b64)
+        .map_err(|e| format!("secret key not valid base64: {e}"))?;
+
+    let dir = hs_dir(&app)?;
+    fs::create_dir_all(&dir).map_err(|e| format!("could not create hs dir: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("could not chmod hs dir: {e}"))?;
+    }
+
+    // Stop the current Tor before swapping keys. Tor reads the secret
+    // key once at startup; if we replaced it while running, the
+    // already-published hidden service would keep accepting connections
+    // at the old descriptor until next descriptor upload.
+    let state: tauri::State<'_, TorState> = app.state();
+    shutdown(&state);
+    // Reset the in-memory state so the UI doesn't keep showing the old
+    // hostname during the brief restart window.
+    {
+        let mut status = state.status.lock().expect("tor status mutex poisoned");
+        *status = TorStatus::empty();
+    }
+
+    write_key_file(&dir.join("hs_ed25519_public_key"), &public)?;
+    write_key_file(&dir.join("hs_ed25519_secret_key"), &secret)?;
+    fs::write(dir.join("hostname"), format!("{}\n", backup.hostname))
+        .map_err(|e| format!("could not write hostname: {e}"))?;
+
+    // Restart Tor with the imported identity. start() emits a fresh
+    // tor://status event so the UI updates.
+    start(&app).map_err(|e| format!("failed to restart tor: {e}"))?;
+    Ok(())
+}
+
+fn write_key_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    fs::write(path, bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("could not chmod {}: {e}", path.display()))?;
+    }
+    Ok(())
 }

@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Check, Copy, Eye, Globe, Key, Shield, Trash2 } from 'lucide-react';
+import { ArrowLeft, Check, Copy, Download, Eye, Globe, Key, Shield, Trash2, Upload } from 'lucide-react';
 import { useSession } from '@/hooks/useSession';
 import { destroyActiveSession } from '@/lib/messageStore';
 import { useTorStatus } from '@/hooks/useTorStatus';
+import {
+  buildEncryptedBackup,
+  downloadBackupFile,
+  MIN_BACKUP_PASSPHRASE_LEN,
+  readBackupFile,
+  restoreFromEncryptedBackup,
+} from '@/lib/onionBackup';
 
 function SettingsSection({
   title,
@@ -72,6 +79,213 @@ function InfoRow({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Inline UI for backing up + restoring the v3 hidden service identity.
+ * Sits below the Hidden Service section once the onion is reachable.
+ * Two flows:
+ *   - Back up: passphrase + confirm → calls Rust to read keys →
+ *     wash-encrypts → triggers file download.
+ *   - Restore: file picker → passphrase → unwash → calls Rust to
+ *     replace keys + restart Tor. New hostname appears in tor://status.
+ */
+function OnionBackupSection({ hostname }: { hostname: string }) {
+  const [mode, setMode] = useState<'idle' | 'backup' | 'restore'>('idle');
+  const [pass, setPass] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [restoreFile, setRestoreFile] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  const reset = useCallback(() => {
+    setMode('idle');
+    setPass('');
+    setConfirm('');
+    setRestoreFile(null);
+    setError(null);
+    setSuccess(null);
+  }, []);
+
+  const handleStartBackup = useCallback(() => {
+    reset();
+    setMode('backup');
+  }, [reset]);
+
+  const handleStartRestore = useCallback(async () => {
+    reset();
+    try {
+      const content = await readBackupFile();
+      setRestoreFile(content);
+      setMode('restore');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not read file.');
+    }
+  }, [reset]);
+
+  const handleBackupConfirm = useCallback(async () => {
+    setError(null);
+    if (pass.length < MIN_BACKUP_PASSPHRASE_LEN) {
+      setError(`Passphrase must be at least ${MIN_BACKUP_PASSPHRASE_LEN} characters.`);
+      return;
+    }
+    if (pass !== confirm) {
+      setError('Passphrases do not match.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const washed = await buildEncryptedBackup(pass);
+      downloadBackupFile(washed, hostname);
+      setSuccess('Backup downloaded. Store it somewhere safe — the passphrase is the only thing protecting it.');
+      setMode('idle');
+      setPass('');
+      setConfirm('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Backup failed.');
+    } finally {
+      setBusy(false);
+    }
+  }, [pass, confirm, hostname]);
+
+  const handleRestoreConfirm = useCallback(async () => {
+    setError(null);
+    if (!restoreFile) {
+      setError('No backup file loaded.');
+      return;
+    }
+    if (!pass) {
+      setError('Enter the passphrase used when this backup was created.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const restored = await restoreFromEncryptedBackup(restoreFile, pass);
+      setSuccess(`Restored. Your .onion is now ${restored.hostname}. Tor is restarting — give it a moment to re-bootstrap.`);
+      setMode('idle');
+      setPass('');
+      setRestoreFile(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Restore failed.');
+    } finally {
+      setBusy(false);
+    }
+  }, [restoreFile, pass]);
+
+  return (
+    <SettingsSection
+      title="Backup & restore identity"
+      description="Save your .onion secret key so you can recover it on a new device or after a reinstall."
+      icon={Shield}
+    >
+      {success && (
+        <div className="mb-4 p-3 bg-emerald-900/20 border border-emerald-800/50 rounded-lg text-sm text-emerald-300">
+          {success}
+        </div>
+      )}
+      {error && (
+        <div className="mb-4 p-3 bg-red-900/20 border border-red-800/50 rounded-lg text-sm text-red-300">
+          {error}
+        </div>
+      )}
+
+      {mode === 'idle' && (
+        <div className="flex flex-col sm:flex-row gap-2">
+          <button
+            onClick={handleStartBackup}
+            className="flex items-center justify-center gap-2 px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white text-sm rounded-lg transition-colors"
+          >
+            <Download className="w-4 h-4" />
+            Back up identity
+          </button>
+          <button
+            onClick={handleStartRestore}
+            className="flex items-center justify-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-sm rounded-lg transition-colors border border-zinc-700"
+          >
+            <Upload className="w-4 h-4" />
+            Restore from backup
+          </button>
+        </div>
+      )}
+
+      {mode === 'backup' && (
+        <div className="space-y-3">
+          <p className="text-sm text-zinc-400">
+            The backup file is encrypted with this passphrase. Without it the file is useless — and
+            unrecoverable. Pick something memorable and write it down separately.
+          </p>
+          <input
+            type="password"
+            value={pass}
+            onChange={(e) => setPass(e.target.value)}
+            placeholder={`Passphrase (≥ ${MIN_BACKUP_PASSPHRASE_LEN} chars)`}
+            className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-sm text-white"
+            disabled={busy}
+            autoFocus
+          />
+          <input
+            type="password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            placeholder="Confirm passphrase"
+            className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-sm text-white"
+            disabled={busy}
+          />
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={reset}
+              disabled={busy}
+              className="px-4 py-2 text-sm text-zinc-400 hover:text-white rounded-lg transition-colors disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleBackupConfirm}
+              disabled={busy}
+              className="px-4 py-2 text-sm bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-white rounded-lg transition-colors"
+            >
+              {busy ? 'Encrypting…' : 'Download backup'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {mode === 'restore' && (
+        <div className="space-y-3">
+          <div className="p-3 bg-amber-900/20 border border-amber-800/50 rounded-lg text-sm text-amber-300">
+            Restoring overwrites your current .onion. Anyone holding invites to your old address
+            will no longer be able to reach you.
+          </div>
+          <input
+            type="password"
+            value={pass}
+            onChange={(e) => setPass(e.target.value)}
+            placeholder="Passphrase for this backup"
+            className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-sm text-white"
+            disabled={busy}
+            autoFocus
+          />
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={reset}
+              disabled={busy}
+              className="px-4 py-2 text-sm text-zinc-400 hover:text-white rounded-lg transition-colors disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleRestoreConfirm}
+              disabled={busy}
+              className="px-4 py-2 text-sm bg-amber-600/20 hover:bg-amber-600/30 disabled:opacity-50 text-amber-200 rounded-lg transition-colors border border-amber-800/50"
+            >
+              {busy ? 'Restoring…' : 'Overwrite & restart Tor'}
+            </button>
+          </div>
+        </div>
+      )}
+    </SettingsSection>
   );
 }
 
@@ -190,6 +404,10 @@ export default function Settings() {
             </p>
           )}
         </SettingsSection>
+
+        {tor.available && tor.hostname && (
+          <OnionBackupSection hostname={tor.hostname} />
+        )}
 
         <SettingsSection
           title="What's persisted"
