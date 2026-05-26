@@ -32,6 +32,73 @@ const MAX_ONION_HOSTLIKE_LEN: usize = 80;
 /// stand up a small multi-thread runtime once at startup.
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
+/// Per-session shared secret. Generated fresh at app startup, exposed
+/// to the renderer via the `get_proxy_token` Tauri command. Every
+/// request hitting the proxy must include this token in its path:
+///
+///     GET /o/<token>/<onion>/<rest> HTTP/1.1
+///
+/// Without it the proxy returns 403. Closes the "any local process on
+/// this machine can use our Tor circuit" hole — even malware sharing
+/// the same uid can't reach the proxy without first stealing the
+/// token from the running app's memory.
+static PROXY_TOKEN: OnceLock<String> = OnceLock::new();
+
+/// Initialize the per-session proxy token. Called from `start()`.
+fn init_proxy_token() {
+    PROXY_TOKEN.get_or_init(|| {
+        let mut bytes = [0u8; 24]; // 192 bits — comfortably beyond brute-force
+        if getrandom::getrandom(&mut bytes).is_err() {
+            // Extremely unlikely (would mean the OS RNG isn't available)
+            // but if it happens we'd rather panic than ship a weak token.
+            panic!("[onion-proxy] OS RNG unavailable — refusing to start without a strong token");
+        }
+        encode_url_safe_base64(&bytes)
+    });
+}
+
+pub fn proxy_token() -> &'static str {
+    PROXY_TOKEN
+        .get()
+        .map(String::as_str)
+        .unwrap_or("")
+}
+
+/// Tauri command — the frontend calls this once at boot to learn the
+/// per-session proxy token. The token then prefixes every URL routed
+/// through the proxy (see lib/relayBase.ts).
+///
+/// Note: returning the token to the renderer is safe IFF the renderer
+/// is the only thing allowed to invoke this command (the default
+/// Tauri capability already gates app commands to the main window).
+/// We're not handing the token to arbitrary JS contexts.
+#[tauri::command]
+pub fn get_proxy_token() -> String {
+    proxy_token().to_string()
+}
+
+/// URL-safe base64 without padding — keeps the path component clean
+/// (no `+`, `/`, or `=` that would force percent-encoding in URLs).
+fn encode_url_safe_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity((bytes.len() * 4).div_ceil(3));
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = if chunk.len() > 1 { chunk[1] } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] } else { 0 };
+        out.push(ALPHABET[(b0 >> 2) as usize] as char);
+        out.push(ALPHABET[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[(b2 & 0x3f) as usize] as char);
+        }
+    }
+    out
+}
+
 fn runtime() -> &'static Runtime {
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -46,6 +113,7 @@ fn runtime() -> &'static Runtime {
 /// Spawn the forward proxy listener. Returns immediately; the listener
 /// runs forever inside the proxy runtime.
 pub fn start() -> std::io::Result<()> {
+    init_proxy_token();
     let rt = runtime();
     let handle = rt.handle().clone();
     handle.spawn(async {
@@ -85,13 +153,18 @@ async fn accept_loop(listener: TcpListener) {
     }
 }
 
-/// Parse `/o/<onion>/<rest>` and return (onion, rewritten_request_line).
+/// Parse `/o/<token>/<onion>/<rest>` and return (onion, rewritten_request_line).
 ///
 /// The proxy's contract with the frontend is:
-///     GET /o/<onion>/api/communities HTTP/1.1
+///     GET /o/<token>/<onion>/api/communities HTTP/1.1
 /// gets rewritten to
 ///     GET /api/communities HTTP/1.1
 /// before being sent at <onion>:80 through SOCKS5.
+///
+/// `<token>` must equal this session's `PROXY_TOKEN`. Requests with a
+/// missing, wrong, or short token are rejected — that's how we keep
+/// other local processes from using the Tor circuit attributed to us.
+/// Token comparison is constant-time to avoid timing oracles.
 fn split_request_line(line: &str) -> Option<(String, String)> {
     // Format: "METHOD SP PATH SP HTTP/1.1"
     let mut parts = line.splitn(3, ' ');
@@ -100,8 +173,17 @@ fn split_request_line(line: &str) -> Option<(String, String)> {
     let version = parts.next()?;
 
     let stripped = path.strip_prefix("/o/")?;
-    let slash = stripped.find('/')?;
-    let onion_raw = &stripped[..slash];
+    // First segment is the auth token.
+    let token_end = stripped.find('/')?;
+    let supplied_token = &stripped[..token_end];
+    let expected = PROXY_TOKEN.get()?.as_str();
+    if !constant_time_eq(supplied_token.as_bytes(), expected.as_bytes()) {
+        return None;
+    }
+
+    let after_token = &stripped[token_end + 1..];
+    let onion_end = after_token.find('/')?;
+    let onion_raw = &after_token[..onion_end];
     if onion_raw.is_empty() || onion_raw.len() > MAX_ONION_HOSTLIKE_LEN {
         return None;
     }
@@ -111,9 +193,25 @@ fn split_request_line(line: &str) -> Option<(String, String)> {
         format!("{onion_raw}.onion")
     };
 
-    let rest = &stripped[slash..]; // includes leading '/'
+    let rest = &after_token[onion_end..]; // includes leading '/'
     let rewritten = format!("{method} {rest} {version}");
     Some((onion, rewritten))
+}
+
+/// Constant-time byte comparison. `a == b` would short-circuit on first
+/// mismatch and leak the position via timing; this iterates the full
+/// max length so wall-clock cost is identical for any input. Lengths
+/// being different is itself a fast reject — which is fine, the token
+/// has a fixed length and that fact is public.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for i in 0..a.len() {
+        diff |= a[i] ^ b[i];
+    }
+    diff == 0
 }
 
 /// Rewrite the Host header to point at the onion. The relay validates

@@ -24,6 +24,36 @@ const PROXY_PORT = 11811;
 export const HTTP_RELAY_BASE = `http://localhost:${RELAY_PORT}`;
 const HTTP_PROXY_BASE = `http://localhost:${PROXY_PORT}`;
 
+/**
+ * Per-session token issued by the Rust onion proxy. Required as the
+ * first path segment on every URL hitting the proxy; without it the
+ * proxy returns no route. Without this gate, any local process sharing
+ * our uid could exfiltrate traffic through our Tor circuit.
+ *
+ * Populated by `initProxyToken()` at app boot (see main.tsx). Stays
+ * empty outside Tauri — the proxy doesn't run there and proxy URLs
+ * are never constructed.
+ */
+let proxyToken: string = '';
+
+function inTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+/** Called once at app startup. Idempotent — re-calling is a no-op. */
+export async function initProxyToken(): Promise<void> {
+  if (proxyToken) return;
+  if (!inTauri()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    proxyToken = await invoke<string>('get_proxy_token');
+  } catch (err) {
+    // Cross-host won't work this session, but local communities still
+    // do (they don't touch the proxy). Log loud so users can see why.
+    console.warn('[relayBase] proxy token unavailable:', err);
+  }
+}
+
 function joinPath(base: string, path: string): string {
   return `${base}${path.startsWith('/') ? path : `/${path}`}`;
 }
@@ -40,9 +70,19 @@ export function apiUrl(path: string): string {
  *  given community. If the community lives on a remote .onion, returns
  *  the proxy URL; otherwise returns the local relay URL. */
 export function apiUrlFor(communityId: string, path: string): string {
-  const onion = getCommunityHost(communityId);
+  return apiUrlForOnion(getCommunityHost(communityId), path);
+}
+
+/** Direct form: route to a specific onion (or local if null). Used by
+ *  the join flow before the community-host mapping is persisted —
+ *  i.e. when verifying an invite from an untrusted remote host. */
+export function apiUrlForOnion(onion: string | null, path: string): string {
   if (!onion) return apiUrl(path);
-  return joinPath(HTTP_PROXY_BASE, `/o/${onion}${path.startsWith('/') ? path : `/${path}`}`);
+  const tokenSegment = encodeURIComponent(proxyToken);
+  return joinPath(
+    HTTP_PROXY_BASE,
+    `/o/${tokenSegment}/${onion}${path.startsWith('/') ? path : `/${path}`}`,
+  );
 }
 
 /** Compute the realtime (socket.io) base URL for a community. socket.io
@@ -53,5 +93,6 @@ export function relayBaseFor(communityId: string | null): string {
   if (!communityId) return HTTP_RELAY_BASE;
   const onion = getCommunityHost(communityId);
   if (!onion) return HTTP_RELAY_BASE;
-  return `${HTTP_PROXY_BASE}/o/${onion}`;
+  const tokenSegment = encodeURIComponent(proxyToken);
+  return `${HTTP_PROXY_BASE}/o/${tokenSegment}/${onion}`;
 }

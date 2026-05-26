@@ -186,20 +186,13 @@ httpServer.on('request', (req, res) => {
 });
 const io = new Server(httpServer, {
   cors: {
-    // .onion origins are accepted unconditionally — the relay is only
-    // reachable through its own hidden service, so reaching it already
-    // proves the caller has the onion address. See server/api.ts for the
-    // matching HTTP-side allowance.
-    origin: CORS_ALLOW_ANY
-      ? true
-      : (origin, cb) => {
-          if (!origin) return cb(null, true);
-          if (CORS_ORIGIN_LIST.includes(origin)) return cb(null, true);
-          try {
-            if (new URL(origin).hostname.endsWith('.onion')) return cb(null, true);
-          } catch {}
-          cb(new Error(`Origin not allowed: ${origin}`));
-        },
+    // No .onion allowance — see server/api.ts for the full rationale.
+    // Short version: the relay is bound to localhost so any local
+    // process can forge an Origin header; the cross-host flow doesn't
+    // actually need .onion origins because the proxy forwards the
+    // webview's tauri://localhost (or http://localhost:5173) origin
+    // unchanged, and those are in the allowlist already.
+    origin: CORS_ALLOW_ANY ? true : CORS_ORIGIN_LIST,
     methods: ['GET', 'POST'],
     credentials: true,
   },
@@ -430,7 +423,18 @@ io.on('connection', (socket: Socket) => {
 
     const targets = boxToSockets.get(raw.recipientBoxPublicKey);
     if (!targets || targets.size === 0) {
-      socket.emit(WIRE.DM_OFFLINE, { recipientBoxPublicKey: raw.recipientBoxPublicKey });
+      // Earlier versions emitted `dm:offline` here, telling the sender
+      // exactly when the recipient's box key wasn't currently online.
+      // That made the relay a presence oracle: an attacker who knows a
+      // target's boxPublicKey could rate-limit-spam DMs and map their
+      // online/offline transitions over time. For a privacy-first app,
+      // that's a metadata leak we don't need to spend.
+      //
+      // Now we drop silently. From the sender's perspective the result
+      // is indistinguishable from "delivered but recipient hasn't
+      // replied" — closes the oracle. Side effect: senders no longer
+      // get the "recipient is offline" UI banner. That UX trade-off is
+      // documented in the README's "honest limitations" section.
       return;
     }
 

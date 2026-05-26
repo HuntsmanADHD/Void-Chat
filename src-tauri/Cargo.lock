@@ -4124,6 +4124,7 @@ name = "voidchat"
 version = "0.1.0"
 dependencies = [
  "ctrlc",
+ "getrandom 0.2.17",
  "libc",
  "log",
  "serde",

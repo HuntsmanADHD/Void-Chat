@@ -31,26 +31,25 @@ const CORS_ALLOW_ANY = CORS_RAW.trim() === '*';
 const CORS_ORIGINS = new Set(CORS_RAW.split(',').map(o => o.trim()).filter(Boolean));
 
 /**
- * .onion origins are unbounded (one per peer's hidden service) and there
- * is no way to enumerate them ahead of time. The relay is only reachable
- * through the hidden service it's bound to — never from the wider
- * internet — so accepting any `*.onion` origin is safe: a peer who can
- * reach the relay at all already proved they have the onion address.
+ * Earlier versions accepted any `*.onion` origin on the theory that
+ * reaching the relay over Tor already proved the caller had the onion
+ * address. That reasoning was wrong: the relay is also bound to
+ * localhost (3001), so any local process could send a request with a
+ * forged `Origin: http://something.onion` header and trip the permissive
+ * ACAO branch — letting same-machine malware read community + channel
+ * metadata.
+ *
+ * Cross-host flow doesn't need the .onion allowance: the local proxy
+ * forwards Origin from the webview unchanged, so legitimate cross-host
+ * requests arrive at the remote relay with `Origin: tauri://localhost`
+ * (or whatever the peer's webview origin is), which is already in
+ * `CORS_ORIGINS`. The allowance was vestigial.
  */
-function isOnionOrigin(origin: string): boolean {
-  try {
-    const url = new URL(origin);
-    return url.hostname.endsWith('.onion');
-  } catch {
-    return false;
-  }
-}
-
 function applyCors(req: IncomingMessage, res: ServerResponse): void {
   const origin = req.headers.origin || '';
   if (CORS_ALLOW_ANY) {
     res.setHeader('Access-Control-Allow-Origin', origin || '*');
-  } else if (CORS_ORIGINS.has(origin) || isOnionOrigin(origin)) {
+  } else if (CORS_ORIGINS.has(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
   }
   res.setHeader('Vary', 'Origin');

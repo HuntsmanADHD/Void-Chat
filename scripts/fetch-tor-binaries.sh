@@ -78,6 +78,47 @@ if ! curl -fL --proto '=https' --tlsv1.2 --progress-bar -o "$tmpdir/$archive_nam
     exit 1
 fi
 
+# ── Signature verification ──
+# Download the detached .asc signature and verify it against the Tor
+# Browser developers' signing key. Without this, a compromised archive
+# (or a MITM if HTTPS were ever downgraded) would ship backdoored Tor
+# binaries inside our installer with no way for the user to notice.
+#
+# The keyring file is repo-tracked; replacing the placeholder content
+# (scripts/tor-signing-keys.asc) with the real Tor Browser developers'
+# key turns this from "best-effort warning" to a hard fail.
+sig_name="${archive_name}.asc"
+sig_url="${url}.asc"
+keyring="$repo_root/scripts/tor-signing-keys.asc"
+
+if ! command -v gpg >/dev/null 2>&1; then
+    echo "⚠  gpg not installed — skipping signature verification."
+    echo "   For shipped builds, install gpg and re-run:"
+    echo "     pacman -S gnupg / apt install gnupg / brew install gnupg"
+elif ! grep -q "^[a-zA-Z0-9]" "$keyring" 2>/dev/null; then
+    echo "⚠  scripts/tor-signing-keys.asc is a placeholder — skipping verification."
+    echo "   Populate it from https://support.torproject.org/tbb/how-to-verify-signature/"
+    echo "   to enable signature verification."
+else
+    echo "→ Downloading detached signature $sig_url"
+    if ! curl -fL --proto '=https' --tlsv1.2 --silent -o "$tmpdir/$sig_name" "$sig_url"; then
+        echo "ERROR: signature download failed — refusing to install unverified binary." >&2
+        exit 1
+    fi
+    echo "→ Verifying GPG signature"
+    gpg_home="$(mktemp -d -t voidchat-gpg-XXXXXX)"
+    trap 'rm -rf "$tmpdir" "$gpg_home"' EXIT
+    if ! gpg --homedir "$gpg_home" --batch --import "$keyring" >/dev/null 2>&1; then
+        echo "ERROR: could not import signing keys from $keyring" >&2
+        exit 1
+    fi
+    if ! gpg --homedir "$gpg_home" --batch --verify "$tmpdir/$sig_name" "$tmpdir/$archive_name" 2>&1; then
+        echo "ERROR: signature did NOT verify — archive may be tampered. Refusing to install." >&2
+        exit 1
+    fi
+    echo "✓ Signature verified"
+fi
+
 echo "→ Extracting Tor runtime"
 tar -xzf "$tmpdir/$archive_name" -C "$tmpdir"
 

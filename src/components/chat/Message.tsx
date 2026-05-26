@@ -333,6 +333,22 @@ export const Message = React.memo(function Message({
               {displayName}
             </span>
 
+            {/* Show the truncated signing-key fingerprint inline next to
+                the display name for non-own messages. Display names are
+                spoofable (the audit rightly flagged that an attacker can
+                call themselves "Alice" and be indistinguishable from real
+                Alice in the UI unless someone hovers). The fingerprint is
+                the actual cryptographic identity — surfacing it inline
+                makes the spoofing attempt visible at a glance. */}
+            {!isOwn && (
+              <span
+                className="text-[10px] font-mono text-zinc-600 select-all"
+                title={`Public ID — ${sender.publicId}`}
+              >
+                {truncatePublicId(sender.publicId)}
+              </span>
+            )}
+
             <span className="text-xs text-zinc-600" title={fullTimestamp}>
               {relativeTime}
             </span>

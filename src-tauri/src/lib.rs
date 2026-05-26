@@ -15,6 +15,7 @@ pub fn run() {
             tor::tor_get_bridges,
             tor::tor_set_bridges,
             tor::tor_has_obfs4proxy,
+            proxy::get_proxy_token,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

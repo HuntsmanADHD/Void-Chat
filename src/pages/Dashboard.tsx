@@ -14,10 +14,10 @@ import { useToast } from '@/components/ui/Toast';
 import { CommunityPasswordPrompt } from '@/components/community/CommunityPasswordPrompt';
 import { setCommunityPassword } from '@/lib/communityPasswordStore';
 import { OnboardingModal, hasSeenOnboarding } from '@/components/onboarding/OnboardingModal';
-import { apiUrl } from '@/lib/relayBase';
+import { apiUrl, apiUrlForOnion } from '@/lib/relayBase';
 import { parseInvite } from '@/lib/invite';
 import { useTorStatus } from '@/hooks/useTorStatus';
-import { setCommunityHost } from '@/lib/communityHostStore';
+import { setCommunityHost, getCommunityHost } from '@/lib/communityHostStore';
 import type { Community, DirectMessage, CurrentUser } from '@/components/layout/Sidebar';
 
 function truncatePublicId(id: string, chars = 4): string {
@@ -265,9 +265,30 @@ export default function Dashboard() {
       // remote .onion (and it isn't our own), route this join through
       // the Tor forward proxy. The host mapping is persisted so all
       // future visits to this community keep using the same relay.
+      // TOFU change-warning: if we've previously joined a community with
+      // this same ID at a different .onion, that's the kind of swap an
+      // attacker would attempt to MITM future visits. Refuse the join
+      // until the user explicitly confirms they want the new mapping.
+      // (Right now there's no confirm-flow UI, so we just surface a
+      // clear error string with the diff — the user has to clear the
+      // old host mapping in storage to retry.)
+      const previousHost = getCommunityHost(communityId);
+      if (previousHost && onion && previousHost !== onion) {
+        return (
+          `Onion mismatch for this community.\n` +
+          `Previously: ${previousHost}\n` +
+          `New invite: ${onion}\n` +
+          `Refusing to switch — this could be a host-swap MITM attempt.`
+        );
+      }
+
       const isRemote = !!(onion && tor.hostname && onion !== tor.hostname);
+      // apiUrlForOnion adds the per-session proxy token automatically.
+      // Without the token the local Rust proxy would reject the request;
+      // it's the gate that prevents other local processes from using
+      // our Tor circuit attributed to us.
       const verifyUrl = isRemote
-        ? `http://localhost:11811/o/${onion}/api/communities/${encodeURIComponent(communityId)}`
+        ? apiUrlForOnion(onion, `/api/communities/${encodeURIComponent(communityId)}`)
         : apiUrl(`/api/communities/${encodeURIComponent(communityId)}`);
 
       try {
