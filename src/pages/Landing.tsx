@@ -82,13 +82,13 @@ export default function Landing() {
   return (
     <div className="h-screen overflow-y-auto bg-black flex flex-col relative">
       <div
-        className="absolute pointer-events-none"
+        className="absolute pointer-events-none gpu-backdrop"
         style={{
           top: '5%',
           left: '50%',
-          transform: 'translateX(-50%)',
           width: '70%',
           height: '70%',
+          marginLeft: '-35%',
           backgroundImage: 'url(/images/logo.png)',
           backgroundPosition: 'center top',
           backgroundRepeat: 'no-repeat',

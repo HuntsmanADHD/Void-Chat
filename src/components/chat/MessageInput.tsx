@@ -93,8 +93,13 @@ function DisabledOverlay({ reason }: { reason?: string }) {
 /**
  * Message input bar with auto-resizing textarea, emoji picker, 432Hz typing
  * sounds, off-Void wash modal trigger, and Enter-to-send.
+ *
+ * Memoized: typed text lives in local state, so as long as callers pass
+ * stable callbacks (via useCallback) every incoming message at the
+ * container level skips re-rendering this whole tree — including the
+ * harmonic typing hook's audio nodes.
  */
-export function MessageInput({
+function MessageInputBase({
   onSend,
   disabled = false,
   disabledReason,
@@ -284,5 +289,7 @@ export function MessageInput({
     </div>
   );
 }
+
+export const MessageInput = React.memo(MessageInputBase);
 
 export default MessageInput;

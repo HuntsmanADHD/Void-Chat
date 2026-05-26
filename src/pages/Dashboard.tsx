@@ -372,13 +372,13 @@ export default function Dashboard() {
       >
         <div className="relative h-full">
           <div
-            className="absolute pointer-events-none"
+            className="absolute pointer-events-none gpu-backdrop"
             style={{
               top: '5%',
               left: '50%',
-              transform: 'translateX(-50%)',
               width: '70%',
               height: '70%',
+              marginLeft: '-35%',
               backgroundImage: 'url(/images/portal-ring.jpg)',
               backgroundPosition: 'center',
               backgroundRepeat: 'no-repeat',

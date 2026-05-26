@@ -251,23 +251,27 @@ export function MessageList({
     setIsAtBottom(true);
   }, []);
 
-  // Handle scroll event
+  // Coalesce scroll events to one work cycle per animation frame.
+  // Webkit fires scroll at every input update, which is well above what
+  // the bottom-detection + load-more logic actually needs.
+  const scrollRafRef = useRef<number | null>(null);
   const handleScroll = useCallback(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-
-    const atBottom = checkIfAtBottom();
-
-    // Hide new messages indicator if at bottom
-    if (atBottom) {
-      setShowNewMessages(false);
-    }
-
-    // Load more when scrolled near top
-    if (hasMore && onLoadMore && container.scrollTop < 100) {
-      onLoadMore();
-    }
+    if (scrollRafRef.current !== null) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      const atBottom = checkIfAtBottom();
+      if (atBottom) setShowNewMessages(false);
+      if (hasMore && onLoadMore && container.scrollTop < 100) onLoadMore();
+    });
   }, [checkIfAtBottom, hasMore, onLoadMore]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current !== null) cancelAnimationFrame(scrollRafRef.current);
+    };
+  }, []);
 
   // Auto-scroll when new messages arrive (if at bottom)
   useEffect(() => {
@@ -352,16 +356,17 @@ export function MessageList({
 
   return (
     <div className={`relative flex-1 min-h-0 overflow-hidden ${className}`}>
-      {/* Chat background image */}
+      {/* Chat background image + vignette overlay. Both promoted to their
+          own GPU compositor layer so scrolling the message list doesn't
+          repaint the background every frame. */}
       <div
-        className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-10 pointer-events-none"
+        className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-10 pointer-events-none gpu-backdrop"
         style={{ backgroundImage: 'url(/images/chat-background.jpg)' }}
       />
-      {/* Void vignette overlay - darker, more mysterious */}
       <div
-        className="absolute inset-0 pointer-events-none"
+        className="absolute inset-0 pointer-events-none gpu-backdrop"
         style={{
-          background: 'radial-gradient(ellipse at center, transparent 0%, rgba(0, 0, 0, 0.8) 100%)'
+          background: 'radial-gradient(ellipse at center, transparent 0%, rgba(0, 0, 0, 0.8) 100%)',
         }}
       />
       <div
