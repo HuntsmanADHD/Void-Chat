@@ -76,8 +76,14 @@ fn write_torrc(data_dir: &Path) -> std::io::Result<(PathBuf, PathBuf)> {
     let torrc_path = tor_dir.join("torrc");
     let notices_path = tor_dir.join("notices.log");
 
+    // NOTE: `Log` lines are additive in tor — both directives fire for
+    // every notice. We need stdout because the Rust watcher thread parses
+    // "Bootstrapped N%" from there; the file is kept for after-the-fact
+    // diagnostics. A single `Log notice file ...` would silence stdout
+    // entirely (the watcher would never detect hostname readiness).
     let torrc = format!(
         "DataDirectory {data}\n\
+         Log notice stdout\n\
          Log notice file {notices}\n\
          SocksPort 127.0.0.1:{socks}\n\
          ControlPort 127.0.0.1:{control}\n\
