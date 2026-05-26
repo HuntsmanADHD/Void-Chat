@@ -4,6 +4,10 @@ A privacy-first desktop messenger that routes everything through Tor hidden serv
 
 No accounts. No email. No password. No history. Every browser tab generates a fresh cryptographic identity that disappears when you close it.
 
+<p align="center">
+  <img src="public/Example%20Img/landing%20page.png" alt="Void Chat landing page" width="800" />
+</p>
+
 ---
 
 ## Table of contents
@@ -41,6 +45,10 @@ No accounts. No email. No password. No history. Every browser tab generates a fr
 The relay decrypts nothing. The SQLite file holds only the names of communities and channels — no messages, no users. Tor handles the network: your friends reach you at a `.onion` address that doesn't leak your IP, and they don't have to be on your network, your VPN, or pay for tunneling.
 
 You also get **Wash**, a separate off-Void encryption tool (different cipher family from the chat protocol) for sharing invite codes, passwords, or any phrase through channels you don't fully trust.
+
+<p align="center">
+  <img src="public/Example%20Img/startingPage.png" alt="Dashboard / starting page" width="800" />
+</p>
 
 ---
 
@@ -218,6 +226,10 @@ For **private** (password-gated) communities, share the password through a diffe
 4. Behind the scenes: a local Rust forward proxy on `127.0.0.1:11811` opens a SOCKS5 connection to your local Tor on `127.0.0.1:19050`, dials the `<onion>:80` hidden service, and forwards your API + WebSocket traffic. The remote host never learns your IP; you never learn theirs. CORS for `.onion` origins is allowed unconditionally on both sides (if you can reach the relay through the hidden service, you already proved you have the address).
 
 Your local Tor needs to be fully bootstrapped (Settings → 100%) before cross-host joins will work. Same-host joins (an invite where the onion matches your own) work whether Tor is up or not.
+
+<p align="center">
+  <img src="public/Example%20Img/group.png" alt="Community / channel view inside a joined chat" width="800" />
+</p>
 
 ---
 
