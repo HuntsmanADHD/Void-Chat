@@ -1,5 +1,3 @@
-'use client';
-
 import React, { useState, useMemo, useCallback } from 'react';
 import { Avatar } from '@/components/ui/Avatar';
 import { EmojiPicker } from './EmojiPicker';

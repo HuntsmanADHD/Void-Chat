@@ -4,12 +4,15 @@
   "private": true,
   "packageManager": "yarn@4.15.0",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
     "socket": "tsx server/socket-server.ts",
-    "dev:all": "concurrently \"yarn dev\" \"yarn socket\""
+    "dev:all": "concurrently \"yarn dev\" \"yarn socket\"",
+    "tauri": "tauri",
+    "tauri:dev": "WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 tauri dev",
+    "tauri:build": "WEBKIT_DISABLE_DMABUF_RENDERER=1 tauri build"
   },
   "dependenciesMeta": {
     "@prisma/client": {
@@ -20,14 +23,17 @@
     }
   },
   "dependencies": {
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.2.8",
     "@noble/ed25519": "^2.1.0",
     "@prisma/client": "^5.22.0",
+    "@tauri-apps/api": "^2",
     "bs58": "^6.0.0",
     "lucide-react": "^0.555.0",
-    "next": "14.2.33",
     "prisma": "^5.22.0",
     "react": "^18",
     "react-dom": "^18",
+    "react-router-dom": "^7.15.1",
     "simple-peer": "^9.11.1",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1",
@@ -36,19 +42,22 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "@types/simple-peer": "^9.11.9",
+    "@vitejs/plugin-react": "^6.0.2",
     "autoprefixer": "^10.4.22",
     "concurrently": "^9.0.1",
     "eslint": "^8",
-    "eslint-config-next": "14.2.33",
     "fake-indexeddb": "^6.2.5",
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
     "ts-node": "^10.9.2",
     "tsx": "^4.21.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vite": "^8.0.14",
+    "vite-tsconfig-paths": "^6.1.1"
   }
 }

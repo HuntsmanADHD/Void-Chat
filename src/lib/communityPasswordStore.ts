@@ -1,5 +1,3 @@
-'use client';
-
 /**
  * Per-tab cache of community passwords the user has entered, so they
  * aren't re-prompted every navigation within the same session. Lives in

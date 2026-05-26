@@ -1,24 +1,7 @@
 /**
- * Central exports for lib utilities.
- *
- * Ephemeral identity model: most legacy auth/moderation/keystore/p2p
- * utilities have been removed. Add exports back here only when a downstream
- * file actually imports them via the barrel.
+ * Central exports for client-safe lib utilities. prisma is intentionally
+ * NOT re-exported here — it's server-only and would bundle into the browser
+ * if pulled through a barrel the React tree consumes.
  */
-
-export { prisma } from './prisma';
-
-export {
-  checkRateLimit,
-  getClientIp,
-  sanitizeInput,
-  validatePagination,
-  getCORSHeaders,
-  CORS_HEADERS,
-  createCORSResponse,
-  OPTIONS,
-  createErrorResponse,
-  createSuccessResponse,
-} from './auth';
 
 export { formatPublicId, truncatePublicId } from './format';

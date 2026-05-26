@@ -1,8 +1,6 @@
-'use client';
-
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Lock } from 'lucide-react';
-import { useBackdropClose } from '@/components/ui/useBackdropClose';
+import { useBackdropClose } from '@/hooks/useBackdropClose';
 
 export interface CommunityPasswordPromptProps {
   isOpen: boolean;

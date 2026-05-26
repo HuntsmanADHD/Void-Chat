@@ -1,5 +1,3 @@
-'use client';
-
 import { useCallback, useEffect, useState } from 'react';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';

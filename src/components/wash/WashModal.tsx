@@ -1,9 +1,7 @@
-'use client';
-
 import { useEffect } from 'react';
 import { X } from 'lucide-react';
 import { WashWidget } from './WashWidget';
-import { useBackdropClose } from '@/components/ui/useBackdropClose';
+import { useBackdropClose } from '@/hooks/useBackdropClose';
 
 export interface WashModalProps {
   isOpen: boolean;

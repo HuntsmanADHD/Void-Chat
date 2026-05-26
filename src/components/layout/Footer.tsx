@@ -1,6 +1,4 @@
-'use client';
-
-import Link from 'next/link';
+import { Link } from 'react-router-dom';
 import { WarrantCanaryBadge } from '@/components/legal/WarrantCanary';
 
 /**
@@ -26,13 +24,13 @@ export function Footer() {
           {/* Center - Legal links */}
           <div className="flex items-center gap-6">
             <Link
-              href="/terms"
+              to="/terms"
               className="text-gray-400 hover:text-white text-sm transition-colors"
             >
               Terms of Service
             </Link>
             <Link
-              href="/privacy"
+              to="/privacy"
               className="text-gray-400 hover:text-white text-sm transition-colors"
             >
               Privacy Policy
@@ -55,11 +53,11 @@ export function Footer() {
 export function AppFooter() {
   return (
     <footer className="flex items-center justify-center gap-4 py-3 text-xs text-gray-500">
-      <Link href="/terms" className="hover:text-gray-300 transition-colors">
+      <Link to="/terms" className="hover:text-gray-300 transition-colors">
         Terms
       </Link>
       <span>&middot;</span>
-      <Link href="/privacy" className="hover:text-gray-300 transition-colors">
+      <Link to="/privacy" className="hover:text-gray-300 transition-colors">
         Privacy
       </Link>
       <span>&middot;</span>

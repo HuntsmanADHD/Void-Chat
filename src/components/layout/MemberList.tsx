@@ -1,5 +1,3 @@
-'use client';
-
 import React from 'react';
 import { Crown } from 'lucide-react';
 import { Avatar } from '../ui/Avatar';

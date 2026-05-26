@@ -31,6 +31,7 @@ import {
   type SessionAnnounceMessage,
   type WireErrorMessage,
 } from '../src/types/wire';
+import { handleApiRequest } from './api';
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -40,7 +41,8 @@ const PORT = process.env['SOCKET_PORT'] ? parseInt(process.env['SOCKET_PORT'], 1
 // hostname). Accept a comma-separated list. The literal "*" disables the
 // allowlist entirely — convenient for LAN-only setups where you don't care
 // what address your friends type, but DO NOT use over the internet.
-const CORS_RAW = process.env['CORS_ORIGIN'] || 'http://localhost:3000';
+const CORS_RAW = process.env['CORS_ORIGIN'] ||
+  'http://localhost:5173,http://localhost:1420,http://localhost:3000,tauri://localhost,https://tauri.localhost';
 const CORS_ALLOW_ANY = CORS_RAW.trim() === '*';
 const CORS_ORIGIN_LIST = CORS_RAW.split(',').map(s => s.trim()).filter(Boolean);
 
@@ -160,10 +162,36 @@ function verifyAnnounceSignature(
 
 // ── Server ─────────────────────────────────────────────────────────────────
 
+// Same Node http server hosts both the HTTP API (community/channel CRUD)
+// and the socket.io WebSocket layer. socket.io adds its own request
+// listener for /socket.io/*; ours below handles /api/* and falls through
+// (no-op) for anything else so socket.io can answer it.
 const httpServer = createServer();
+httpServer.on('request', (req, res) => {
+  void handleApiRequest(req, res).catch((err) => {
+    console.error('[void-relay] api dispatcher crashed:', err);
+    if (!res.headersSent) {
+      res.statusCode = 500;
+      res.end();
+    }
+  });
+});
 const io = new Server(httpServer, {
   cors: {
-    origin: CORS_ALLOW_ANY ? true : CORS_ORIGIN_LIST,
+    // .onion origins are accepted unconditionally — the relay is only
+    // reachable through its own hidden service, so reaching it already
+    // proves the caller has the onion address. See server/api.ts for the
+    // matching HTTP-side allowance.
+    origin: CORS_ALLOW_ANY
+      ? true
+      : (origin, cb) => {
+          if (!origin) return cb(null, true);
+          if (CORS_ORIGIN_LIST.includes(origin)) return cb(null, true);
+          try {
+            if (new URL(origin).hostname.endsWith('.onion')) return cb(null, true);
+          } catch {}
+          cb(new Error(`Origin not allowed: ${origin}`));
+        },
     methods: ['GET', 'POST'],
     credentials: true,
   },

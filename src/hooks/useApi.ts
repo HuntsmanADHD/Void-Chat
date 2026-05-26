@@ -1,9 +1,11 @@
 import { useCallback, useMemo } from 'react';
 import { useToast } from '@/components/ui/Toast';
+import { apiUrl } from '@/lib/relayBase';
 
 /**
- * Thin fetch wrapper. Ephemeral identity model: no auth headers, the
- * surviving HTTP routes are public and rate-limited by IP server-side.
+ * Thin fetch wrapper. Relative paths get resolved against the bundled
+ * relay (localhost:3001). When Phase 3 lands and CRUD moves to Tauri
+ * commands, the call sites swap to `invoke()` and this hook goes away.
  */
 
 export interface ApiError {
@@ -29,7 +31,11 @@ async function request<T>(
   signal?: AbortSignal
 ): Promise<ApiResponse<T>> {
   try {
-    const res = await fetch(endpoint, {
+    // Endpoints starting with `/` resolve to the relay; absolute URLs pass through.
+    const url = endpoint.startsWith('http://') || endpoint.startsWith('https://')
+      ? endpoint
+      : apiUrl(endpoint);
+    const res = await fetch(url, {
       method,
       headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
       body: body !== undefined ? JSON.stringify(body) : undefined,

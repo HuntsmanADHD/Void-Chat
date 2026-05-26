@@ -1,7 +1,4 @@
-'use client';
-
 import React, { useEffect, useRef, useState } from 'react';
-import Image from 'next/image';
 import {
   Plus,
   Hash,
@@ -150,7 +147,7 @@ export const Sidebar = React.memo(function Sidebar({
             tabIndex={0}
             aria-label="Direct Messages"
           >
-            <Image
+            <img
               src="/images/logo.png"
               alt="Void Chat"
               width={48}
@@ -247,8 +244,11 @@ export const Sidebar = React.memo(function Sidebar({
 
       {/* Channel/DM list */}
       <div className="w-60 bg-gradient-to-b from-zinc-950 via-zinc-900 to-zinc-950 flex flex-col min-h-0">
-        {/* Header */}
-        <div className="h-12 min-h-[48px] flex items-center justify-between px-4 border-b border-zinc-800/50 shadow-lg bg-gradient-to-r from-black/50 to-zinc-900/50 backdrop-blur-sm">
+        {/* Header. backdrop-blur removed for the same reason as
+            .message-group-bg — always-visible blur layer that webkit
+            recomposites on every scroll frame. Solid bg achieves the
+            same visual separation. */}
+        <div className="h-12 min-h-[48px] flex items-center justify-between px-4 border-b border-zinc-800/50 shadow-lg bg-gradient-to-r from-black/80 to-zinc-900/80">
           {isDMView ? (
             <h2 className="font-semibold text-[var(--text-primary)] truncate">
               Direct Messages

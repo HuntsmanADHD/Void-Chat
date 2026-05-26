@@ -1,0 +1,385 @@
+/**
+ * HTTP API handler for the relay process. Mounts on the same Node http
+ * server that socket.io attaches to, listening for `/api/*` requests.
+ *
+ * Endpoints (formerly Next App Router routes):
+ *   GET    /api/communities                        — list (paginated)
+ *   POST   /api/communities                        — create
+ *   GET    /api/communities/:id                    — fetch (pw-gated if private)
+ *   DELETE /api/communities/:id                    — delete (pw-gated if private)
+ *   GET    /api/communities/:id/channels           — list channels
+ *   POST   /api/communities/:id/channels           — create channel
+ *
+ * Prisma stays for now; Phase 3+ replaces it with Rust/rusqlite via Tauri
+ * commands and this file goes away entirely.
+ */
+
+import type { IncomingMessage, ServerResponse } from 'http';
+import { prisma } from '../src/lib/prisma';
+import {
+  COMMUNITY_PASSWORD_MAX_LEN,
+  COMMUNITY_PASSWORD_MIN_LEN,
+  hashPassword,
+  verifyPassword,
+} from '../src/lib/communityPassword';
+
+// ── CORS allowlist ────────────────────────────────────────────────────────
+
+const CORS_RAW = process.env['CORS_ORIGIN'] ||
+  'http://localhost:5173,http://localhost:1420,http://localhost:3000,tauri://localhost,https://tauri.localhost';
+const CORS_ALLOW_ANY = CORS_RAW.trim() === '*';
+const CORS_ORIGINS = new Set(CORS_RAW.split(',').map(o => o.trim()).filter(Boolean));
+
+/**
+ * .onion origins are unbounded (one per peer's hidden service) and there
+ * is no way to enumerate them ahead of time. The relay is only reachable
+ * through the hidden service it's bound to — never from the wider
+ * internet — so accepting any `*.onion` origin is safe: a peer who can
+ * reach the relay at all already proved they have the onion address.
+ */
+function isOnionOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    return url.hostname.endsWith('.onion');
+  } catch {
+    return false;
+  }
+}
+
+function applyCors(req: IncomingMessage, res: ServerResponse): void {
+  const origin = req.headers.origin || '';
+  if (CORS_ALLOW_ANY) {
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+  } else if (CORS_ORIGINS.has(origin) || isOnionOrigin(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-community-password');
+  res.setHeader('Access-Control-Max-Age', '86400');
+}
+
+// ── Rate limit (IP-keyed, in-memory) ──────────────────────────────────────
+
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX = 60;
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function rateAllowed(key: string): { ok: true } | { ok: false; retryAfter: number } {
+  const now = Date.now();
+  const bucket = rateBuckets.get(key);
+  if (!bucket || bucket.resetAt < now) {
+    rateBuckets.set(key, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    return { ok: true };
+  }
+  if (bucket.count >= RATE_MAX) {
+    return { ok: false, retryAfter: Math.ceil((bucket.resetAt - now) / 1000) };
+  }
+  bucket.count++;
+  return { ok: true };
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of rateBuckets) if (v.resetAt < now) rateBuckets.delete(k);
+}, RATE_WINDOW_MS);
+
+function clientIp(req: IncomingMessage): string {
+  const fwd = req.headers['x-forwarded-for'];
+  if (typeof fwd === 'string') return fwd.split(',')[0]!.trim();
+  return req.socket.remoteAddress || 'unknown';
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+function sanitize(input: string, maxLen: number): string {
+  return input.replace(/\0/g, '').trim().slice(0, maxLen);
+}
+
+function json(res: ServerResponse, status: number, body: unknown): void {
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify(body));
+}
+
+function err(res: ServerResponse, status: number, message: string): void {
+  json(res, status, { error: message });
+}
+
+async function readBody(req: IncomingMessage, max = 512 * 1024): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > max) {
+        reject(new Error('payload-too-large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      if (!raw) return resolve({});
+      try {
+        resolve(JSON.parse(raw));
+      } catch {
+        reject(new Error('invalid-json'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+async function gateCommunity(
+  req: IncomingMessage,
+  passwordHash: string | null,
+): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
+  if (passwordHash === null) return { ok: true };
+  const provided = (req.headers['x-community-password'] as string | undefined) || '';
+  if (!provided) return { ok: false, status: 401, message: 'Password required' };
+  const valid = await verifyPassword(provided, passwordHash);
+  if (!valid) return { ok: false, status: 401, message: 'Invalid password' };
+  return { ok: true };
+}
+
+// ── Route handlers ────────────────────────────────────────────────────────
+
+async function listCommunities(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const url = new URL(req.url || '', `http://${req.headers.host}`);
+  const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
+  const skip = (page - 1) * limit;
+
+  const [communities, total] = await Promise.all([
+    prisma.community.findMany({
+      skip,
+      take: limit,
+      orderBy: { createdAt: 'desc' },
+      include: { _count: { select: { channels: true } } },
+    }),
+    prisma.community.count(),
+  ]);
+
+  json(res, 200, {
+    communities: communities.map((c) => ({
+      id: c.id,
+      name: c.name,
+      description: c.description,
+      avatar: c.avatar,
+      channelCount: c._count.channels,
+      isPrivate: c.passwordHash !== null,
+      createdAt: c.createdAt.toISOString(),
+    })),
+    total,
+  });
+}
+
+async function createCommunity(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const rate = rateAllowed(`community-create:${clientIp(req)}`);
+  if (!rate.ok) return err(res, 429, `Rate limit exceeded. Retry after ${rate.retryAfter} seconds`);
+
+  let body: any;
+  try {
+    body = await readBody(req);
+  } catch (e: any) {
+    return err(res, e?.message === 'payload-too-large' ? 413 : 400, 'Invalid request body');
+  }
+
+  const name = sanitize(String(body.name || ''), 64);
+  const description = body.description ? sanitize(String(body.description), 500) : null;
+  const avatar = body.avatar ? sanitize(String(body.avatar), 256 * 1024) : null;
+  const rawPassword = typeof body.password === 'string' ? body.password : '';
+
+  if (name.length < 2 || name.length > 64) return err(res, 400, 'Community name must be 2–64 characters');
+  if (!/^[a-zA-Z0-9 _-]+$/.test(name)) {
+    return err(res, 400, 'Community name may only contain letters, numbers, spaces, _ and -');
+  }
+
+  let passwordHash: string | null = null;
+  if (rawPassword) {
+    if (rawPassword.length < COMMUNITY_PASSWORD_MIN_LEN || rawPassword.length > COMMUNITY_PASSWORD_MAX_LEN) {
+      return err(res, 400, `Password must be ${COMMUNITY_PASSWORD_MIN_LEN}–${COMMUNITY_PASSWORD_MAX_LEN} characters`);
+    }
+    passwordHash = await hashPassword(rawPassword);
+  }
+
+  try {
+    const community = await prisma.community.create({
+      data: {
+        name,
+        description,
+        avatar,
+        passwordHash,
+        channels: { create: [{ name: 'general', isDefault: true }] },
+      },
+      include: { channels: true },
+    });
+    json(res, 201, {
+      id: community.id,
+      name: community.name,
+      description: community.description,
+      avatar: community.avatar,
+      isPrivate: community.passwordHash !== null,
+      channels: community.channels.map((ch) => ({ id: ch.id, name: ch.name, isDefault: ch.isDefault })),
+      createdAt: community.createdAt.toISOString(),
+    });
+  } catch (e: any) {
+    if (e?.code === 'P2002') return err(res, 409, 'A community with that name already exists');
+    console.error('[api] create community failed:', e);
+    err(res, 500, 'Internal server error');
+  }
+}
+
+async function getCommunity(req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
+  const community = await prisma.community.findUnique({
+    where: { id },
+    include: {
+      channels: {
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, name: true, description: true, isDefault: true },
+      },
+    },
+  });
+  if (!community) return err(res, 404, 'Community not found');
+  const gate = await gateCommunity(req, community.passwordHash);
+  if (!gate.ok) return err(res, gate.status, gate.message);
+  json(res, 200, {
+    id: community.id,
+    name: community.name,
+    description: community.description,
+    avatar: community.avatar,
+    isPrivate: community.passwordHash !== null,
+    channels: community.channels,
+    createdAt: community.createdAt.toISOString(),
+  });
+}
+
+async function deleteCommunity(req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
+  const rate = rateAllowed(`community-delete:${clientIp(req)}`);
+  if (!rate.ok) return err(res, 429, `Rate limit exceeded. Retry after ${rate.retryAfter} seconds`);
+  const community = await prisma.community.findUnique({
+    where: { id },
+    select: { id: true, passwordHash: true },
+  });
+  if (!community) return err(res, 404, 'Community not found');
+  const gate = await gateCommunity(req, community.passwordHash);
+  if (!gate.ok) return err(res, gate.status, gate.message);
+  await prisma.community.delete({ where: { id } });
+  json(res, 200, { deleted: id });
+}
+
+async function ensureCommunityAccess(
+  req: IncomingMessage,
+  communityId: string,
+): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
+  const community = await prisma.community.findUnique({
+    where: { id: communityId },
+    select: { id: true, passwordHash: true },
+  });
+  if (!community) return { ok: false, status: 404, message: 'Community not found' };
+  return gateCommunity(req, community.passwordHash);
+}
+
+async function listChannels(req: IncomingMessage, res: ServerResponse, communityId: string): Promise<void> {
+  const gate = await ensureCommunityAccess(req, communityId);
+  if (!gate.ok) return err(res, gate.status, gate.message);
+  const channels = await prisma.channel.findMany({
+    where: { communityId },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true, name: true, description: true, isDefault: true, createdAt: true },
+  });
+  json(res, 200, {
+    channels: channels.map((ch) => ({ ...ch, createdAt: ch.createdAt.toISOString() })),
+  });
+}
+
+async function createChannel(req: IncomingMessage, res: ServerResponse, communityId: string): Promise<void> {
+  const rate = rateAllowed(`channel-create:${clientIp(req)}`);
+  if (!rate.ok) return err(res, 429, `Rate limit exceeded. Retry after ${rate.retryAfter} seconds`);
+  const gate = await ensureCommunityAccess(req, communityId);
+  if (!gate.ok) return err(res, gate.status, gate.message);
+
+  let body: any;
+  try {
+    body = await readBody(req);
+  } catch (e: any) {
+    return err(res, e?.message === 'payload-too-large' ? 413 : 400, 'Invalid request body');
+  }
+
+  const name = sanitize(String(body.name || ''), 32);
+  const description = body.description ? sanitize(String(body.description), 200) : null;
+  if (name.length < 1 || name.length > 32) return err(res, 400, 'Channel name must be 1–32 characters');
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+    return err(res, 400, 'Channel name may only contain letters, numbers, _ and -');
+  }
+
+  try {
+    const channel = await prisma.channel.create({ data: { name, description, communityId } });
+    json(res, 201, {
+      id: channel.id,
+      name: channel.name,
+      description: channel.description,
+      isDefault: channel.isDefault,
+      createdAt: channel.createdAt.toISOString(),
+    });
+  } catch (e: any) {
+    if (e?.code === 'P2002') return err(res, 409, 'A channel with that name already exists in this community');
+    console.error('[api] create channel failed:', e);
+    err(res, 500, 'Internal server error');
+  }
+}
+
+// ── Top-level router ──────────────────────────────────────────────────────
+
+/**
+ * Entry called by the relay's httpServer 'request' listener. Returns true
+ * if this request matched an /api/* route (whether or not it succeeded);
+ * the caller skips its fallback when we return true.
+ */
+export async function handleApiRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<boolean> {
+  const url = req.url || '';
+  if (!url.startsWith('/api/')) return false;
+
+  applyCors(req, res);
+  if (req.method === 'OPTIONS') {
+    res.statusCode = 204;
+    res.end();
+    return true;
+  }
+
+  try {
+    const path = url.split('?')[0] || '';
+    if (path === '/api/communities') {
+      if (req.method === 'GET') await listCommunities(req, res);
+      else if (req.method === 'POST') await createCommunity(req, res);
+      else err(res, 405, 'Method not allowed');
+      return true;
+    }
+    const channelsMatch = path.match(/^\/api\/communities\/([^/]+)\/channels$/);
+    if (channelsMatch) {
+      const id = channelsMatch[1]!;
+      if (req.method === 'GET') await listChannels(req, res, id);
+      else if (req.method === 'POST') await createChannel(req, res, id);
+      else err(res, 405, 'Method not allowed');
+      return true;
+    }
+    const idMatch = path.match(/^\/api\/communities\/([^/]+)$/);
+    if (idMatch) {
+      const id = idMatch[1]!;
+      if (req.method === 'GET') await getCommunity(req, res, id);
+      else if (req.method === 'DELETE') await deleteCommunity(req, res, id);
+      else err(res, 405, 'Method not allowed');
+      return true;
+    }
+    err(res, 404, 'Not found');
+  } catch (e) {
+    console.error('[api] handler crashed:', e);
+    if (!res.headersSent) err(res, 500, 'Internal server error');
+  }
+  return true;
+}

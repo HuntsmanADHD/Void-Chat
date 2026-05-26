@@ -1,5 +1,3 @@
-'use client';
-
 import React, { useEffect, useCallback } from 'react';
 import {
   X,
@@ -9,7 +7,7 @@ import {
   Check,
 } from 'lucide-react';
 import { Avatar } from './Avatar';
-import { useBackdropClose } from './useBackdropClose';
+import { useBackdropClose } from '@/hooks/useBackdropClose';
 
 export interface UserProfileData {
   id: string;

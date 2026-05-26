@@ -22,6 +22,9 @@
 /.next/
 /out/
 
+# vite
+/dist/
+
 # production
 /build
 **/dist/

@@ -1,85 +1,41 @@
-'use client';
-
-import React, { useState, useRef, useCallback, useEffect, KeyboardEvent } from 'react';
+import React, { useCallback, useEffect, useRef, useState, KeyboardEvent } from 'react';
 import { Droplets } from 'lucide-react';
-import { FileUploadButton } from './FileUploadButton';
-import { FilePreview } from './FilePreview';
 import { EmojiPicker } from './EmojiPicker';
 import { WashModal } from '@/components/wash/WashModal';
 import { useHarmonicTyping } from '@/hooks/useHarmonicTyping';
-import type { ScanStatus } from '@/types/api';
 
-/**
- * Maximum character limit for messages
- */
 const MAX_MESSAGE_LENGTH = 2000;
-
-/**
- * Warning threshold for character count
- */
 const WARNING_THRESHOLD = 1800;
 
 export interface MessageInputProps {
-  /** Callback when message is submitted */
-  onSend: (message: string, attachmentId?: string) => Promise<void> | void;
-  /** Whether the input is disabled (e.g., user is timed out) */
+  /** Send the typed message. Container handles encryption + delivery. */
+  onSend: (message: string) => Promise<void> | void;
+  /** Disable the whole input (timeout, blacklisted, etc). */
   disabled?: boolean;
-  /** Reason for being disabled */
+  /** Why it's disabled, surfaced in the overlay. */
   disabledReason?: string;
-  /** Whether encryption is ready */
+  /** Realtime is connected and channel is joined — input is sendable. */
   isEncryptionReady?: boolean;
-  /** Whether message is currently being sent */
+  /** A send is in flight. */
   isSending?: boolean;
-  /** Placeholder text */
   placeholder?: string;
-  /** Reply context (when replying to a message) */
-  replyTo?: {
-    id: string;
-    senderName: string;
-    preview: string;
-  } | null;
-  /** Callback to cancel reply */
+  /** When set, shows a reply-context banner above the input. */
+  replyTo?: { id: string; senderName: string; preview: string } | null;
   onCancelReply?: () => void;
-  /** Additional class names */
   className?: string;
-  /** File upload callbacks */
-  onFileSelect?: (file: File) => void;
-  /** Selected file for preview */
-  selectedFile?: File | null;
-  /** Remove selected file */
-  onRemoveFile?: () => void;
-  /** File upload progress (0-100) */
-  uploadProgress?: number;
-  /** Scan status of uploaded file */
-  scanStatus?: ScanStatus | null;
-  /** Upload error */
-  uploadError?: string | null;
-  /** Whether file is currently uploading */
-  isUploading?: boolean;
-  /** Attachment ID after successful upload */
-  attachmentId?: string | null;
-  /** Whether harmonic typing sounds are enabled */
+  /** Enable the 432Hz keystroke audio. Defaults on. */
   harmonicSoundsEnabled?: boolean;
 }
 
-/**
- * Encryption lock icon component
- */
 function EncryptionIndicator({ isReady }: { isReady: boolean }) {
   return (
     <div
-      className={`flex items-center gap-1 text-xs ${
-        isReady ? 'text-zinc-500' : 'text-zinc-600'
-      }`}
+      className={`flex items-center gap-1 text-xs ${isReady ? 'text-zinc-500' : 'text-zinc-600'}`}
       title={isReady ? 'End-to-end encrypted' : 'Encryption initializing...'}
     >
       {isReady ? (
         <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-          <path
-            fillRule="evenodd"
-            d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z"
-            clipRule="evenodd"
-          />
+          <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
         </svg>
       ) : (
         <svg className="w-4 h-4 animate-pulse" fill="currentColor" viewBox="0 0 20 20">
@@ -90,36 +46,16 @@ function EncryptionIndicator({ isReady }: { isReady: boolean }) {
   );
 }
 
-/**
- * Character count display
- */
 function CharacterCount({ current, max }: { current: number; max: number }) {
-  const remaining = max - current;
-  const isWarning = current >= WARNING_THRESHOLD;
+  if (current < WARNING_THRESHOLD) return null;
   const isOverLimit = current > max;
-
-  if (current < WARNING_THRESHOLD) {
-    return null;
-  }
-
   return (
-    <span
-      className={`text-xs font-mono ${
-        isOverLimit
-          ? 'text-zinc-400'
-          : isWarning
-          ? 'text-zinc-500'
-          : 'text-zinc-600'
-      }`}
-    >
-      {remaining}
+    <span className={`text-xs font-mono ${isOverLimit ? 'text-zinc-400' : 'text-zinc-500'}`}>
+      {max - current}
     </span>
   );
 }
 
-/**
- * Reply preview component
- */
 function ReplyPreview({
   senderName,
   preview,
@@ -132,70 +68,38 @@ function ReplyPreview({
   return (
     <div className="flex items-center gap-2 px-4 py-2 bg-zinc-900 border-l-2 border-zinc-600">
       <div className="flex-1 min-w-0">
-        <span className="text-xs text-zinc-500 font-medium">
-          Replying to {senderName}
-        </span>
+        <span className="text-xs text-zinc-500 font-medium">Replying to {senderName}</span>
         <p className="text-sm text-zinc-500 truncate">{preview}</p>
       </div>
-      <button
-        onClick={onCancel}
-        className="p-1 text-zinc-600 hover:text-zinc-400 transition-colors"
-        title="Cancel reply"
-      >
+      <button onClick={onCancel} className="p-1 text-zinc-600 hover:text-zinc-400 transition-colors" title="Cancel reply">
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M6 18L18 6M6 6l12 12"
-          />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
         </svg>
       </button>
     </div>
   );
 }
 
-/**
- * Disabled overlay component
- */
 function DisabledOverlay({ reason }: { reason?: string }) {
   return (
     <div className="absolute inset-0 bg-black/90 flex items-center justify-center z-10 rounded-lg">
-      <div className="text-center px-4">
-        <svg
-          className="w-8 h-8 mx-auto mb-2 text-zinc-500"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
-          />
-        </svg>
-        <p className="text-sm text-zinc-500 font-medium">
-          {reason || 'You cannot send messages'}
-        </p>
-      </div>
+      <p className="text-sm text-zinc-500 font-medium px-4 text-center">
+        {reason || 'You cannot send messages'}
+      </p>
     </div>
   );
 }
 
 /**
- * Message input component for Void Chat
+ * Message input bar with auto-resizing textarea, emoji picker, 432Hz typing
+ * sounds, off-Void wash modal trigger, and Enter-to-send.
  *
- * Features:
- * - Auto-resizing textarea
- * - Send button with loading state
- * - Encryption indicator (lock icon)
- * - Character limit display
- * - Disabled state for timed out/blacklisted users
- * - Reply context display
- * - Keyboard shortcuts (Enter to send, Shift+Enter for newline)
+ * Memoized: typed text lives in local state, so as long as callers pass
+ * stable callbacks (via useCallback) every incoming message at the
+ * container level skips re-rendering this whole tree — including the
+ * harmonic typing hook's audio nodes.
  */
-export function MessageInput({
+function MessageInputBase({
   onSend,
   disabled = false,
   disabledReason,
@@ -205,14 +109,6 @@ export function MessageInput({
   replyTo = null,
   onCancelReply,
   className = '',
-  onFileSelect,
-  selectedFile,
-  onRemoveFile,
-  uploadProgress,
-  scanStatus,
-  uploadError,
-  isUploading = false,
-  attachmentId,
   harmonicSoundsEnabled = true,
 }: MessageInputProps) {
   const [message, setMessage] = useState('');
@@ -221,174 +117,71 @@ export function MessageInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const emojiButtonRef = useRef<HTMLButtonElement>(null);
 
-  // Internal file state for when external handlers are not provided
-  const [internalSelectedFile, setInternalSelectedFile] = useState<File | null>(null);
-
-  // Use external or internal file state
-  const currentFile = selectedFile !== undefined ? selectedFile : internalSelectedFile;
-
-  // Handle file selection (use external handler or internal state)
-  const handleFileSelect = useCallback((file: File) => {
-    if (onFileSelect) {
-      onFileSelect(file);
-    } else {
-      setInternalSelectedFile(file);
-    }
-  }, [onFileSelect]);
-
-  // Handle file removal
-  const handleRemoveFile = useCallback(() => {
-    if (onRemoveFile) {
-      onRemoveFile();
-    } else {
-      setInternalSelectedFile(null);
-    }
-  }, [onRemoveFile]);
-
-  // Handle emoji selection
-  const handleEmojiSelect = useCallback((emoji: string) => {
-    setMessage((prev) => prev + emoji);
-    setShowEmojiPicker(false);
-    // Focus back on textarea
-    textareaRef.current?.focus();
-  }, []);
-
-  // 432Hz harmonic typing sounds
   const { playNote, isEnabled: soundEnabled, toggleSound } = useHarmonicTyping({
     enabled: harmonicSoundsEnabled,
     volume: 0.12,
     noteDuration: 120,
   });
 
-  // Auto-resize textarea
   const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
-
-    // Reset height to auto to get the correct scrollHeight
     textarea.style.height = 'auto';
-    // Set height to scrollHeight, but cap at max height
-    const maxHeight = 200; // px
-    const newHeight = Math.min(textarea.scrollHeight, maxHeight);
-    textarea.style.height = `${newHeight}px`;
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
   }, []);
 
-  // Adjust height when message changes
   useEffect(() => {
     adjustTextareaHeight();
   }, [message, adjustTextareaHeight]);
 
-  // Handle message submission
+  const handleEmojiSelect = useCallback((emoji: string) => {
+    setMessage((prev) => prev + emoji);
+    setShowEmojiPicker(false);
+    textareaRef.current?.focus();
+  }, []);
+
   const handleSubmit = useCallback(async () => {
-    const trimmedMessage = message.trim();
-
-    // Allow sending with just an attachment (no text required)
-    // Check both external attachmentId and internal file state
-    const hasExternalAttachment = attachmentId && scanStatus === 'CLEAN';
-    const hasInternalFile = !onFileSelect && internalSelectedFile;
-    const hasAttachment = hasExternalAttachment || hasInternalFile;
-
-    if (!trimmedMessage && !hasAttachment) {
-      return;
-    }
-
-    if (disabled || isSending || !isEncryptionReady || isUploading) {
-      return;
-    }
-
-    if (trimmedMessage.length > MAX_MESSAGE_LENGTH) {
-      return;
-    }
-
+    const trimmed = message.trim();
+    if (!trimmed || disabled || isSending || !isEncryptionReady) return;
+    if (trimmed.length > MAX_MESSAGE_LENGTH) return;
     try {
-      await onSend(trimmedMessage || '[Attachment]', hasExternalAttachment ? attachmentId : undefined);
+      await onSend(trimmed);
       setMessage('');
-      // Reset textarea height
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
-      // Clear file if attached
-      if (hasExternalAttachment && onRemoveFile) {
-        onRemoveFile();
-      }
-      // Clear internal file state
-      if (hasInternalFile) {
-        setInternalSelectedFile(null);
-      }
-    } catch (error) {
-      console.error('Failed to send message:', error);
+      if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    } catch (err) {
+      console.error('Failed to send message:', err);
     }
-  }, [message, disabled, isSending, isEncryptionReady, isUploading, attachmentId, scanStatus, onSend, onRemoveFile, onFileSelect, internalSelectedFile]);
+  }, [message, disabled, isSending, isEncryptionReady, onSend]);
 
-  // Handle keyboard events
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
-      // Play harmonic tone for printable characters
-      if (event.key.length === 1 && !event.ctrlKey && !event.metaKey) {
-        playNote(event.key);
-      }
-
-      // Enter to send, Shift+Enter for newline
+      if (event.key.length === 1 && !event.ctrlKey && !event.metaKey) playNote(event.key);
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
-        handleSubmit();
+        void handleSubmit();
       }
     },
-    [handleSubmit, playNote]
+    [handleSubmit, playNote],
   );
 
-  // Handle input change
   const handleChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>) => {
     setMessage(event.target.value);
   }, []);
 
   const isOverLimit = message.length > MAX_MESSAGE_LENGTH;
-  const hasReadyAttachment = attachmentId && scanStatus === 'CLEAN';
-  const hasInternalFile = !onFileSelect && internalSelectedFile;
   const canSend =
-    (message.trim().length > 0 || hasReadyAttachment || hasInternalFile) &&
-    !isOverLimit &&
-    !disabled &&
-    !isSending &&
-    !isUploading &&
-    isEncryptionReady;
+    message.trim().length > 0 && !isOverLimit && !disabled && !isSending && isEncryptionReady;
 
   return (
     <div className={`relative ${className}`}>
-      {/* Reply preview */}
       {replyTo && onCancelReply && (
-        <ReplyPreview
-          senderName={replyTo.senderName}
-          preview={replyTo.preview}
-          onCancel={onCancelReply}
-        />
+        <ReplyPreview senderName={replyTo.senderName} preview={replyTo.preview} onCancel={onCancelReply} />
       )}
 
-      {/* Input container */}
       <div className="relative px-4 py-3 bg-gradient-to-t from-black to-zinc-900/50">
-        {/* Disabled overlay */}
         {disabled && <DisabledOverlay reason={disabledReason} />}
 
-        {/* File preview */}
-        {currentFile && (
-          <FilePreview
-            file={currentFile}
-            onRemove={handleRemoveFile}
-            uploadProgress={uploadProgress}
-            scanStatus={scanStatus ?? (onFileSelect ? undefined : 'CLEAN')}
-            error={uploadError}
-          />
-        )}
-
         <div className="flex items-center gap-3 bg-zinc-900/80 rounded-lg px-4 py-2 border border-zinc-800/50">
-          {/* File upload button - always visible */}
-          <FileUploadButton
-            onFileSelect={handleFileSelect}
-            disabled={disabled || !!currentFile}
-            isUploading={isUploading}
-          />
-
-          {/* Sound toggle button */}
           <button
             type="button"
             onClick={toggleSound}
@@ -399,32 +192,17 @@ export function MessageInput({
           >
             {soundEnabled ? (
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"
-                />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
               </svg>
             ) : (
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"
-                />
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2"
-                />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
               </svg>
             )}
           </button>
 
-          {/* Wash button — opens the off-Void encryption tool */}
+          {/* Wash button — opens the off-Void encryption modal */}
           <button
             type="button"
             onClick={() => setShowWashModal(true)}
@@ -434,7 +212,7 @@ export function MessageInput({
             <Droplets className="w-5 h-5" />
           </button>
 
-          {/* Emoji button */}
+          {/* Emoji */}
           <div className="relative">
             <button
               ref={emojiButtonRef}
@@ -447,12 +225,7 @@ export function MessageInput({
               disabled={disabled}
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
             </button>
             {showEmojiPicker && (
@@ -464,7 +237,6 @@ export function MessageInput({
             )}
           </div>
 
-          {/* Text input */}
           <textarea
             ref={textareaRef}
             value={message}
@@ -477,15 +249,10 @@ export function MessageInput({
             style={{ height: 'auto' }}
           />
 
-          {/* Right side controls */}
           <div className="flex items-center gap-2 flex-shrink-0">
-            {/* Character count */}
             <CharacterCount current={message.length} max={MAX_MESSAGE_LENGTH} />
-
-            {/* Encryption indicator */}
             <EncryptionIndicator isReady={isEncryptionReady} />
 
-            {/* Send button - grey gradient for void aesthetic */}
             <button
               onClick={handleSubmit}
               disabled={!canSend}
@@ -494,53 +261,26 @@ export function MessageInput({
                   ? 'bg-gradient-to-r from-zinc-600 to-zinc-500 hover:from-zinc-500 hover:to-zinc-400 text-zinc-100 shadow-lg shadow-black/30'
                   : 'bg-zinc-800 text-zinc-600 cursor-not-allowed'
               }`}
-              title={
-                !isEncryptionReady
-                  ? 'Waiting for encryption...'
-                  : isOverLimit
-                  ? 'Message too long'
-                  : 'Send message'
-              }
+              title={!isEncryptionReady ? 'Waiting for encryption...' : isOverLimit ? 'Message too long' : 'Send message'}
             >
               {isSending ? (
                 <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle
-                    className="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    strokeWidth="4"
-                  />
-                  <path
-                    className="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                  />
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                 </svg>
               ) : (
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
-                  />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
                 </svg>
               )}
             </button>
           </div>
         </div>
 
-        {/* Help text */}
         <div className="flex items-center justify-between mt-1 px-1">
-          <span className="text-xs text-zinc-700">
-            Press Enter to send, Shift+Enter for new line
-          </span>
+          <span className="text-xs text-zinc-700">Press Enter to send, Shift+Enter for new line</span>
           {isOverLimit && (
-            <span className="text-xs text-zinc-500">
-              Message exceeds {MAX_MESSAGE_LENGTH} character limit
-            </span>
+            <span className="text-xs text-zinc-500">Message exceeds {MAX_MESSAGE_LENGTH} character limit</span>
           )}
         </div>
       </div>
@@ -549,5 +289,7 @@ export function MessageInput({
     </div>
   );
 }
+
+export const MessageInput = React.memo(MessageInputBase);
 
 export default MessageInput;

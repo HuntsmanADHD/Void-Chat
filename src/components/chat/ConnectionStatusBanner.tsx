@@ -1,5 +1,3 @@
-'use client';
-
 import { useRealtime, type ConnectionState } from '@/hooks/useRealtime';
 
 interface Display {

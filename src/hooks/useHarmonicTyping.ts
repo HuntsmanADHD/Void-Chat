@@ -1,100 +1,77 @@
-'use client';
-
-import { useCallback, useRef, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
- * 432Hz Harmonic Typing Sound Hook
+ * 432Hz harmonic typing sound hook.
  *
- * Creates musical tones based on 432Hz tuning when the user types.
- * 432Hz is considered a "natural" frequency that resonates with
- * the universe and creates a more harmonious sound.
+ * Each keystroke plays a short sine note picked from a pentatonic scale,
+ * indexed by where the key sits on the keyboard so similar regions
+ * produce similar notes.
  *
- * The hook generates different notes in a pentatonic scale based on
- * which key is pressed, creating a musical experience while typing.
+ * Per-keystroke cost matters here (fast typing = many calls per second),
+ * so this is written to allocate as little as possible:
+ *   - frequency map built once at module load (no Array.indexOf per press)
+ *   - oscillators auto-disconnect when stopped — no tracking Set, no
+ *     per-note setTimeout for cleanup (was ~470ms timer per keystroke)
+ *   - rapid repeats of the same key within ~25ms are coalesced so a
+ *     held-down key doesn't fan out into a chorus
+ *
+ * The base sine + 2x harmonic layer is preserved from the original
+ * implementation — the audible character of the sound depends on it.
+ *
+ * The AudioContext is created lazily on the first user-initiated note
+ * (browser autoplay policies require a gesture).
  */
 
-// 432Hz tuned pentatonic scale frequencies (A = 432Hz base)
-// This creates a pleasant, non-dissonant sound regardless of key order
-const PENTATONIC_SCALE_432 = [
-  432.00,   // A4
-  486.00,   // B4
-  513.00,   // C#5
-  648.00,   // E5
-  729.00,   // F#5
-  864.00,   // A5 (octave)
-  972.00,   // B5
-  1026.00,  // C#6
-  1296.00,  // E6
-];
+const PENTATONIC_432 = [432.0, 486.0, 513.0, 648.0, 729.0, 864.0, 972.0, 1026.0, 1296.0];
+const EXTENDED_432 = [216.0, 243.0, 256.5, 324.0, 364.5, ...PENTATONIC_432];
 
-// Extended scale for more variety
-const EXTENDED_SCALE_432 = [
-  216.00,   // A3
-  243.00,   // B3
-  256.50,   // C#4
-  324.00,   // E4
-  364.50,   // F#4
-  ...PENTATONIC_SCALE_432,
-];
+/** Build the char → frequency map once. Saves an .indexOf scan per keystroke. */
+const FREQUENCY_BY_KEY: Record<string, number> = (() => {
+  const map: Record<string, number> = {};
+  const rows: Array<[string, number[]]> = [
+    ['1234567890', EXTENDED_432.slice(9)],
+    ['qwertyuiop', EXTENDED_432.slice(6, 15)],
+    ['asdfghjkl', EXTENDED_432.slice(3, 12)],
+    ['zxcvbnm', EXTENDED_432.slice(0, 9)],
+  ];
+  for (const [row, frequencies] of rows) {
+    for (let i = 0; i < row.length; i++) {
+      const ch = row[i]!;
+      map[ch] = frequencies[i % frequencies.length]!;
+    }
+  }
+  return map;
+})();
 
-// Map keyboard rows to different octaves for spatial sound
-const ROW_FREQUENCIES: Record<string, number[]> = {
-  // Number row - highest octave
-  '1234567890': EXTENDED_SCALE_432.slice(9),
-  // QWERTY row - high octave
-  'qwertyuiop': EXTENDED_SCALE_432.slice(6, 15),
-  // ASDF row - middle octave
-  'asdfghjkl': EXTENDED_SCALE_432.slice(3, 12),
-  // ZXCV row - low octave
-  'zxcvbnm': EXTENDED_SCALE_432.slice(0, 9),
-};
+const FALLBACK_PENTATONIC = PENTATONIC_432;
+
+function freqFor(key: string): number {
+  const lower = key.toLowerCase();
+  const cached = FREQUENCY_BY_KEY[lower];
+  if (cached !== undefined) return cached;
+  const idx = lower.charCodeAt(0) % FALLBACK_PENTATONIC.length;
+  return FALLBACK_PENTATONIC[idx]!;
+}
 
 interface UseHarmonicTypingOptions {
-  /** Whether sound is enabled */
   enabled?: boolean;
-  /** Master volume (0-1) */
   volume?: number;
-  /** Note duration in milliseconds */
   noteDuration?: number;
-  /** Attack time (fade in) in seconds */
   attack?: number;
-  /** Release time (fade out) in seconds */
   release?: number;
-  /** Add subtle reverb effect */
-  reverb?: boolean;
 }
 
 interface UseHarmonicTypingReturn {
-  /** Play a note for a specific key */
   playNote: (key: string) => void;
-  /** Toggle sound on/off */
   toggleSound: () => void;
-  /** Whether sound is currently enabled */
   isEnabled: boolean;
-  /** Set volume (0-1) */
   setVolume: (vol: number) => void;
-  /** Current volume */
   volume: number;
 }
 
-/**
- * Get frequency for a specific key based on its keyboard position
- */
-function getFrequencyForKey(key: string): number {
-  const lowerKey = key.toLowerCase();
-
-  // Find which row the key belongs to
-  for (const [row, frequencies] of Object.entries(ROW_FREQUENCIES)) {
-    const index = row.indexOf(lowerKey);
-    if (index !== -1) {
-      return frequencies[index % frequencies.length];
-    }
-  }
-
-  // Default: use a hash of the key to pick a frequency
-  const hash = lowerKey.charCodeAt(0) % PENTATONIC_SCALE_432.length;
-  return PENTATONIC_SCALE_432[hash];
-}
+/** Minimum ms between same-key plays. Held-down keys repeat every ~30ms
+ *  via the OS auto-repeat; below this they layer into noise. */
+const SAME_KEY_THROTTLE_MS = 25;
 
 export function useHarmonicTyping(options: UseHarmonicTypingOptions = {}): UseHarmonicTypingReturn {
   const {
@@ -108,135 +85,103 @@ export function useHarmonicTyping(options: UseHarmonicTypingOptions = {}): UseHa
   const [isEnabled, setIsEnabled] = useState(initialEnabled);
   const [volume, setVolumeState] = useState(initialVolume);
 
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const gainNodeRef = useRef<GainNode | null>(null);
-  const activeOscillators = useRef<Set<OscillatorNode>>(new Set());
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const masterGainRef = useRef<GainNode | null>(null);
+  const lastPlayedAtRef = useRef<Map<string, number>>(new Map());
 
-  // Initialize audio context on first interaction
-  const initAudio = useCallback(() => {
-    if (audioContextRef.current) return;
-
-    try {
-      audioContextRef.current = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-
-      // Create master gain node
-      gainNodeRef.current = audioContextRef.current.createGain();
-      gainNodeRef.current.gain.value = volume;
-      gainNodeRef.current.connect(audioContextRef.current.destination);
-    } catch (error) {
-      console.warn('[HarmonicTyping] Could not initialize audio:', error);
+  useEffect(() => {
+    if (masterGainRef.current) {
+      masterGainRef.current.gain.value = volume;
     }
   }, [volume]);
 
-  // Update gain when volume changes
+  // Close the context on unmount — this implicitly stops all in-flight
+  // oscillators, so we don't have to track them individually.
   useEffect(() => {
-    if (gainNodeRef.current) {
-      gainNodeRef.current.gain.value = volume;
-    }
-  }, [volume]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    // Store ref values in local variables inside the effect
-    const oscillators = activeOscillators.current;
-    const audioContext = audioContextRef.current;
-
     return () => {
-      oscillators.forEach(osc => {
-        try {
-          osc.stop();
-        } catch {
-          // Ignore if already stopped
-        }
-      });
-      if (audioContext) {
-        audioContext.close();
+      const ctx = audioCtxRef.current;
+      if (ctx && ctx.state !== 'closed') {
+        void ctx.close().catch(() => {});
       }
+      audioCtxRef.current = null;
+      masterGainRef.current = null;
     };
   }, []);
 
-  /**
-   * Play a harmonic note for a key press
-   */
-  const playNote = useCallback((key: string) => {
-    if (!isEnabled) return;
+  const playNote = useCallback(
+    (key: string) => {
+      if (!isEnabled) return;
 
-    // Initialize audio on first use (must be triggered by user interaction)
-    initAudio();
+      // Throttle rapid same-key repeats (OS auto-repeat).
+      const now = performance.now();
+      const last = lastPlayedAtRef.current.get(key) ?? 0;
+      if (now - last < SAME_KEY_THROTTLE_MS) return;
+      lastPlayedAtRef.current.set(key, now);
 
-    const ctx = audioContextRef.current;
-    const masterGain = gainNodeRef.current;
-    if (!ctx || !masterGain) return;
+      // Lazy init — must happen in a user-gesture callback.
+      let ctx = audioCtxRef.current;
+      if (!ctx) {
+        try {
+          const Ctor =
+            window.AudioContext ||
+            (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+          ctx = new Ctor();
+          const master = ctx.createGain();
+          master.gain.value = volume;
+          master.connect(ctx.destination);
+          audioCtxRef.current = ctx;
+          masterGainRef.current = master;
+        } catch {
+          return;
+        }
+      }
+      if (ctx.state === 'suspended') void ctx.resume();
+      const master = masterGainRef.current;
+      if (!master) return;
 
-    // Resume audio context if suspended (browser autoplay policy)
-    if (ctx.state === 'suspended') {
-      ctx.resume();
-    }
+      const frequency = freqFor(key);
+      const t = ctx.currentTime;
 
-    const frequency = getFrequencyForKey(key);
-    const now = ctx.currentTime;
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0, t);
+      env.gain.linearRampToValueAtTime(1, t + attack);
+      env.gain.setValueAtTime(1, t + attack);
+      env.gain.exponentialRampToValueAtTime(0.001, t + noteDuration / 1000 + release);
+      env.connect(master);
 
-    // Create oscillator
-    const oscillator = ctx.createOscillator();
-    oscillator.type = 'sine'; // Sine wave for pure, harmonic tone
-    oscillator.frequency.value = frequency;
+      const fundamental = ctx.createOscillator();
+      fundamental.type = 'sine';
+      fundamental.frequency.value = frequency;
+      fundamental.connect(env);
 
-    // Create envelope (ADSR-like)
-    const envelope = ctx.createGain();
-    envelope.gain.setValueAtTime(0, now);
-    envelope.gain.linearRampToValueAtTime(1, now + attack);
-    envelope.gain.setValueAtTime(1, now + attack);
-    envelope.gain.exponentialRampToValueAtTime(0.001, now + (noteDuration / 1000) + release);
+      // 2x harmonic (octave above) for tonal richness. Mixed quieter via
+      // a dedicated gain so the fundamental still dominates.
+      const harmonic = ctx.createOscillator();
+      harmonic.type = 'sine';
+      harmonic.frequency.value = frequency * 2;
+      const harmonicGain = ctx.createGain();
+      harmonicGain.gain.value = 0.15;
+      harmonic.connect(harmonicGain);
+      harmonicGain.connect(env);
 
-    // Add subtle harmonics for richness
-    const harmonic = ctx.createOscillator();
-    harmonic.type = 'sine';
-    harmonic.frequency.value = frequency * 2; // First harmonic (octave)
+      const stopAt = t + noteDuration / 1000 + release + 0.05;
+      fundamental.start(t);
+      harmonic.start(t);
+      fundamental.stop(stopAt);
+      harmonic.stop(stopAt);
+      // No manual cleanup: WebAudio disconnects + GCs the oscillators
+      // automatically after stop().
+    },
+    [isEnabled, volume, attack, noteDuration, release],
+  );
 
-    const harmonicGain = ctx.createGain();
-    harmonicGain.gain.value = 0.15; // Subtle harmonic
+  const toggleSound = useCallback(() => setIsEnabled((prev) => !prev), []);
+  const setVolume = useCallback(
+    (vol: number) => setVolumeState(Math.max(0, Math.min(1, vol))),
+    [],
+  );
 
-    // Connect the signal chain
-    oscillator.connect(envelope);
-    harmonic.connect(harmonicGain);
-    harmonicGain.connect(envelope);
-    envelope.connect(masterGain);
-
-    // Start and schedule stop
-    oscillator.start(now);
-    harmonic.start(now);
-
-    const stopTime = now + (noteDuration / 1000) + release + 0.1;
-    oscillator.stop(stopTime);
-    harmonic.stop(stopTime);
-
-    // Track active oscillators
-    activeOscillators.current.add(oscillator);
-    activeOscillators.current.add(harmonic);
-
-    // Cleanup after note ends
-    setTimeout(() => {
-      activeOscillators.current.delete(oscillator);
-      activeOscillators.current.delete(harmonic);
-    }, noteDuration + (release * 1000) + 200);
-  }, [isEnabled, initAudio, attack, noteDuration, release]);
-
-  const toggleSound = useCallback(() => {
-    setIsEnabled(prev => !prev);
-  }, []);
-
-  const setVolume = useCallback((vol: number) => {
-    const clampedVol = Math.max(0, Math.min(1, vol));
-    setVolumeState(clampedVol);
-  }, []);
-
-  return {
-    playNote,
-    toggleSound,
-    isEnabled,
-    setVolume,
-    volume,
-  };
+  return { playNote, toggleSound, isEnabled, setVolume, volume };
 }
 
 export default useHarmonicTyping;

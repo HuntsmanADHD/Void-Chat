@@ -1,5 +1,3 @@
-'use client';
-
 import React, { useMemo } from 'react';
 
 export type AvatarSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl';
