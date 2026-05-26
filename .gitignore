@@ -61,3 +61,7 @@ next-env.d.ts
 *.db
 *.db-journal
 src-tauri/binaries/
+
+# Security audits — describe live attack surface, kept local-only.
+# Never commit until the corresponding fixes have shipped.
+SecurityAudits/
