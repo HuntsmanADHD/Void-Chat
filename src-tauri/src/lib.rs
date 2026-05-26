@@ -36,6 +36,20 @@ pub fn run() {
             if let Err(e) = proxy::start() {
                 log::warn!("onion proxy failed to start: {e}");
             }
+            // Install a Ctrl-C / SIGTERM handler so terminal kills shut
+            // tor down cleanly. Tauri's RunEvent::Exit fires only on
+            // graceful shutdowns (window close); a SIGINT propagated
+            // through the cargo dev wrapper would otherwise orphan tor
+            // and leave it holding ports 19050/19051 across runs.
+            let handle_for_signal = app.handle().clone();
+            if let Err(e) = ctrlc::set_handler(move || {
+                log::info!("[shutdown] signal received, stopping tor child");
+                let state: tauri::State<'_, tor::TorState> = handle_for_signal.state();
+                tor::shutdown(&state);
+                std::process::exit(0);
+            }) {
+                log::warn!("could not install signal handler: {e}");
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
