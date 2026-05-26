@@ -16,6 +16,14 @@ export interface TorStatus {
   bootstrapPct: number;
   hostname: string | null;
   error: string | null;
+  /** Bootstrap hasn't advanced for ~30s and is still under 100%. UI
+   *  surfaces a hint to try bridges. */
+  stalled: boolean;
+  /** How many times this session Tor crashed and got auto-restarted.
+   *  Zero is the happy path. */
+  restartCount: number;
+  /** Whether the running torrc has bridge lines (obfs4). */
+  bridgesEnabled: boolean;
 }
 
 export interface UseTorStatusReturn extends TorStatus {
@@ -25,7 +33,14 @@ export interface UseTorStatusReturn extends TorStatus {
   available: boolean;
 }
 
-const EMPTY_STATUS: TorStatus = { bootstrapPct: 0, hostname: null, error: null };
+const EMPTY_STATUS: TorStatus = {
+  bootstrapPct: 0,
+  hostname: null,
+  error: null,
+  stalled: false,
+  restartCount: 0,
+  bridgesEnabled: false,
+};
 
 /** Quick runtime test for the Tauri host. The IPC bridge injects
  *  __TAURI_INTERNALS__ onto the window object before the page loads. */

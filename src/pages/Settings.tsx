@@ -83,6 +83,143 @@ function InfoRow({
 }
 
 /**
+ * Inline UI for configuring Tor bridges (obfs4 / vanilla). Shown only
+ * inside the desktop app. The textarea takes one bridge line per row;
+ * Apply saves the file and restarts Tor with the new torrc.
+ *
+ * Stall watchdog → user adds bridges here → tor restarts using them →
+ * censored-network bootstrap succeeds. End-to-end recovery without
+ * leaving the app.
+ */
+function BridgesSection() {
+  const [draft, setDraft] = useState('');
+  const [original, setOriginal] = useState('');
+  const [hasObfs4, setHasObfs4] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const [current, obfs4] = await Promise.all([
+          invoke<string>('tor_get_bridges'),
+          invoke<boolean>('tor_has_obfs4proxy'),
+        ]);
+        if (cancelled) return;
+        setDraft(current);
+        setOriginal(current);
+        setHasObfs4(obfs4);
+        if (current.trim().length > 0) setExpanded(true);
+      } catch (err) {
+        if (!cancelled) console.warn('[bridges] could not load state', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleApply = useCallback(async () => {
+    setError(null);
+    setSuccess(null);
+    setBusy(true);
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('tor_set_bridges', { bridgesText: draft });
+      setOriginal(draft);
+      setSuccess(
+        draft.trim().length === 0
+          ? 'Bridges cleared. Tor is restarting in direct-connection mode.'
+          : 'Bridges saved. Tor is restarting — watch the bootstrap progress above.',
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not apply bridges.');
+    } finally {
+      setBusy(false);
+    }
+  }, [draft]);
+
+  const isDirty = draft !== original;
+  const bridgeCount = draft.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#')).length;
+
+  return (
+    <SettingsSection
+      title="Tor bridges"
+      description="Use bridges if your ISP or country blocks direct connections to the Tor network."
+      icon={Shield}
+    >
+      {!expanded ? (
+        <button
+          onClick={() => setExpanded(true)}
+          className="text-sm text-zinc-400 hover:text-white underline"
+        >
+          Configure bridges
+        </button>
+      ) : (
+        <div className="space-y-3">
+          {success && (
+            <div className="p-3 bg-emerald-900/20 border border-emerald-800/50 rounded-lg text-sm text-emerald-300">
+              {success}
+            </div>
+          )}
+          {error && (
+            <div className="p-3 bg-red-900/20 border border-red-800/50 rounded-lg text-sm text-red-300">
+              {error}
+            </div>
+          )}
+          {hasObfs4 === false && (
+            <div className="p-3 bg-amber-900/20 border border-amber-800/50 rounded-lg text-xs text-amber-200">
+              <code>obfs4proxy</code> isn&apos;t installed — only plain (non-obfuscated) bridges will
+              work. Install it: <code>pacman -S obfs4proxy</code> /{' '}
+              <code>apt install obfs4proxy</code> / <code>brew install obfs4proxy</code>.
+            </div>
+          )}
+          <p className="text-xs text-zinc-500">
+            One bridge per line. Get fresh bridges from{' '}
+            <a
+              href="https://bridges.torproject.org"
+              target="_blank"
+              rel="noreferrer"
+              className="underline hover:text-zinc-300"
+            >
+              bridges.torproject.org
+            </a>
+            . Lines starting with <code>#</code> are ignored.
+          </p>
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={5}
+            placeholder="obfs4 192.0.2.10:443 ABCDEF...FINGERPRINT cert=... iat-mode=0"
+            spellCheck={false}
+            className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-xs font-mono text-zinc-200 placeholder:text-zinc-600"
+            disabled={busy}
+          />
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-zinc-500">
+              {bridgeCount === 0
+                ? 'No bridges configured (direct connection)'
+                : `${bridgeCount} bridge${bridgeCount === 1 ? '' : 's'} configured`}
+            </span>
+            <button
+              onClick={handleApply}
+              disabled={busy || !isDirty}
+              className="px-4 py-2 text-sm bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-white rounded-lg transition-colors"
+            >
+              {busy ? 'Restarting Tor…' : 'Apply & restart Tor'}
+            </button>
+          </div>
+        </div>
+      )}
+    </SettingsSection>
+  );
+}
+
+/**
  * Inline UI for backing up + restoring the v3 hidden service identity.
  * Sits below the Hidden Service section once the onion is reachable.
  * Two flows:
@@ -376,6 +513,15 @@ export default function Settings() {
               <div className="space-y-1">
                 <InfoRow label="Onion address" value={tor.hostname} copyable monospace />
                 <InfoRow label="Bootstrap" value="100% — ready" />
+                {tor.bridgesEnabled && (
+                  <InfoRow label="Connection" value="Using bridges (censored-network mode)" />
+                )}
+                {tor.restartCount > 0 && (
+                  <InfoRow
+                    label="Auto-restarts"
+                    value={`${tor.restartCount} this session — Tor crashed and was respawned`}
+                  />
+                )}
               </div>
             ) : tor.error ? (
               <div className="p-4 bg-red-900/20 border border-red-800/50 rounded-lg">
@@ -384,18 +530,36 @@ export default function Settings() {
             ) : (
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
-                  <span className="text-zinc-400">Bootstrapping…</span>
+                  <span className="text-zinc-400">
+                    {tor.stalled ? 'Bootstrap stalled' : 'Bootstrapping…'}
+                  </span>
                   <span className="text-zinc-300 tabular-nums">{tor.bootstrapPct}%</span>
                 </div>
                 <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
                   <div
-                    className="h-full bg-gradient-to-r from-zinc-500 to-zinc-300 transition-all duration-300"
-                    style={{ width: `${tor.bootstrapPct}%` }}
+                    className={`h-full transition-all duration-300 ${
+                      tor.stalled
+                        ? 'bg-gradient-to-r from-amber-700 to-amber-500'
+                        : 'bg-gradient-to-r from-zinc-500 to-zinc-300'
+                    }`}
+                    style={{ width: `${Math.max(tor.bootstrapPct, 2)}%` }}
                   />
                 </div>
-                <p className="text-xs text-zinc-500">
-                  First start takes 30–60 seconds while Tor downloads consensus and builds circuits.
-                </p>
+                {tor.stalled ? (
+                  <div className="p-3 bg-amber-900/20 border border-amber-800/50 rounded-lg text-xs text-amber-200">
+                    Bootstrap hasn&apos;t advanced in 30+ seconds. Your network may be blocking
+                    Tor directory authorities. Try adding bridges below.
+                  </div>
+                ) : (
+                  <p className="text-xs text-zinc-500">
+                    First start takes 30–60 seconds while Tor downloads consensus and builds circuits.
+                  </p>
+                )}
+                {tor.restartCount > 0 && (
+                  <p className="text-xs text-amber-400">
+                    Tor has auto-restarted {tor.restartCount}× this session.
+                  </p>
+                )}
               </div>
             )
           ) : (
@@ -404,6 +568,8 @@ export default function Settings() {
             </p>
           )}
         </SettingsSection>
+
+        {tor.available && <BridgesSection />}
 
         {tor.available && tor.hostname && (
           <OnionBackupSection hostname={tor.hostname} />

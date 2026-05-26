@@ -12,6 +12,9 @@ pub fn run() {
             tor::tor_onion,
             tor::tor_backup_keys,
             tor::tor_restore_keys,
+            tor::tor_get_bridges,
+            tor::tor_set_bridges,
+            tor::tor_has_obfs4proxy,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

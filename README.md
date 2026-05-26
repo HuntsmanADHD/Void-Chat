@@ -285,7 +285,7 @@ If you see orphan `tor` processes lingering between runs (`pgrep -a tor` shows o
 - **Channel bandwidth is O(N).** A 50-person channel = your client encrypts 50 copies of every message. That's what zero-knowledge fan-out costs.
 - **Tor latency.** First-hop SOCKS handshake + 3-hop circuit + hidden-service rendezvous = real round-trip cost vs. local relay. Expect 200ms–2s per request for cross-host.
 - **Cross-host communities aren't surfaced in the sidebar yet.** Joining one navigates to it; reload the tab and you'll need to paste the invite again. (Tracked for the next iteration.)
-- **No bridges for censored networks yet.** If your ISP blocks Tor directory authorities, bootstrap will stall under 100%. obfs4 + meek bridge support is in the hardening pass.
+- **Bridges are supported but `obfs4proxy` is your responsibility.** Settings → "Tor bridges" takes pasted bridge lines and restarts Tor with them. If you use obfuscated (obfs4) bridges, install `obfs4proxy` first: `pacman -S obfs4proxy` / `apt install obfs4proxy` / `brew install obfs4proxy`. Get fresh bridges from <https://bridges.torproject.org>.
 
 ---
 
