@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { isSafeImageSrc } from '@/lib/safeImage';
 
 /**
  * Community data structure
@@ -152,10 +153,12 @@ export const CommunityCard = React.memo(function CommunityCard({
         onClick ? 'cursor-pointer hover:from-zinc-800 hover:via-zinc-850 hover:to-zinc-900 hover:shadow-lg hover:scale-[1.02] hover:border-zinc-700/50' : ''
       } ${className}`}
     >
-      {/* Banner (if available) */}
-      {community.banner && size === 'lg' && (
+      {/* Banner (if available). Defense in depth: the API gate in
+          server/api.ts rejects non-data: avatars, but we also filter
+          here in case a future endpoint forgets to. A bare http(s) URL
+          here would trigger a clearnet fetch and leak the viewer's IP. */}
+      {community.banner && isSafeImageSrc(community.banner) && size === 'lg' && (
         <div className="h-24 overflow-hidden">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={community.banner}
             alt=""
@@ -168,8 +171,7 @@ export const CommunityCard = React.memo(function CommunityCard({
         <div className="flex items-start gap-3">
           {/* Community icon */}
           <div className="relative flex-shrink-0">
-            {community.icon ? (
-              // eslint-disable-next-line @next/next/no-img-element
+            {community.icon && isSafeImageSrc(community.icon) ? (
               <img
                 src={community.icon}
                 alt={community.name}

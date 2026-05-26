@@ -82,89 +82,74 @@ interface WashIdentity {
   keyPair: CryptoKeyPair;
 }
 
-interface StoredWashKeys {
-  publicJwk: JsonWebKey;
-  privateJwk: JsonWebKey;
-  publicKeyB58: string;
-}
-
 let cachedIdentity: WashIdentity | null = null;
 
-async function loadStoredIdentity(): Promise<WashIdentity | null> {
-  if (typeof window === 'undefined') return null;
-  let raw: string | null;
-  try {
-    raw = sessionStorage.getItem(SESSION_KEYS_STORAGE);
-  } catch {
-    return null;
-  }
-  if (!raw) return null;
-  try {
-    const stored = JSON.parse(raw) as StoredWashKeys;
-    const subtle = getSubtle();
-    const publicKey = await subtle.importKey(
-      'jwk',
-      stored.publicJwk,
-      { name: 'ECDH', namedCurve: ECDH_CURVE },
-      true,
-      [],
-    );
-    const privateKey = await subtle.importKey(
-      'jwk',
-      stored.privateJwk,
-      { name: 'ECDH', namedCurve: ECDH_CURVE },
-      true,
-      ['deriveKey', 'deriveBits'],
-    );
-    return { publicKeyB58: stored.publicKeyB58, keyPair: { publicKey, privateKey } };
-  } catch {
-    try {
-      sessionStorage.removeItem(SESSION_KEYS_STORAGE);
-    } catch {
-      // ignore
-    }
-    return null;
-  }
-}
-
+/**
+ * Generate a fresh wash SubPub keypair with the private key marked
+ * **non-extractable** — any subsequent `subtle.exportKey('jwk', priv)`
+ * from JS (XSS, dep compromise, dev console) throws InvalidAccessError.
+ *
+ * The public key needs to be extractable so we can encode it as base58
+ * to share with peers, but that's expected — public keys are public.
+ *
+ * Trade-off: SubPub identity is in-memory only and resets on reload.
+ * Earlier versions persisted the private JWK in sessionStorage, which
+ * any same-origin XSS could read and exfil. Identity rotation per
+ * reload is the cheap fix; persisting a non-extractable CryptoKey
+ * across reloads would require IndexedDB CryptoKey handles, scheduled
+ * separately.
+ */
 async function generateIdentity(): Promise<WashIdentity> {
   const subtle = getSubtle();
-  const keyPair = await subtle.generateKey(
+  // Step 1: generate with extractable=true purely so we can export the
+  // public key for sharing. Private key from this step is discarded.
+  const interim = await subtle.generateKey(
     { name: 'ECDH', namedCurve: ECDH_CURVE },
     true,
     ['deriveKey', 'deriveBits'],
   );
-  const rawPub = new Uint8Array(await subtle.exportKey('raw', keyPair.publicKey));
+  const rawPub = new Uint8Array(await subtle.exportKey('raw', interim.publicKey));
   const publicKeyB58 = bs58.encode(rawPub);
-  const publicJwk = await subtle.exportKey('jwk', keyPair.publicKey);
-  const privateJwk = await subtle.exportKey('jwk', keyPair.privateKey);
-  if (typeof window !== 'undefined') {
-    try {
-      const stored: StoredWashKeys = { publicJwk, privateJwk, publicKeyB58 };
-      sessionStorage.setItem(SESSION_KEYS_STORAGE, JSON.stringify(stored));
-    } catch {
-      // sessionStorage full / disabled — fall through; identity still works
-      // in memory, just not persisted across reloads in this tab.
-    }
-  }
-  return { publicKeyB58, keyPair };
+  const privateJwk = await subtle.exportKey('jwk', interim.privateKey);
+
+  // Step 2: re-import the private key as non-extractable. The original
+  // interim.privateKey reference will get GC'd; the only remaining
+  // private-key handle is opaque to JS.
+  const privateKey = await subtle.importKey(
+    'jwk',
+    privateJwk,
+    { name: 'ECDH', namedCurve: ECDH_CURVE },
+    false,
+    ['deriveKey', 'deriveBits'],
+  );
+
+  // Zero the JWK fields we just used. Belt-and-suspenders — `d` (the
+  // scalar) is the private-key material; overwriting the string slot
+  // doesn't truly wipe it from memory but at least drops the easy
+  // string reference.
+  if (typeof privateJwk.d === 'string') privateJwk.d = '';
+
+  return { publicKeyB58, keyPair: { publicKey: interim.publicKey, privateKey } };
 }
 
 /**
- * Get this session's wash identity, loading from sessionStorage or
- * generating fresh on first call. Cached in module scope after the first
- * resolution. Closing the tab wipes the storage and the cache.
+ * Get this session's wash identity. Generated lazily on first call,
+ * cached in module scope for the lifetime of the tab. No persistence
+ * across reloads — see generateIdentity() for the rationale.
  */
 export async function getOrCreateWashIdentity(): Promise<WashIdentity> {
   if (cachedIdentity) return cachedIdentity;
-  const loaded = await loadStoredIdentity();
-  cachedIdentity = loaded ?? (await generateIdentity());
+  cachedIdentity = await generateIdentity();
   return cachedIdentity;
 }
 
-/** Drop the in-memory cache + persisted keys. Used by settings end-session. */
+/** Drop the in-memory cache. Used by settings end-session. */
 export function clearWashIdentity(): void {
   cachedIdentity = null;
+  // Defensive: also clear any legacy SESSION_KEYS_STORAGE entry from
+  // pre-fix versions where the JWK was persisted. New code never writes
+  // to this key, but old browsers that ran the old code might have one
+  // still sitting in sessionStorage.
   if (typeof window === 'undefined') return;
   try {
     sessionStorage.removeItem(SESSION_KEYS_STORAGE);

@@ -13,6 +13,7 @@ import {
 import { Avatar } from '../ui/Avatar';
 import { WashFloating } from '@/components/wash/WashFloating';
 import { truncatePublicId as truncateId } from '@/lib/format';
+import { isSafeImageSrc } from '@/lib/safeImage';
 
 export interface Community {
   id: string;
@@ -183,8 +184,7 @@ export const Sidebar = React.memo(function Sidebar({
               tabIndex={0}
               aria-label={community.name}
             >
-              {community.icon ? (
-                // eslint-disable-next-line @next/next/no-img-element
+              {community.icon && isSafeImageSrc(community.icon) ? (
                 <img
                   src={community.icon}
                   alt={community.name}

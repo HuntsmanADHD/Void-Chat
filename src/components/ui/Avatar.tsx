@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { isSafeImageSrc } from '@/lib/safeImage';
 
 export type AvatarSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl';
 
@@ -127,8 +128,7 @@ export function Avatar({
       role={onClick ? 'button' : undefined}
       tabIndex={onClick ? 0 : undefined}
     >
-      {imageUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
+      {imageUrl && isSafeImageSrc(imageUrl) ? (
         <img
           src={imageUrl}
           alt={alt || `Avatar for ${publicId}`}

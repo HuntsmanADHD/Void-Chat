@@ -24,6 +24,12 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            // Native dialog plugin — needed by tor_backup_keys /
+            // tor_restore_keys to surface an OS-level confirmation
+            // before exporting the .onion secret key. JS can invoke
+            // the IPC, but the user sees the prompt and can decline,
+            // turning any silent XSS-driven exfil into a noisy one.
+            app.handle().plugin(tauri_plugin_dialog::init())?;
             // Spawn tor in the background. Failures are recorded in TorState
             // and surfaced via `tor://status` events; we don't block startup.
             if let Err(e) = tor::start(app.handle()) {

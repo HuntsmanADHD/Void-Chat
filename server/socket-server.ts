@@ -63,6 +63,14 @@ interface SessionInfo {
   boxPublicKey: string;
   displayName: string;
   joinedAt: number;
+  /** Captured announce credential. Re-broadcast in every roster entry
+   *  so peer clients can verify the boxPublicKey binding themselves —
+   *  the relay can no longer substitute keys without invalidating the
+   *  sig (which is computed by the holder of signingPublicKey, which
+   *  the relay does not possess). */
+  announceNonce: string;
+  announceTs: number;
+  sig: string;
 }
 
 interface RateBucket {
@@ -249,12 +257,28 @@ io.on('connection', (socket: Socket) => {
     }
 
     // Trim display name defensively (clients should do this too).
-    const displayName = raw.displayName.trim().slice(0, 32) || 'anon';
+    // If we trim, we'd invalidate the original signature (since the
+    // sig was computed over the un-trimmed value). To preserve roster
+    // verifiability end-to-end, keep the value as the client signed it.
+    // (Server-side cap is still applied via a length pre-check above
+    // through the announce-size limits and clients always trim on input.)
+    const displayName = raw.displayName.slice(0, 32) || 'anon';
+    if (displayName !== raw.displayName) {
+      sendError(
+        socket,
+        'INVALID_PAYLOAD',
+        'displayName too long — clients must trim and sign the trimmed value',
+      );
+      return;
+    }
     const info: SessionInfo = {
       signingPublicKey: raw.signingPublicKey,
       boxPublicKey: raw.boxPublicKey,
       displayName,
       joinedAt: Date.now(),
+      announceNonce: raw.nonce,
+      announceTs: raw.ts,
+      sig: raw.sig,
     };
 
     // If this socket had a previous session entry (rare, but possible if a
@@ -292,6 +316,9 @@ io.on('connection', (socket: Socket) => {
       signingPublicKey: session.signingPublicKey,
       boxPublicKey: session.boxPublicKey,
       displayName: session.displayName,
+      announceNonce: session.announceNonce,
+      announceTs: session.announceTs,
+      sig: session.sig,
     };
 
     const alreadyIn = roster.has(socket.id);

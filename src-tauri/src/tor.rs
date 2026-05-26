@@ -843,8 +843,33 @@ pub fn tor_has_obfs4proxy(app: AppHandle) -> bool {
 /// backup payload. The caller is expected to wrap this in passphrase
 /// encryption (via the existing Wash flow) before writing to disk — the
 /// raw secret key reproduces this identity for anyone who possesses it.
+///
+/// **Security gate:** before doing anything, surface a native OS dialog
+/// asking the user to confirm. This is the last line of defense against
+/// renderer-side XSS silently exfiltrating the .onion secret key —
+/// the dialog runs in the native process and can't be dismissed by JS.
+/// A user who clicks "Cancel" stops the export with no key material
+/// having left the Rust side.
 #[tauri::command]
 pub fn tor_backup_keys(app: AppHandle) -> Result<TorBackup, String> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let confirmed = app
+        .dialog()
+        .message(
+            "Void Chat is about to read your .onion private key and hand it to the renderer to encrypt + save as a backup file.\n\n\
+             Only continue if you (just) clicked the Backup button in Settings. If you didn't, click Cancel — something else may be trying to steal your identity.",
+        )
+        .title("Export Tor identity?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Export now".to_string(),
+            "Cancel".to_string(),
+        ))
+        .blocking_show();
+    if !confirmed {
+        return Err("Backup cancelled by user.".to_string());
+    }
+
     let dir = hs_dir(&app)?;
     let public = fs::read(dir.join("hs_ed25519_public_key"))
         .map_err(|e| format!("could not read public key: {e}"))?;
@@ -872,6 +897,26 @@ pub fn tor_backup_keys(app: AppHandle) -> Result<TorBackup, String> {
 /// stop resolving.
 #[tauri::command]
 pub fn tor_restore_keys(app: AppHandle, backup: TorBackup) -> Result<(), String> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let new_hostname_preview = backup.hostname.clone();
+    let confirmed = app
+        .dialog()
+        .message(format!(
+            "This will REPLACE your current .onion identity with one from a backup file.\n\n\
+             New .onion: {new_hostname_preview}\n\n\
+             Anyone holding invites pointing at your old .onion will no longer be able to reach you. Continue?",
+        ))
+        .title("Overwrite Tor identity?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Overwrite".to_string(),
+            "Cancel".to_string(),
+        ))
+        .blocking_show();
+    if !confirmed {
+        return Err("Restore cancelled by user.".to_string());
+    }
+
     if backup.format_version != BACKUP_FORMAT_VERSION {
         return Err(format!(
             "unsupported backup format version {} (this build expects {BACKUP_FORMAT_VERSION})",

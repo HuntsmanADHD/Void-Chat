@@ -29,6 +29,23 @@ export interface RosterMember {
   signingPublicKey: string;
   boxPublicKey: string;
   displayName: string;
+  /**
+   * The member's announce binding, re-broadcast verbatim by the relay
+   * so other clients can verify that this `boxPublicKey` was actually
+   * chosen by the holder of `signingPublicKey`. Without these fields a
+   * malicious relay could hand out its own `boxPublicKey` for every
+   * member and silently MITM the e2ee.
+   *
+   * To verify, the recipient reconstructs the signed payload as
+   * `${announceNonce}|${boxPublicKey}|${displayName}|${announceTs}` and
+   * runs ed25519 verify against `signingPublicKey`.
+   *
+   * Marked optional only for forward-compat with older relays during
+   * rollout; new code MUST refuse to use any member missing these fields.
+   */
+  announceNonce?: string;
+  announceTs?: number;
+  sig?: string;
 }
 
 export interface ChannelRosterMessage {

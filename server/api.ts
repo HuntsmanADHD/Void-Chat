@@ -96,6 +96,23 @@ function sanitize(input: string, maxLen: number): string {
   return input.replace(/\0/g, '').trim().slice(0, maxLen);
 }
 
+/**
+ * Whitelist for image inputs accepted into the directory (avatars,
+ * banners). Only inline base64 data URIs of common raster formats are
+ * allowed — `http://` / `https://` and `javascript:` are rejected.
+ *
+ * Background: a remote-URL avatar would be loaded by every joiner's
+ * webview via plain <img src>, which goes straight over clearnet and
+ * unmasks the user's real IP. The whole point of running on Tor is
+ * defeated by a single rogue community owner setting a tracking pixel
+ * as their avatar.
+ */
+function isAllowedDataImageUri(value: string): boolean {
+  // Cheap shape check first so we don't run the regex on giant inputs.
+  if (!value.startsWith('data:image/')) return false;
+  return /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+=*$/.test(value);
+}
+
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json');
@@ -195,6 +212,15 @@ async function createCommunity(req: IncomingMessage, res: ServerResponse): Promi
   if (name.length < 2 || name.length > 64) return err(res, 400, 'Community name must be 2–64 characters');
   if (!/^[a-zA-Z0-9 _-]+$/.test(name)) {
     return err(res, 400, 'Community name may only contain letters, numbers, spaces, _ and -');
+  }
+  // Avatar must be an inline data: URI — never an http/https URL.
+  // Storing a remote URL would make every joiner's webview fetch it
+  // straight over the open internet (the renderer can't route fetches
+  // through Tor without help), unmasking the user's IP to whoever
+  // controls the URL. The Create modal already emits data URIs from
+  // a FileReader, so this only rejects malicious inputs.
+  if (avatar !== null && !isAllowedDataImageUri(avatar)) {
+    return err(res, 400, 'Avatar must be an inline data:image/(png|jpeg|webp|gif);base64 URI');
   }
 
   let passwordHash: string | null = null;

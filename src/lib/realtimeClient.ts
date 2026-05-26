@@ -78,24 +78,65 @@ interface ChannelEntry {
 const RELAY_PORT = 3001;
 
 /**
- * Resolve the relay URL for this client.
+ * Verify that a roster entry's `boxPublicKey` was actually chosen by the
+ * holder of `signingPublicKey`. The relay re-broadcasts the original
+ * announce binding (nonce, ts, sig); we reconstruct the signed payload
+ * and run ed25519 verify against the claimed signing key.
  *
- * Priority:
- *   1. `NEXT_PUBLIC_VOID_RELAY_URL` env override (for deploys that proxy
- *      the relay through a non-default host/path, e.g. `wss://alice.tld/ws`).
- *   2. Same-origin + `:3001`. This is the right answer for almost every
- *      self-host setup: the web app and the relay run on the same machine,
- *      so the client just talks to whatever host the browser loaded from.
- *   3. `http://localhost:3001` as the SSR/test fallback (when `window` is
- *      undefined). The real value is recomputed on the client once mounted.
+ * A roster entry that fails verification means the relay is either
+ * misbehaving (substituting box keys to MITM e2ee) or running an old
+ * server that doesn't forward sigs yet. Either way, the safe response
+ * is to drop the entry — without a verified box key, sending to this
+ * "member" would route ciphertext to whatever box the relay chose.
+ *
+ * Note on freshness: the server enforces the ±5min skew at announce
+ * accept, so any sig we receive in a roster was fresh at announce
+ * time. Once that holds, the sig is good for as long as the session
+ * is alive — re-checking ts client-side would reject anyone who's
+ * been connected longer than 5 minutes. A "stale" sig replayed for
+ * an offline user is a presence-oracle concern (see audit #9), not
+ * an MITM one — the box key is still genuinely that user's.
+ */
+const rosterTextEncoder = new TextEncoder();
+
+function verifyRosterMember(m: RosterMember): boolean {
+  if (
+    typeof m.announceNonce !== 'string' ||
+    typeof m.announceTs !== 'number' ||
+    typeof m.sig !== 'string'
+  ) {
+    return false;
+  }
+  try {
+    const signed = `${m.announceNonce}|${m.boxPublicKey}|${m.displayName}|${m.announceTs}`;
+    const sigBytes = bs58.decode(m.sig);
+    const pubBytes = bs58.decode(m.signingPublicKey);
+    if (sigBytes.length !== nacl.sign.signatureLength) return false;
+    if (pubBytes.length !== nacl.sign.publicKeyLength) return false;
+    return nacl.sign.detached.verify(
+      rosterTextEncoder.encode(signed),
+      sigBytes,
+      pubBytes,
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Default relay endpoint. Always the local relay on this machine —
+ * Tauri builds bundle the relay as a sidecar of the app.
+ *
+ * Note: the previous version of this function honored a
+ * `NEXT_PUBLIC_VOID_RELAY_URL` env override, a leftover from when the
+ * project shipped as a Next.js webapp. Vite inlines such values at
+ * build time, which would have leaked the *build's* relay URL to every
+ * user of that installer — exactly the kind of identity-pinning we run
+ * over Tor to avoid. Removed entirely; cross-host routing is plumbed
+ * via the per-community `relayBaseFor()` mechanism in relayBase.ts.
  */
 function resolveRelayUrl(): string {
-  const override =
-    typeof process !== 'undefined' && process.env['NEXT_PUBLIC_VOID_RELAY_URL'];
-  if (override) return override;
-  if (typeof window === 'undefined') return `http://localhost:${RELAY_PORT}`;
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.hostname}:${RELAY_PORT}`;
+  return `http://localhost:${RELAY_PORT}`;
 }
 
 class RealtimeClient {
@@ -231,6 +272,36 @@ class RealtimeClient {
       if (oldest === undefined) break;
       this.peerCache.delete(oldest);
     }
+  }
+
+  /**
+   * Refresh-or-skip variant called from message-receive paths
+   * (CHANNEL_MESSAGE / DM_MESSAGE) where the announce sig isn't carried
+   * inline. Without the sig we can't independently verify the
+   * (signing, box) pair, so we only update an EXISTING verified
+   * binding (e.g. display-name change). A new binding from a message
+   * is rejected — otherwise a malicious relay could craft a message
+   * claiming sender = Alice signing key with relay's box key,
+   * decrypt-succeed (the relay holds the box secret), and poison the
+   * peer cache so Bob's future DMs to Alice get MITM'd.
+   */
+  private touchExistingPeer(member: RosterMember): void {
+    const existing = this.peerCache.get(member.signingPublicKey);
+    if (!existing) return;
+    if (existing.boxPublicKey !== member.boxPublicKey) {
+      // Relay claims this sender's box key changed. Could be a real
+      // identity rotation (user re-announced) but indistinguishable
+      // from a MITM attempt. The safe default is to drop the cached
+      // entry and wait for a fresh verified roster broadcast.
+      this.peerCache.delete(member.signingPublicKey);
+      return;
+    }
+    // Same binding — safe to refresh display name + LRU-touch.
+    this.peerCache.delete(member.signingPublicKey);
+    this.peerCache.set(member.signingPublicKey, {
+      ...existing,
+      displayName: member.displayName,
+    });
   }
 
   joinChannel(channelId: string): void {
@@ -372,6 +443,7 @@ class RealtimeClient {
       if (!entry) return;
       entry.roster.clear();
       for (const m of raw.members) {
+        if (!verifyRosterMember(m)) continue; // drop unverified entries
         entry.roster.set(m.boxPublicKey, m);
         this.rememberPeer(m);
       }
@@ -381,6 +453,7 @@ class RealtimeClient {
     socket.on(WIRE.CHANNEL_MEMBER_JOINED, (raw: ChannelMemberJoinedMessage) => {
       const entry = this.channels.get(raw.channelId);
       if (!entry) return;
+      if (!verifyRosterMember(raw.member)) return;
       entry.roster.set(raw.member.boxPublicKey, raw.member);
       this.rememberPeer(raw.member);
       this.emitRoster(raw.channelId);
@@ -407,12 +480,29 @@ class RealtimeClient {
         this.session.boxSecretKey,
       );
       if (plaintext === null) return; // drop unauthenticated/tampered messages silently
-      // Remember the sender so DM lookups still work after we leave this channel.
-      this.rememberPeer({
+      // Refresh-only: never adds a new (signing, box) binding to the
+      // peer cache from a message — only the verified roster broadcast
+      // can do that. See touchExistingPeer for the MITM rationale.
+      this.touchExistingPeer({
         signingPublicKey: raw.senderSigningPublicKey,
         boxPublicKey: raw.senderBoxPublicKey,
         displayName: raw.senderDisplayName,
       });
+      // Channel-roster cross-check: drop messages that claim a sender
+      // (signing, box) pair that doesn't match the verified roster for
+      // this channel. Prevents the relay from injecting fake messages
+      // attributing them to channel members with a substituted box key.
+      const channelEntry = this.channels.get(raw.channelId);
+      const rosterMatch = channelEntry &&
+        Array.from(channelEntry.roster.values()).some(
+          (r) => r.signingPublicKey === raw.senderSigningPublicKey &&
+                 r.boxPublicKey === raw.senderBoxPublicKey,
+        );
+      if (!rosterMatch) {
+        // Either the relay is lying or we got the message before the
+        // roster update arrived. Either way, don't decode + surface.
+        return;
+      }
       const decoded: DecryptedChannelMessage = {
         channelId: raw.channelId,
         msgId: raw.msgId,
@@ -442,7 +532,14 @@ class RealtimeClient {
         this.session.boxSecretKey,
       );
       if (plaintext === null) return;
-      this.rememberPeer({
+      // Refresh-only: a DM from a peer we don't already have a verified
+      // roster binding for is treated as unverified — the relay could
+      // be claiming any signing key + its own box key. We accept the
+      // message (it decrypted, so somebody who knows our box key sent
+      // it) but don't poison the peer cache for future DMs. To reply,
+      // the user must share a channel where the sender's binding can
+      // be verified via the roster sig path.
+      this.touchExistingPeer({
         signingPublicKey: raw.senderSigningPublicKey,
         boxPublicKey: raw.senderBoxPublicKey,
         displayName: raw.senderDisplayName,
@@ -477,8 +574,16 @@ class RealtimeClient {
 
   private sendAnnounce(): void {
     if (!this.session || !this.socket || !this.pendingNonce) return;
+    // Canonicalize the displayName client-side before signing. The
+    // relay rejects an announce whose signed displayName doesn't match
+    // its post-trim form (so it can re-broadcast the exact bytes that
+    // were signed, enabling other clients to verify the binding). The
+    // trim+cap+fallback-to-'anon' here matches the server's expectation
+    // exactly — without this, a name with trailing whitespace or >32
+    // chars would be rejected with INVALID_PAYLOAD.
+    const displayName = (this.session.displayName.trim().slice(0, 32)) || 'anon';
     const ts = Date.now();
-    const signedBody = `${this.pendingNonce}|${this.session.boxPublicKey}|${this.session.displayName}|${ts}`;
+    const signedBody = `${this.pendingNonce}|${this.session.boxPublicKey}|${displayName}|${ts}`;
     const sigBytes = nacl.sign.detached(
       new TextEncoder().encode(signedBody),
       this.session.signingSecretKey,
@@ -486,7 +591,7 @@ class RealtimeClient {
     const payload: SessionAnnounceMessage = {
       signingPublicKey: this.session.signingPublicKey,
       boxPublicKey: this.session.boxPublicKey,
-      displayName: this.session.displayName,
+      displayName,
       ts,
       nonce: this.pendingNonce,
       sig: bs58.encode(sigBytes),
