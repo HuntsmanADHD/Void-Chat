@@ -17,7 +17,7 @@ import {
 import { CommunityPasswordPrompt } from '@/components/community/CommunityPasswordPrompt';
 import { useToast } from '@/components/ui/Toast';
 import { useBackdropClose } from '@/hooks/useBackdropClose';
-
+import { apiUrl } from '@/lib/relayBase';
 
 import type { Channel, Community, CurrentUser } from '@/components/layout/Sidebar';
 import type { Member } from '@/components/layout/MemberList';
@@ -84,8 +84,8 @@ export default function ChannelPage() {
     try {
       const authHeaders = communityAuthHeaders(communityId);
       const [channelsRes, allRes] = await Promise.all([
-        fetch(`/api/communities/${communityId}/channels`, { headers: authHeaders }),
-        fetch('/api/communities'),
+        fetch(apiUrl(`/api/communities/${communityId}/channels`), { headers: authHeaders }),
+        fetch(apiUrl('/api/communities')),
       ]);
       if (channelsRes.status === 401) {
         clearCommunityPassword(communityId);
@@ -126,7 +126,7 @@ export default function ChannelPage() {
       setPwSubmitting(true);
       setPwError(null);
       try {
-        const res = await fetch(`/api/communities/${communityId}`, {
+        const res = await fetch(apiUrl(`/api/communities/${communityId}`), {
           headers: { 'x-community-password': password },
         });
         if (res.status === 401) {
@@ -165,7 +165,7 @@ export default function ChannelPage() {
   const handleDeleteCommunity = useCallback(async () => {
     setIsDeleting(true);
     try {
-      const res = await fetch(`/api/communities/${communityId}`, {
+      const res = await fetch(apiUrl(`/api/communities/${communityId}`), {
         method: 'DELETE',
         headers: communityAuthHeaders(communityId),
       });

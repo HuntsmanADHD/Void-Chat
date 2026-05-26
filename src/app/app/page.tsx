@@ -12,6 +12,7 @@ import { useToast } from '@/components/ui/Toast';
 import { CommunityPasswordPrompt } from '@/components/community/CommunityPasswordPrompt';
 import { setCommunityPassword } from '@/lib/communityPasswordStore';
 import { OnboardingModal, hasSeenOnboarding } from '@/components/onboarding/OnboardingModal';
+import { apiUrl } from '@/lib/relayBase';
 /** Truncate a public ID for display */
 function truncatePublicId(id: string, chars = 4): string {
   if (id.length <= chars * 2 + 3) return id;
@@ -145,7 +146,7 @@ export default function AppDashboard() {
       try {
         // Verify against the server before stashing; saves the user from
         // landing on the community page only to bounce back.
-        const res = await fetch(`/api/communities/${pendingPrivate.id}`, {
+        const res = await fetch(apiUrl(`/api/communities/${pendingPrivate.id}`), {
           headers: { 'x-community-password': password },
         });
         if (res.status === 401) {
@@ -180,7 +181,7 @@ export default function AppDashboard() {
       try {
         const headers: Record<string, string> = {};
         if (data.password) headers['x-community-password'] = data.password;
-        const res = await fetch(`/api/communities/${encodeURIComponent(code)}`, { headers });
+        const res = await fetch(apiUrl(`/api/communities/${encodeURIComponent(code)}`), { headers });
         if (res.status === 404) return 'Invite code not found';
         if (res.status === 401) {
           return data.password

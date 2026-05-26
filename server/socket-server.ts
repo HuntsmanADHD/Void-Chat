@@ -31,6 +31,7 @@ import {
   type SessionAnnounceMessage,
   type WireErrorMessage,
 } from '../src/types/wire';
+import { handleApiRequest } from './api';
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -160,7 +161,20 @@ function verifyAnnounceSignature(
 
 // ── Server ─────────────────────────────────────────────────────────────────
 
+// Same Node http server hosts both the HTTP API (community/channel CRUD)
+// and the socket.io WebSocket layer. socket.io adds its own request
+// listener for /socket.io/*; ours below handles /api/* and falls through
+// (no-op) for anything else so socket.io can answer it.
 const httpServer = createServer();
+httpServer.on('request', (req, res) => {
+  void handleApiRequest(req, res).catch((err) => {
+    console.error('[void-relay] api dispatcher crashed:', err);
+    if (!res.headersSent) {
+      res.statusCode = 500;
+      res.end();
+    }
+  });
+});
 const io = new Server(httpServer, {
   cors: {
     origin: CORS_ALLOW_ANY ? true : CORS_ORIGIN_LIST,

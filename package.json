@@ -9,7 +9,10 @@
     "start": "next start",
     "lint": "next lint",
     "socket": "tsx server/socket-server.ts",
-    "dev:all": "concurrently \"yarn dev\" \"yarn socket\""
+    "dev:all": "concurrently \"yarn dev\" \"yarn socket\"",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "dependenciesMeta": {
     "@prisma/client": {
@@ -22,6 +25,7 @@
   "dependencies": {
     "@noble/ed25519": "^2.1.0",
     "@prisma/client": "^5.22.0",
+    "@tauri-apps/api": "^2",
     "bs58": "^6.0.0",
     "lucide-react": "^0.555.0",
     "next": "14.2.33",
@@ -36,6 +40,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",

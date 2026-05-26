@@ -17,6 +17,7 @@ import {
 import { CommunityPasswordPrompt } from '@/components/community/CommunityPasswordPrompt';
 import { useToast } from '@/components/ui/Toast';
 import { useBackdropClose } from '@/hooks/useBackdropClose';
+import { apiUrl } from '@/lib/relayBase';
 import type { Channel, Community, CurrentUser } from '@/components/layout/Sidebar';
 import type { Member } from '@/components/layout/MemberList';
 import { UserProfileModal, type UserProfileData } from '@/components/ui';
@@ -103,9 +104,9 @@ export default function CommunityPage() {
     try {
       const authHeaders = communityAuthHeaders(communityId);
       const [communityRes, channelsRes, allRes] = await Promise.all([
-        fetch(`/api/communities/${communityId}`, { headers: authHeaders }),
-        fetch(`/api/communities/${communityId}/channels`, { headers: authHeaders }),
-        fetch('/api/communities'),
+        fetch(apiUrl(`/api/communities/${communityId}`), { headers: authHeaders }),
+        fetch(apiUrl(`/api/communities/${communityId}/channels`), { headers: authHeaders }),
+        fetch(apiUrl('/api/communities')),
       ]);
       if (communityRes.status === 401) {
         clearCommunityPassword(communityId);
@@ -261,7 +262,7 @@ export default function CommunityPage() {
       setPwSubmitting(true);
       setPwError(null);
       try {
-        const res = await fetch(`/api/communities/${communityId}`, {
+        const res = await fetch(apiUrl(`/api/communities/${communityId}`), {
           headers: { 'x-community-password': password },
         });
         if (res.status === 401) {
@@ -304,7 +305,7 @@ export default function CommunityPage() {
   const handleDeleteCommunity = useCallback(async () => {
     setIsDeleting(true);
     try {
-      const res = await fetch(`/api/communities/${communityId}`, {
+      const res = await fetch(apiUrl(`/api/communities/${communityId}`), {
         method: 'DELETE',
         headers: communityAuthHeaders(communityId),
       });
@@ -334,7 +335,7 @@ export default function CommunityPage() {
       setIsCreatingChannel(true);
       setCreateChannelError(null);
       try {
-        const response = await fetch(`/api/communities/${communityId}/channels`, {
+        const response = await fetch(apiUrl(`/api/communities/${communityId}/channels`), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...communityAuthHeaders(communityId) },
           body: JSON.stringify({
