@@ -144,10 +144,122 @@ fn read_bridges(data_dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Look for an obfs4proxy binary in the usual install locations. Returns
-/// None if not found — bridges that need obfs4 won't work without it,
-/// but plain `Bridge` lines (directly to an IP) still do.
-fn find_obfs4proxy() -> Option<PathBuf> {
+/// Resolve where the bundled Tor runtime lives. Returns the runtime
+/// *directory* (containing tor + libs), not the binary path. We need
+/// the directory so we can both spawn `<dir>/tor` and set
+/// `LD_LIBRARY_PATH=<dir>` so it loads its own bundled libevent/openssl.
+///
+/// Preference order:
+///   1. **Tauri's resource_dir** in production. Bundled via the
+///      `bundle.resources` config in tauri.conf.json — the entire
+///      `binaries/tor-runtime/` directory gets copied next to the app.
+///   2. **`src-tauri/binaries/tor-runtime/`** — dev location populated
+///      by `scripts/fetch-tor-binaries.sh`. Same code path as prod.
+///
+/// Returns None if no bundled runtime is found; the caller then falls
+/// back to spawning a system tor on PATH.
+fn find_tor_runtime(app: &AppHandle) -> Option<PathBuf> {
+    let binary_name = if cfg!(windows) { "tor.exe" } else { "tor" };
+
+    // (1) Production: Tauri's resource directory. Tauri preserves the
+    // source-relative path of `bundle.resources` entries — we ship
+    // `binaries/tor-runtime`, so the bundled layout is
+    // `<resource_dir>/binaries/tor-runtime/`. Also check the bare
+    // `tor-runtime/` location in case a future bundling change
+    // flattens the path.
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        for sub in &["binaries/tor-runtime", "tor-runtime"] {
+            let candidate = resource_dir.join(sub);
+            if candidate.join(binary_name).exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // (2) Dev: source-relative paths. `cargo run` cwd is src-tauri, so
+    // `binaries/tor-runtime` works there. From repo root we need the
+    // src-tauri prefix.
+    for prefix in &["binaries/tor-runtime", "src-tauri/binaries/tor-runtime"] {
+        let candidate = PathBuf::from(prefix);
+        if candidate.join(binary_name).exists() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+/// Compose the tor binary path + the env vars needed to run it. The
+/// `library_path_env` value is intended for the platform-appropriate
+/// dynamic-loader variable: `LD_LIBRARY_PATH` on Linux,
+/// `DYLD_LIBRARY_PATH` on macOS, `PATH` on Windows.
+fn resolve_tor_command(app: &AppHandle) -> (PathBuf, Option<PathBuf>) {
+    if let Some(runtime) = find_tor_runtime(app) {
+        let binary_name = if cfg!(windows) { "tor.exe" } else { "tor" };
+        let bin = runtime.join(binary_name);
+        log::info!("[tor] using bundled runtime at {}", runtime.display());
+
+        // Defensive: ensure the binary is executable. Tauri's
+        // `bundle.resources` was designed for static assets (images,
+        // JSON), not executables, and per-platform behavior around
+        // preserving the +x bit through .deb / AppImage / .dmg / .msi
+        // packaging isn't uniformly documented. A cheap idempotent
+        // chmod here means we recover if the bit got stripped.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&bin, fs::Permissions::from_mode(0o755));
+            // Same for lyrebird / other pluggable transports if present.
+            let pt_dir = runtime.join("pluggable_transports");
+            if pt_dir.is_dir() {
+                if let Ok(entries) = fs::read_dir(&pt_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file() {
+                            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o755));
+                        }
+                    }
+                }
+            }
+        }
+
+        (bin, Some(runtime))
+    } else {
+        log::info!("[tor] no bundled runtime; falling back to system `tor` on PATH");
+        (PathBuf::from("tor"), None)
+    }
+}
+
+/// Name of the platform's dynamic-loader-path environment variable.
+/// We set this on the Tor child process so it finds the bundled libs.
+#[cfg(target_os = "macos")]
+const LIB_PATH_ENV: &str = "DYLD_LIBRARY_PATH";
+#[cfg(target_os = "windows")]
+const LIB_PATH_ENV: &str = "PATH";
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+const LIB_PATH_ENV: &str = "LD_LIBRARY_PATH";
+
+/// Look for an obfs4 pluggable-transport binary. Returns the path Tor's
+/// `ClientTransportPlugin` line should reference, or None if no
+/// compatible binary is anywhere we know to check.
+///
+/// Order matters: the bundled `lyrebird` from our Tor Expert Bundle is
+/// preferred so shipped builds work end-to-end without any system
+/// install. Falls back to system locations for dev setups using a
+/// system tor, or for users who skipped the fetch script.
+fn find_obfs4proxy(app: &AppHandle) -> Option<PathBuf> {
+    // (1) Bundled with our Tor runtime. lyrebird is the modern obfs4
+    // replacement Tor Browser ships in the Expert Bundle.
+    if let Some(runtime) = find_tor_runtime(app) {
+        let bundled = runtime.join("pluggable_transports").join(
+            if cfg!(windows) { "lyrebird.exe" } else { "lyrebird" },
+        );
+        if bundled.exists() {
+            return Some(bundled);
+        }
+    }
+
+    // (2) System install paths.
     let candidates = [
         "/usr/bin/obfs4proxy",
         "/usr/lib/obfs4proxy/obfs4proxy",
@@ -159,7 +271,11 @@ fn find_obfs4proxy() -> Option<PathBuf> {
 }
 
 /// Write the torrc and return the path to it + the hidden-service dir.
-fn write_torrc(data_dir: &Path, bridges: &[String]) -> std::io::Result<(PathBuf, PathBuf)> {
+fn write_torrc(
+    app: &AppHandle,
+    data_dir: &Path,
+    bridges: &[String],
+) -> std::io::Result<(PathBuf, PathBuf)> {
     let tor_dir = data_dir.join("tor");
     let hs_dir = tor_dir.join("hs");
     fs::create_dir_all(&tor_dir)?;
@@ -205,7 +321,7 @@ fn write_torrc(data_dir: &Path, bridges: &[String]) -> std::io::Result<(PathBuf,
     // tor refuse to start entirely.
     if !bridges.is_empty() {
         torrc.push_str("UseBridges 1\n");
-        if let Some(obfs4) = find_obfs4proxy() {
+        if let Some(obfs4) = find_obfs4proxy(app) {
             torrc.push_str(&format!(
                 "ClientTransportPlugin obfs4 exec {}\n",
                 obfs4.display(),
@@ -236,7 +352,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
     let bridges = read_bridges(&data_dir);
     let bridges_enabled = !bridges.is_empty();
 
-    let (torrc_path, hs_dir) = write_torrc(&data_dir, &bridges)
+    let (torrc_path, hs_dir) = write_torrc(app, &data_dir, &bridges)
         .map_err(|e| format!("could not write torrc: {e}"))?;
 
     // Tell the watcher thread that EOF on stdout from here on means a
@@ -270,19 +386,37 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
         let _ = app.emit("tor://status", snapshot);
     }
 
-    let mut cmd = Command::new("tor");
+    let (tor_path, lib_dir) = resolve_tor_command(app);
+    let mut cmd = Command::new(&tor_path);
     cmd.arg("-f")
         .arg(&torrc_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // When using the bundled runtime, point the dynamic loader at our
+    // libs first — the Expert Bundle ships with no RPATH, and its
+    // tor was built against specific libevent/openssl versions that
+    // may not match what's on the host system. Without this the
+    // bundled tor crashes at startup with missing-symbol errors.
+    if let Some(dir) = lib_dir {
+        let dir_str = dir.to_string_lossy().to_string();
+        let merged = match std::env::var(LIB_PATH_ENV) {
+            Ok(existing) if !existing.is_empty() => format!("{dir_str}:{existing}"),
+            _ => dir_str,
+        };
+        cmd.env(LIB_PATH_ENV, merged);
+    }
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             let msg = if e.kind() == std::io::ErrorKind::NotFound {
-                "tor binary not found in PATH (install: pacman -S tor / brew install tor / apt install tor)".to_string()
+                format!(
+                    "tor binary not found (tried bundled sidecar and PATH). \
+                     Run scripts/fetch-tor-binaries.sh, or install tor: \
+                     pacman -S tor / brew install tor / apt install tor"
+                )
             } else {
-                format!("failed to spawn tor: {e}")
+                format!("failed to spawn tor at {}: {e}", tor_path.display())
             };
             let state: tauri::State<'_, TorState> = app.state();
             let mut status = state.status.lock().expect("tor status mutex poisoned");
@@ -697,11 +831,12 @@ pub fn tor_set_bridges(app: AppHandle, bridges_text: String) -> Result<(), Strin
     start(&app).map_err(|e| format!("failed to restart tor: {e}"))
 }
 
-/// Best-effort check for an obfs4proxy binary. The frontend uses this
-/// to warn the user when bridges that need obfs4 won't actually work.
+/// Best-effort check for an obfs4-compatible pluggable-transport binary
+/// (either bundled `lyrebird` or system `obfs4proxy`). The frontend
+/// uses this to warn the user when bridges that need obfs4 won't work.
 #[tauri::command]
-pub fn tor_has_obfs4proxy() -> bool {
-    find_obfs4proxy().is_some()
+pub fn tor_has_obfs4proxy(app: AppHandle) -> bool {
+    find_obfs4proxy(&app).is_some()
 }
 
 /// Read the hidden-service key files and return them as a base64-encoded

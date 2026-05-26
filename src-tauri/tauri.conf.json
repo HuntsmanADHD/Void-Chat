@@ -36,6 +36,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": [
+      "binaries/tor-runtime"
+    ],
+    "shortDescription": "Privacy-first desktop messenger over Tor hidden services",
+    "longDescription": "Void Chat routes everything through Tor hidden services. Run it locally; your friends reach you at a .onion address. No accounts, no email, no message history. Ephemeral identities per browser tab.",
+    "copyright": "© 2026 HuntsmanADHD. MIT licensed. Bundled Tor © The Tor Project (https://www.torproject.org).",
+    "category": "SocialNetworking",
     "android": {
       "debugApplicationIdSuffix": ".debug"
     }

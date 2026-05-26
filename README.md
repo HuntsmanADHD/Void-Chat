@@ -19,8 +19,9 @@ No accounts. No email. No password. No history. Every browser tab generates a fr
    - [3. Install Node 25 and Yarn 4](#3-install-node-25-and-yarn-4)
    - [4. Clone the repo](#4-clone-the-repo)
    - [5. Install the JS dependencies](#5-install-the-js-dependencies)
-   - [6. Create the SQLite database](#6-create-the-sqlite-database)
-   - [7. Launch the app](#7-launch-the-app)
+   - [6. Fetch the bundled Tor runtime](#6-fetch-the-bundled-tor-runtime)
+   - [7. Create the SQLite database](#7-create-the-sqlite-database)
+   - [8. Launch the app](#8-launch-the-app)
 3. [What happens on first launch](#what-happens-on-first-launch)
 4. [Inviting friends over Tor](#inviting-friends-over-tor)
 5. [Joining someone else's chat](#joining-someone-elses-chat)
@@ -58,13 +59,13 @@ You'll install five things — system libraries, Rust, Node, the repo, and the d
 
 ### 1. Install the OS-level prerequisites
 
-Void Chat is a [Tauri 2](https://tauri.app) desktop app. Tauri uses your OS's native webview, plus a few system libraries for things like image rendering. It also needs `tor` itself on your `PATH` for the hidden service.
+Void Chat is a [Tauri 2](https://tauri.app) desktop app. Tauri uses your OS's native webview, plus a few system libraries for things like image rendering. Tor itself is **downloaded by the build** (step 6), so you don't need to install it system-wide.
 
 **Arch Linux:**
 ```bash
 sudo pacman -S --needed base-devel curl wget file openssl \
                         appmenu-gtk-module libappindicator-gtk3 \
-                        librsvg webkit2gtk-4.1 tor
+                        librsvg webkit2gtk-4.1
 ```
 
 **Ubuntu / Debian:**
@@ -72,27 +73,24 @@ sudo pacman -S --needed base-devel curl wget file openssl \
 sudo apt update
 sudo apt install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
                     libxdo-dev libssl-dev libayatana-appindicator3-dev \
-                    librsvg2-dev tor
+                    librsvg2-dev
 ```
 
 **Fedora:**
 ```bash
 sudo dnf install -y webkit2gtk4.1-devel openssl-devel curl wget file \
-                    libappindicator-gtk3-devel librsvg2-devel tor
+                    libappindicator-gtk3-devel librsvg2-devel
 ```
 
 **macOS:**
 ```bash
 xcode-select --install   # Apple's command-line tools, includes the C toolchain
-# Install Homebrew first if you don't have it: https://brew.sh
-brew install tor
 ```
 
 **Windows:**
 
 - Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (select the "Desktop development with C++" workload).
 - The Microsoft Edge WebView2 runtime is bundled with Windows 11; on Windows 10 install it from [Microsoft](https://developer.microsoft.com/microsoft-edge/webview2/).
-- Tor: download the [Tor Expert Bundle](https://www.torproject.org/download/tor/), extract it, and add the `tor` directory to your `PATH` so `tor --version` works in a fresh terminal.
 
 ### 2. Install Rust
 
@@ -151,7 +149,19 @@ yarn install
 
 First run pulls Tauri's Rust dependencies in addition to the npm packages, so it takes longer than a normal `yarn install` — anywhere from 1 to 5 minutes depending on your CPU.
 
-### 6. Create the SQLite database
+### 6. Fetch the bundled Tor runtime
+
+Void Chat ships with its own Tor — no system install needed. The runtime (`tor` + libevent + OpenSSL + obfs4-compatible `lyrebird`) is downloaded from the [Tor Project](https://www.torproject.org/) via a one-shot script:
+
+```bash
+./scripts/fetch-tor-binaries.sh
+```
+
+This pulls the official Tor Expert Bundle for your host platform (Linux x86_64/aarch64, macOS x86_64/arm64, or Windows x86_64) and installs it to `src-tauri/binaries/tor-runtime/`. The directory is gitignored — re-run the script to refresh, or override the version with `TOR_VERSION=14.5.x ./scripts/fetch-tor-binaries.sh`.
+
+`yarn tauri:build` ships this runtime inside the installer, so the resulting `.AppImage` / `.deb` / `.dmg` / `.msi` is fully self-contained. If you skip this step, `yarn tauri:dev` falls back to a system `tor` on your `PATH` (install via your package manager).
+
+### 7. Create the SQLite database
 
 The relay (`server/socket-server.ts`) needs an empty schema in `data/voidchat.db`. The repo ships an empty file; one command writes the tables into it:
 
@@ -161,7 +171,7 @@ DATABASE_URL='file:../data/voidchat.db' npx prisma db push --skip-generate
 
 You should see `Your database is now in sync with your Prisma schema`. You only do this once.
 
-### 7. Launch the app
+### 8. Launch the app
 
 ```bash
 yarn tauri:dev
@@ -285,7 +295,7 @@ If you see orphan `tor` processes lingering between runs (`pgrep -a tor` shows o
 - **Channel bandwidth is O(N).** A 50-person channel = your client encrypts 50 copies of every message. That's what zero-knowledge fan-out costs.
 - **Tor latency.** First-hop SOCKS handshake + 3-hop circuit + hidden-service rendezvous = real round-trip cost vs. local relay. Expect 200ms–2s per request for cross-host.
 - **Cross-host communities aren't surfaced in the sidebar yet.** Joining one navigates to it; reload the tab and you'll need to paste the invite again. (Tracked for the next iteration.)
-- **Bridges are supported but `obfs4proxy` is your responsibility.** Settings → "Tor bridges" takes pasted bridge lines and restarts Tor with them. If you use obfuscated (obfs4) bridges, install `obfs4proxy` first: `pacman -S obfs4proxy` / `apt install obfs4proxy` / `brew install obfs4proxy`. Get fresh bridges from <https://bridges.torproject.org>.
+- **Bridges work out of the box** if you used the bundled Tor runtime (`scripts/fetch-tor-binaries.sh`) — the Expert Bundle ships `lyrebird`, the modern obfs4proxy replacement. Settings → "Tor bridges" lets you paste lines from <https://bridges.torproject.org>. If you skipped the script and are using a system Tor, install `obfs4proxy` separately: `pacman -S obfs4proxy` / `apt install obfs4proxy` / `brew install obfs4proxy`.
 
 ---
 
