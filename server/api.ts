@@ -30,11 +30,27 @@ const CORS_RAW = process.env['CORS_ORIGIN'] ||
 const CORS_ALLOW_ANY = CORS_RAW.trim() === '*';
 const CORS_ORIGINS = new Set(CORS_RAW.split(',').map(o => o.trim()).filter(Boolean));
 
+/**
+ * .onion origins are unbounded (one per peer's hidden service) and there
+ * is no way to enumerate them ahead of time. The relay is only reachable
+ * through the hidden service it's bound to — never from the wider
+ * internet — so accepting any `*.onion` origin is safe: a peer who can
+ * reach the relay at all already proved they have the onion address.
+ */
+function isOnionOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    return url.hostname.endsWith('.onion');
+  } catch {
+    return false;
+  }
+}
+
 function applyCors(req: IncomingMessage, res: ServerResponse): void {
   const origin = req.headers.origin || '';
   if (CORS_ALLOW_ANY) {
     res.setHeader('Access-Control-Allow-Origin', origin || '*');
-  } else if (CORS_ORIGINS.has(origin)) {
+  } else if (CORS_ORIGINS.has(origin) || isOnionOrigin(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
   }
   res.setHeader('Vary', 'Origin');

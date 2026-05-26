@@ -11,8 +11,8 @@
     "socket": "tsx server/socket-server.ts",
     "dev:all": "concurrently \"yarn dev\" \"yarn socket\"",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:dev": "WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 tauri dev",
+    "tauri:build": "WEBKIT_DISABLE_DMABUF_RENDERER=1 tauri build"
   },
   "dependenciesMeta": {
     "@prisma/client": {

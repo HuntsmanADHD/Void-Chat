@@ -370,17 +370,45 @@ export default function Dashboard() {
         onOpenNotifications={handleOpenNotifications}
         onOpenSearch={handleOpenSearch}
       >
-        {hasContent ? (
-          <div className="h-full overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent">
-            <CommunitiesSection
-              communities={communityData}
-              onSelectCommunity={handleSelectCommunity}
-            />
-            <RecentDMsSection dms={directMessages} onSelectDM={handleSelectDM} />
+        <div className="relative h-full">
+          <div
+            className="absolute pointer-events-none"
+            style={{
+              top: '5%',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              width: '70%',
+              height: '70%',
+              backgroundImage: 'url(/images/portal-ring.jpg)',
+              backgroundPosition: 'center',
+              backgroundRepeat: 'no-repeat',
+              backgroundSize: 'contain',
+              opacity: 0.25,
+            }}
+            aria-hidden="true"
+          />
+          <div
+            className="absolute inset-0 pointer-events-none"
+            style={{
+              background:
+                'radial-gradient(ellipse at center, transparent 0%, rgba(0,0,0,0.85) 75%)',
+            }}
+            aria-hidden="true"
+          />
+          <div className="relative z-10 h-full">
+            {hasContent ? (
+              <div className="h-full overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent">
+                <CommunitiesSection
+                  communities={communityData}
+                  onSelectCommunity={handleSelectCommunity}
+                />
+                <RecentDMsSection dms={directMessages} onSelectDM={handleSelectDM} />
+              </div>
+            ) : (
+              <WelcomeSection onCreateCommunity={() => setShowCreateModal(true)} />
+            )}
           </div>
-        ) : (
-          <WelcomeSection onCreateCommunity={() => setShowCreateModal(true)} />
-        )}
+        </div>
       </AppLayout>
       <CreateCommunityModal
         isOpen={showCreateModal}
