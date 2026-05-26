@@ -119,6 +119,21 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
     let (torrc_path, hs_dir) =
         write_torrc(&data_dir).map_err(|e| format!("could not write torrc: {e}"))?;
 
+    // If the hidden service has been created on a previous run, the
+    // hostname file already exists. Surface it to the frontend right
+    // away so the UI can show the onion address before bootstrap even
+    // starts — the address is stable across restarts (it's derived from
+    // hs_ed25519_secret_key), so this can't go stale.
+    if let Ok(existing_hostname) = read_hostname(&hs_dir) {
+        let state: tauri::State<'_, TorState> = app.state();
+        let mut status = state.status.lock().expect("tor status mutex poisoned");
+        status.hostname = Some(existing_hostname.clone());
+        let snapshot = status.clone();
+        drop(status);
+        log::info!("[tor] reusing existing hidden service: {existing_hostname}");
+        let _ = app.emit("tor://status", snapshot);
+    }
+
     let mut cmd = Command::new("tor");
     cmd.arg("-f")
         .arg(&torrc_path)

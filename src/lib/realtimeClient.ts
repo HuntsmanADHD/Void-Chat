@@ -103,6 +103,7 @@ class RealtimeClient {
   private session: Session | null = null;
   private state: ConnectionState = 'disconnected';
   private pendingNonce: string | null = null;
+  private currentUrl: string | null = null;
 
   private channels = new Map<string, ChannelEntry>();
   /**
@@ -122,17 +123,28 @@ class RealtimeClient {
   private stateListeners = new Set<StateListener>();
   private offlineDMListeners = new Set<OfflineDMListener>();
 
-  init(session: Session, url: string = resolveRelayUrl()): void {
+  init(session: Session, urlOverride?: string): void {
+    const url = urlOverride ?? resolveRelayUrl();
     const keypairChanged =
       this.session && this.session.boxPublicKey !== session.boxPublicKey;
     const nameChanged =
       this.session &&
       this.session.boxPublicKey === session.boxPublicKey &&
       this.session.displayName !== session.displayName;
+    const urlChanged = this.currentUrl !== null && this.currentUrl !== url;
 
     if (keypairChanged) {
       // Identity change — drop channel state too; the user is now somebody else.
       this.disconnect();
+    } else if (urlChanged) {
+      // Switching relays (e.g. user navigated from a local community to a
+      // remote one). Tear down the socket AND the channel rosters — the
+      // refCounts stay so when consumers re-join channels against the new
+      // relay, they reattach naturally. Peer cache is dropped too since
+      // box-key mappings from the old relay don't apply.
+      this.tearDownSocket();
+      this.channels.clear();
+      this.peerCache.clear();
     } else if (nameChanged) {
       // Same identity, new display name. Kill the socket so we hand back a
       // fresh nonce + announce on reconnect; keep channel refCounts so the
@@ -150,6 +162,7 @@ class RealtimeClient {
     });
     if (this.socket) return;
 
+    this.currentUrl = url;
     this.setState('connecting');
     this.socket = ioClient(url, {
       transports: ['websocket'],

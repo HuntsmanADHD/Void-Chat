@@ -15,6 +15,9 @@ import { CommunityPasswordPrompt } from '@/components/community/CommunityPasswor
 import { setCommunityPassword } from '@/lib/communityPasswordStore';
 import { OnboardingModal, hasSeenOnboarding } from '@/components/onboarding/OnboardingModal';
 import { apiUrl } from '@/lib/relayBase';
+import { parseInvite } from '@/lib/invite';
+import { useTorStatus } from '@/hooks/useTorStatus';
+import { setCommunityHost } from '@/lib/communityHostStore';
 import type { Community, DirectMessage, CurrentUser } from '@/components/layout/Sidebar';
 
 function truncatePublicId(id: string, chars = 4): string {
@@ -139,6 +142,7 @@ export default function Dashboard() {
   const isAuthenticated = isReady;
   const api = useApi();
   const { success: showSuccess, error: showError } = useToast();
+  const tor = useTorStatus();
 
   const [showOnboarding, setShowOnboarding] = useState(false);
   useEffect(() => {
@@ -253,28 +257,46 @@ export default function Dashboard() {
 
   const handleJoinCommunity = useCallback(
     async (data: JoinCommunityFormData): Promise<string | null> => {
-      const code = data.inviteCode.trim();
-      if (!code) return 'Invite code is required';
+      const parsed = parseInvite(data.inviteCode);
+      if (!parsed) return 'Invalid invite code';
+      const { communityId, onion } = parsed;
+
+      // Decide where this community lives. If the invite carries a
+      // remote .onion (and it isn't our own), route this join through
+      // the Tor forward proxy. The host mapping is persisted so all
+      // future visits to this community keep using the same relay.
+      const isRemote = !!(onion && tor.hostname && onion !== tor.hostname);
+      const verifyUrl = isRemote
+        ? `http://localhost:11811/o/${onion}/api/communities/${encodeURIComponent(communityId)}`
+        : apiUrl(`/api/communities/${encodeURIComponent(communityId)}`);
+
       try {
         const headers: Record<string, string> = {};
         if (data.password) headers['x-community-password'] = data.password;
-        const res = await fetch(apiUrl(`/api/communities/${encodeURIComponent(code)}`), { headers });
-        if (res.status === 404) return 'Invite code not found';
+        const res = await fetch(verifyUrl, { headers });
+        if (res.status === 404) return 'Invite code not found on host';
         if (res.status === 401) {
           return data.password
             ? 'Wrong password for this community'
             : 'This community is private — enter the password';
         }
-        if (!res.ok) return 'Could not reach the server';
-        if (data.password) setCommunityPassword(code, data.password);
+        if (!res.ok) {
+          return isRemote
+            ? 'Could not reach the host onion (is Tor bootstrapped? is the host online?)'
+            : 'Could not reach the server';
+        }
+        // Persist the host mapping BEFORE storing the password — pages
+        // that read this community will then route correctly.
+        setCommunityHost(communityId, isRemote ? onion : null);
+        if (data.password) setCommunityPassword(communityId, data.password);
         setShowCreateModal(false);
-        navigate(`/app/community/${code}`);
+        navigate(`/app/community/${communityId}`);
         return null;
       } catch {
-        return 'Network error';
+        return isRemote ? 'Network error dialing onion (Tor may still be bootstrapping)' : 'Network error';
       }
     },
-    [navigate],
+    [navigate, tor.hostname],
   );
 
   const handleCreateCommunity = useCallback(

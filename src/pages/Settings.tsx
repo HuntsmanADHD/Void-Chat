@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Check, Copy, Eye, Key, Shield, Trash2 } from 'lucide-react';
+import { ArrowLeft, Check, Copy, Eye, Globe, Key, Shield, Trash2 } from 'lucide-react';
 import { useSession } from '@/hooks/useSession';
 import { destroyActiveSession } from '@/lib/messageStore';
+import { useTorStatus } from '@/hooks/useTorStatus';
 
 function SettingsSection({
   title,
@@ -77,6 +78,7 @@ function InfoRow({
 export default function Settings() {
   const navigate = useNavigate();
   const { session, displayName, setDisplayName, isReady } = useSession();
+  const tor = useTorStatus();
   const [draftName, setDraftName] = useState(displayName);
 
   useEffect(() => setDraftName(displayName), [displayName]);
@@ -144,6 +146,49 @@ export default function Settings() {
           <p className="mt-3 text-xs text-zinc-500">
             Display names are not unique and not authenticated. Anyone can pick the same name.
           </p>
+        </SettingsSection>
+
+        <SettingsSection
+          title="Hidden service"
+          description={
+            tor.available
+              ? 'Your inbound .onion address. Share it with peers so they can reach you over Tor.'
+              : 'Tor is only available in the desktop app.'
+          }
+          icon={Globe}
+        >
+          {tor.available ? (
+            tor.hostname ? (
+              <div className="space-y-1">
+                <InfoRow label="Onion address" value={tor.hostname} copyable monospace />
+                <InfoRow label="Bootstrap" value="100% — ready" />
+              </div>
+            ) : tor.error ? (
+              <div className="p-4 bg-red-900/20 border border-red-800/50 rounded-lg">
+                <p className="text-sm text-red-300">{tor.error}</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-zinc-400">Bootstrapping…</span>
+                  <span className="text-zinc-300 tabular-nums">{tor.bootstrapPct}%</span>
+                </div>
+                <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-zinc-500 to-zinc-300 transition-all duration-300"
+                    style={{ width: `${tor.bootstrapPct}%` }}
+                  />
+                </div>
+                <p className="text-xs text-zinc-500">
+                  First start takes 30–60 seconds while Tor downloads consensus and builds circuits.
+                </p>
+              </div>
+            )
+          ) : (
+            <p className="text-sm text-zinc-500">
+              Run the desktop build (<code>yarn tauri:dev</code>) to get a hidden service.
+            </p>
+          )}
         </SettingsSection>
 
         <SettingsSection

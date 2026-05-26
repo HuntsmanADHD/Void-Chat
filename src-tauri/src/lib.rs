@@ -1,3 +1,4 @@
+mod proxy;
 mod tor;
 
 use tauri::{Manager, RunEvent};
@@ -19,6 +20,13 @@ pub fn run() {
             // and surfaced via `tor://status` events; we don't block startup.
             if let Err(e) = tor::start(app.handle()) {
                 log::warn!("tor failed to start: {e}");
+            }
+            // Start the localhost forward proxy that lets the frontend
+            // reach remote .onion relays via SOCKS5 through Tor. Same
+            // failure mode: log and continue — proxy unavailability just
+            // means cross-host joins won't work this session.
+            if let Err(e) = proxy::start() {
+                log::warn!("onion proxy failed to start: {e}");
             }
             Ok(())
         })

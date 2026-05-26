@@ -18,7 +18,9 @@ import {
 import { CommunityPasswordPrompt } from '@/components/community/CommunityPasswordPrompt';
 import { useToast } from '@/components/ui/Toast';
 import { useBackdropClose } from '@/hooks/useBackdropClose';
-import { apiUrl } from '@/lib/relayBase';
+import { apiUrl, apiUrlFor, relayBaseFor } from '@/lib/relayBase';
+import { useTorStatus } from '@/hooks/useTorStatus';
+import { formatInvite } from '@/lib/invite';
 import type { Channel as ChannelType, Community, CurrentUser } from '@/components/layout/Sidebar';
 import type { Member } from '@/components/layout/MemberList';
 
@@ -48,6 +50,7 @@ export default function Channel() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const { success: toastSuccess, error: toastError } = useToast();
+  const tor = useTorStatus();
   const deleteConfirmBackdrop = useBackdropClose(
     () => setShowDeleteConfirm(false),
     showDeleteConfirm && !isDeleting,
@@ -75,6 +78,7 @@ export default function Channel() {
 
   const { joinChannel, leaveChannel, sendChannelMessage, isReady: isRealtimeReady } = useRealtime({
     onChannelMessage: handleChannelMessage,
+    relayUrl: relayBaseFor(communityId),
   });
 
   const roster = useChannelRoster(channelId);
@@ -85,7 +89,7 @@ export default function Channel() {
     try {
       const authHeaders = communityAuthHeaders(communityId);
       const [channelsRes, allRes] = await Promise.all([
-        fetch(apiUrl(`/api/communities/${communityId}/channels`), { headers: authHeaders }),
+        fetch(apiUrlFor(communityId, `/api/communities/${communityId}/channels`), { headers: authHeaders }),
         fetch(apiUrl('/api/communities')),
       ]);
       if (channelsRes.status === 401) {
@@ -127,7 +131,7 @@ export default function Channel() {
       setPwSubmitting(true);
       setPwError(null);
       try {
-        const res = await fetch(apiUrl(`/api/communities/${communityId}`), {
+        const res = await fetch(apiUrlFor(communityId, `/api/communities/${communityId}`), {
           headers: { 'x-community-password': password },
         });
         if (res.status === 401) {
@@ -155,20 +159,22 @@ export default function Channel() {
   const handleCopyInvite = useCallback(async () => {
     if (typeof window === 'undefined') return;
     try {
-      await navigator.clipboard.writeText(communityId);
+      const invite = formatInvite(communityId, tor.hostname);
+      await navigator.clipboard.writeText(invite);
       const isPrivate = getCommunityPassword(communityId) !== null;
+      const baseMsg = tor.hostname ? 'Invite code copied (includes your .onion)' : 'Invite code copied (host onion not ready yet)';
       toastSuccess(
-        isPrivate ? 'Invite code copied — share the password separately' : 'Invite code copied',
+        isPrivate ? `${baseMsg} — share the password separately` : baseMsg,
       );
     } catch {
       toastError('Could not access the clipboard');
     }
-  }, [communityId, toastSuccess, toastError]);
+  }, [communityId, tor.hostname, toastSuccess, toastError]);
 
   const handleDeleteCommunity = useCallback(async () => {
     setIsDeleting(true);
     try {
-      const res = await fetch(apiUrl(`/api/communities/${communityId}`), {
+      const res = await fetch(apiUrlFor(communityId, `/api/communities/${communityId}`), {
         method: 'DELETE',
         headers: communityAuthHeaders(communityId),
       });

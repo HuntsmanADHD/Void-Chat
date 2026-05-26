@@ -18,11 +18,13 @@ import {
 import { CommunityPasswordPrompt } from '@/components/community/CommunityPasswordPrompt';
 import { useToast } from '@/components/ui/Toast';
 import { useBackdropClose } from '@/hooks/useBackdropClose';
-import { apiUrl } from '@/lib/relayBase';
+import { apiUrl, apiUrlFor, relayBaseFor } from '@/lib/relayBase';
 import type { Channel, Community as CommunityListItem, CurrentUser } from '@/components/layout/Sidebar';
 import type { Member } from '@/components/layout/MemberList';
 import { UserProfileModal, type UserProfileData } from '@/components/ui';
 import { CreateChannelModal, type CreateChannelFormData } from '@/components/community/CreateChannelModal';
+import { useTorStatus } from '@/hooks/useTorStatus';
+import { formatInvite } from '@/lib/invite';
 
 interface CommunityDetail {
   id: string;
@@ -46,6 +48,7 @@ export default function Community() {
   const { session, isReady } = useSession();
   const publicId = session?.signingPublicKey ?? '';
   const { success: toastSuccess, error: toastError } = useToast();
+  const tor = useTorStatus();
 
   const [community, setCommunity] = useState<CommunityDetail | null>(null);
   const [channels, setChannels] = useState<ChannelDetail[]>([]);
@@ -91,6 +94,7 @@ export default function Community() {
 
   const { joinChannel, leaveChannel, sendChannelMessage, isReady: isRealtimeReady } = useRealtime({
     onChannelMessage: handleChannelMessage,
+    relayUrl: relayBaseFor(communityId),
   });
 
   const roster = useChannelRoster(activeChannelId);
@@ -101,8 +105,8 @@ export default function Community() {
     try {
       const authHeaders = communityAuthHeaders(communityId);
       const [communityRes, channelsRes, allRes] = await Promise.all([
-        fetch(apiUrl(`/api/communities/${communityId}`), { headers: authHeaders }),
-        fetch(apiUrl(`/api/communities/${communityId}/channels`), { headers: authHeaders }),
+        fetch(apiUrlFor(communityId, `/api/communities/${communityId}`), { headers: authHeaders }),
+        fetch(apiUrlFor(communityId, `/api/communities/${communityId}/channels`), { headers: authHeaders }),
         fetch(apiUrl('/api/communities')),
       ]);
       if (communityRes.status === 401) {
@@ -259,7 +263,7 @@ export default function Community() {
       setPwSubmitting(true);
       setPwError(null);
       try {
-        const res = await fetch(apiUrl(`/api/communities/${communityId}`), {
+        const res = await fetch(apiUrlFor(communityId, `/api/communities/${communityId}`), {
           headers: { 'x-community-password': password },
         });
         if (res.status === 401) {
@@ -287,20 +291,25 @@ export default function Community() {
   const handleCopyInvite = useCallback(async () => {
     if (typeof window === 'undefined') return;
     try {
-      await navigator.clipboard.writeText(communityId);
+      // Format: `<communityId>@<onion>` so the joiner knows what host to
+      // dial over Tor. Falls back to bare ID if our hidden service hasn't
+      // bootstrapped yet — same-host joins still work in that case.
+      const invite = formatInvite(communityId, tor.hostname);
+      await navigator.clipboard.writeText(invite);
       const isPrivate = getCommunityPassword(communityId) !== null;
+      const baseMsg = tor.hostname ? 'Invite code copied (includes your .onion)' : 'Invite code copied (host onion not ready yet)';
       toastSuccess(
-        isPrivate ? 'Invite code copied — share the password separately' : 'Invite code copied',
+        isPrivate ? `${baseMsg} — share the password separately` : baseMsg,
       );
     } catch {
       toastError('Could not access the clipboard');
     }
-  }, [communityId, toastSuccess, toastError]);
+  }, [communityId, tor.hostname, toastSuccess, toastError]);
 
   const handleDeleteCommunity = useCallback(async () => {
     setIsDeleting(true);
     try {
-      const res = await fetch(apiUrl(`/api/communities/${communityId}`), {
+      const res = await fetch(apiUrlFor(communityId, `/api/communities/${communityId}`), {
         method: 'DELETE',
         headers: communityAuthHeaders(communityId),
       });
@@ -329,7 +338,7 @@ export default function Community() {
       setIsCreatingChannel(true);
       setCreateChannelError(null);
       try {
-        const response = await fetch(apiUrl(`/api/communities/${communityId}/channels`), {
+        const response = await fetch(apiUrlFor(communityId, `/api/communities/${communityId}/channels`), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...communityAuthHeaders(communityId) },
           body: JSON.stringify({

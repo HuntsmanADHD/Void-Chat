@@ -30,6 +30,10 @@ export interface UseRealtimeOptions {
   onDMMessage?: (msg: DecryptedDMMessage) => void;
   /** Called when a DM send failed because the recipient is offline. */
   onDMOffline?: (recipientBoxPublicKey: string) => void;
+  /** Override the relay base URL. Pages that operate on a remote-hosted
+   *  community pass the proxy URL (`http://localhost:11811/o/<onion>`)
+   *  so socket.io dials through Tor. Falls back to the local relay. */
+  relayUrl?: string;
 }
 
 export interface UseRealtimeReturn {
@@ -59,10 +63,14 @@ export function useRealtime(options: UseRealtimeOptions = {}): UseRealtimeReturn
   offlineCbRef.current = options.onDMOffline;
 
   // Initialize the singleton when the session becomes available.
+  // If `relayUrl` changes (e.g. the user navigates from a local community
+  // to a remote one), the client tears down the old socket and rebuilds
+  // against the new endpoint. The session identity is preserved across
+  // that swap so we don't burn a fresh keypair every navigation.
   useEffect(() => {
     if (!session) return;
-    client.init(session);
-  }, [client, session]);
+    client.init(session, options.relayUrl);
+  }, [client, session, options.relayUrl]);
 
   // Mirror connection state into React state so consumers re-render.
   useEffect(() => {
