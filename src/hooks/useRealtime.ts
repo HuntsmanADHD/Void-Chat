@@ -1,5 +1,3 @@
-'use client';
-
 /**
  * Thin React surface over the module-level realtime client.
  *

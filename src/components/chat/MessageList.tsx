@@ -1,5 +1,3 @@
-'use client';
-
 import React, { useRef, useEffect, useCallback, useMemo, useState } from 'react';
 import { Message, type MessageData } from './Message';
 

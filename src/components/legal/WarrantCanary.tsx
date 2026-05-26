@@ -1,5 +1,3 @@
-'use client';
-
 import { useState } from 'react';
 
 /**
@@ -12,11 +10,10 @@ import { useState } from 'react';
  * users that they have NOT received certain types of legal requests.
  * If the canary disappears, it may indicate that such a request has been received.
  *
- * To disable the canary, set NEXT_PUBLIC_WARRANT_CANARY_ACTIVE=false in .env
+ * To disable the canary, set VITE_WARRANT_CANARY_ACTIVE=false in .env
  */
 
-// The canary is active by default - only disable if legally required
-const CANARY_ACTIVE = process.env.NEXT_PUBLIC_WARRANT_CANARY_ACTIVE !== 'false';
+const CANARY_ACTIVE = import.meta.env.VITE_WARRANT_CANARY_ACTIVE !== 'false';
 
 // Last verified date - update this when you review/renew the canary
 const LAST_VERIFIED = '2024-12-02';

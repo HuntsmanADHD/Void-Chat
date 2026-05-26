@@ -1,5 +1,3 @@
-'use client';
-
 /**
  * Thin convenience hook exposing the session's box public key + a
  * ready flag, useful for UI that wants to display the key or gate

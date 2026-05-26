@@ -1,5 +1,3 @@
-'use client';
-
 /**
  * Per-session IndexedDB store for received + sent plaintext messages.
  *

@@ -1,6 +1,4 @@
-'use client';
-
-import Link from 'next/link';
+import { Link } from 'react-router-dom';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ChevronLeft,
@@ -148,7 +146,7 @@ function StepEncryption() {
       <MiniEncryptionDemo />
       <p className="text-xs text-zinc-500">
         Want more depth?{' '}
-        <Link href="/how-it-works" className="underline text-zinc-300 hover:text-white">
+        <Link to="/how-it-works" className="underline text-zinc-300 hover:text-white">
           Read the full how-it-works
         </Link>
         .

@@ -1,5 +1,3 @@
-'use client';
-
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Lock } from 'lucide-react';
 import { useBackdropClose } from '@/hooks/useBackdropClose';

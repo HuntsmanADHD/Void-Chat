@@ -1,5 +1,3 @@
-'use client';
-
 import React, { useCallback, useEffect, useRef, useState, KeyboardEvent } from 'react';
 import { Droplets } from 'lucide-react';
 import { EmojiPicker } from './EmojiPicker';

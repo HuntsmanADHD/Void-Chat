@@ -1,6 +1,4 @@
-'use client';
-
-import Link from 'next/link';
+import { Link } from 'react-router-dom';
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowRight, Check, Copy, Eye, EyeOff, KeyRound, Sparkles } from 'lucide-react';
 import {
@@ -337,7 +335,7 @@ export function WashWidget({ compact = false }: WashWidgetProps) {
             Both halves in one place defeats the layer.
           </p>
           <p>
-            <Link href="/how-it-works" className="underline text-zinc-400 hover:text-white">
+            <Link to="/how-it-works" className="underline text-zinc-400 hover:text-white">
               How the chat encryption works
             </Link>
           </p>

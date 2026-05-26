@@ -1,8 +1,7 @@
 /**
- * Central exports for lib utilities. The Next API helpers were removed
- * in the Tauri-Tor pivot — community/channel CRUD now lives in the relay
- * (server/api.ts) and will move to Tauri Rust commands in Phase 3.
+ * Central exports for client-safe lib utilities. prisma is intentionally
+ * NOT re-exported here — it's server-only and would bundle into the browser
+ * if pulled through a barrel the React tree consumes.
  */
 
-export { prisma } from './prisma';
 export { formatPublicId, truncatePublicId } from './format';

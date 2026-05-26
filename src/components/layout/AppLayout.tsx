@@ -1,5 +1,3 @@
-'use client';
-
 import React, { useState, useCallback, ReactNode } from 'react';
 import { Sidebar, type Community, type Channel, type DirectMessage, type CurrentUser } from './Sidebar';
 import { Header, type HeaderUser } from './Header';

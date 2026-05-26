@@ -1,7 +1,4 @@
-'use client';
-
 import React, { useEffect, useRef, useState } from 'react';
-import Image from 'next/image';
 import {
   Plus,
   Hash,
@@ -150,7 +147,7 @@ export const Sidebar = React.memo(function Sidebar({
             tabIndex={0}
             aria-label="Direct Messages"
           >
-            <Image
+            <img
               src="/images/logo.png"
               alt="Void Chat"
               width={48}

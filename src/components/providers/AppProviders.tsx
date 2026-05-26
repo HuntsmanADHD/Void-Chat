@@ -1,5 +1,3 @@
-'use client';
-
 import { FC, ReactNode } from 'react';
 import { ToastProvider } from '@/components/ui/Toast';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';

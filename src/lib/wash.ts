@@ -1,5 +1,3 @@
-'use client';
-
 /**
  * "Wash" — a second, independent encryption layer for off-Void communication
  * or for hardening invite codes / community passwords. Deliberately uses a
