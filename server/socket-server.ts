@@ -560,6 +560,21 @@ io.on('connection', (socket: Socket) => {
       return;
     }
 
+    // Up-front size validation. Previously this loop silently `continue`d
+    // past any recipient with an oversized ciphertext and still ack'd
+    // `ok: true` to the sender — the H5 ack-gating then told the user
+    // the message went through when, for some recipients, it hadn't.
+    // Loud-reject the whole send instead. Matches DM_SEND's behavior
+    // and keeps the trust-the-ack invariant consistent across both
+    // channel and DM paths.
+    for (const rec of raw.recipients) {
+      if (rec.ciphertext.length > MAX_CIPHERTEXT_BYTES) {
+        sendError(socket, 'INVALID_PAYLOAD', 'recipient ciphertext too large');
+        respond(false, 'INVALID_PAYLOAD');
+        return;
+      }
+    }
+
     // Build the set of valid box pubkeys for this channel (one snapshot).
     // Filtering against the roster prevents the relay from being a
     // pubkey-presence oracle for arbitrary boxPublicKeys.
@@ -570,13 +585,11 @@ io.on('connection', (socket: Socket) => {
     const ts = Date.now();
 
     for (const rec of raw.recipients) {
-      if (
-        !rec ||
-        typeof rec.boxPublicKey !== 'string' ||
-        typeof rec.ciphertext !== 'string' ||
-        typeof rec.nonce !== 'string'
-      ) continue;
-      if (rec.ciphertext.length > MAX_CIPHERTEXT_BYTES) continue;
+      // Schema (CHANNEL_RECIPIENT_SCHEMA) already validated shape; the
+      // ciphertext-size pre-check above guarantees no oversize entries
+      // reach this loop. The skips below are for legitimate "not in
+      // this roster" or "echo to self" cases, which are silent by
+      // design — they're not delivery failures, just unaddressable.
       if (rec.boxPublicKey === session.boxPublicKey) continue; // don't echo to self
       if (!allowedBoxes.has(rec.boxPublicKey)) continue;
 

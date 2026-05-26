@@ -661,12 +661,19 @@ fn watch_stdout(
         let _ = app.emit("tor://status", snapshot);
     }
 
-    // Add ±500ms jitter to the backoff. Single-user desktop = no
-    // thundering-herd concern in practice, but cheap hygiene if we
-    // ever ship a multi-instance build (or two app windows somehow
-    // race the same Tor port). Uses the time component of the
-    // current nanos for randomness — cryptographic strength isn't
-    // needed here, just decorrelation between identical processes.
+    // Add symmetric ±500ms jitter to the backoff. Single-user desktop
+    // = no thundering-herd concern in practice, but cheap hygiene if
+    // we ever ship a multi-instance build (or two app windows race the
+    // same Tor port). Uses the time component of the current nanos for
+    // randomness — cryptographic strength isn't needed, just
+    // decorrelation between identical processes.
+    //
+    // Branch is necessary because Duration is unsigned: when jitter
+    // would shorten the wait we use saturating_sub, when it would
+    // lengthen it we add. Previous version used `jitter_ms - 500` via
+    // `u64::saturating_sub`, which collapsed the lower half of the
+    // range to zero (one-sided jitter, not symmetric — audit pt.4
+    // NEW-4).
     let jitter_ms: u64 = {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -674,7 +681,11 @@ fn watch_stdout(
             .unwrap_or(0);
         nanos % 1000
     };
-    let actual_backoff = RESTART_BACKOFF + Duration::from_millis(jitter_ms.saturating_sub(500));
+    let actual_backoff = if jitter_ms >= 500 {
+        RESTART_BACKOFF + Duration::from_millis(jitter_ms - 500)
+    } else {
+        RESTART_BACKOFF.saturating_sub(Duration::from_millis(500 - jitter_ms))
+    };
     log::info!(
         "[tor] auto-restarting in ~{}s (attempt {restart_count})",
         actual_backoff.as_secs()
