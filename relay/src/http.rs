@@ -197,10 +197,17 @@ fn build_cors(cfg: &Config) -> CorsLayer {
         HeaderName::from_static("x-community-password"),
     ];
 
+    // Audit pt6 debugging lesson: a 24-hour max-age means any
+    // preflight failure (during dev, after a breaking change, during
+    // a transient bug) gets cached by the WebView and "fixes" don't
+    // take effect for 24 hours of real wall-clock time — leading to
+    // an entire afternoon of chasing ghosts. 60 seconds is plenty
+    // in production (preflights are cheap; we're loopback-only) and
+    // closes the cache-poisoning footgun for dev.
     let cors = CorsLayer::new()
         .allow_methods(methods)
         .allow_headers(headers)
-        .max_age(Duration::from_secs(86400));
+        .max_age(Duration::from_secs(60));
 
     if cfg.cors_allow_any {
         cors.allow_origin(AllowOrigin::any())
