@@ -1,4 +1,5 @@
 mod proxy;
+mod relay;
 mod tor;
 
 use tauri::{Emitter, Manager, RunEvent};
@@ -7,6 +8,7 @@ use tauri::{Emitter, Manager, RunEvent};
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(tor::TorState::new())
+        .manage(relay::RelayState::new())
         .invoke_handler(tauri::generate_handler![
             tor::tor_status,
             tor::tor_onion,
@@ -31,6 +33,14 @@ pub fn run() {
             // the IPC, but the user sees the prompt and can decline,
             // turning any silent XSS-driven exfil into a noisy one.
             app.handle().plugin(tauri_plugin_dialog::init())?;
+            // Spawn the Rust relay sidecar before tor. Tor's hidden
+            // service maps 127.0.0.1:3001 → the relay; if the relay
+            // isn't listening when a client dials the onion, the
+            // first connect just fails. Bringing the relay up first
+            // closes that race.
+            if let Err(e) = relay::start(app.handle()) {
+                log::warn!("relay failed to start: {e}");
+            }
             // Spawn tor in the background. Failures are recorded in TorState
             // and surfaced via `tor://status` events; we don't block startup.
             if let Err(e) = tor::start(app.handle()) {
@@ -63,9 +73,11 @@ pub fn run() {
             // and leave it holding ports 19050/19051 across runs.
             let handle_for_signal = app.handle().clone();
             if let Err(e) = ctrlc::set_handler(move || {
-                log::info!("[shutdown] signal received, stopping tor child");
-                let state: tauri::State<'_, tor::TorState> = handle_for_signal.state();
-                tor::shutdown(&state);
+                log::info!("[shutdown] signal received, stopping relay + tor children");
+                let relay_state: tauri::State<'_, relay::RelayState> = handle_for_signal.state();
+                relay::shutdown(&relay_state);
+                let tor_state: tauri::State<'_, tor::TorState> = handle_for_signal.state();
+                tor::shutdown(&tor_state);
                 std::process::exit(0);
             }) {
                 log::warn!("could not install signal handler: {e}");
@@ -77,8 +89,10 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if let RunEvent::Exit = event {
-            let state: tauri::State<'_, tor::TorState> = app_handle.state();
-            tor::shutdown(&state);
+            let relay_state: tauri::State<'_, relay::RelayState> = app_handle.state();
+            relay::shutdown(&relay_state);
+            let tor_state: tauri::State<'_, tor::TorState> = app_handle.state();
+            tor::shutdown(&tor_state);
         }
     });
 }
