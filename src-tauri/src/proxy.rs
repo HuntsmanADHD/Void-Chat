@@ -156,14 +156,46 @@ fn runtime() -> &'static Runtime {
 /// `TcpListener::from_std`.
 pub fn start() -> std::io::Result<()> {
     init_proxy_token();
-    let std_listener = std::net::TcpListener::bind(("127.0.0.1", PROXY_PORT))?;
-    std_listener.set_nonblocking(true)?;
-    log::info!("[onion-proxy] listening on 127.0.0.1:{PROXY_PORT}");
+    // Bind BOTH IPv4 and IPv6 loopback. WebKit-family browsers (which
+    // Tauri uses on every platform — WKWebView on macOS, WebKitGTK on
+    // Linux, WebView2 on Windows) resolve `localhost` to both and
+    // typically try `::1` first. If we only listen on 127.0.0.1, the
+    // browser gets "connection refused" on the IPv6 attempt and
+    // surfaces a network failure to JS that LOOKS like a CORS error
+    // (the browser synthesizes "Status: 400" + "not allowed by ACAO"
+    // when it can't get a real response). curl falls back to IPv4
+    // gracefully; browsers often don't. Audit: cross-host join from a
+    // Fedora VM was hitting this exact failure mode end-to-end.
+    //
+    // Keep this loopback-only (no 0.0.0.0 / [::]) — same trust
+    // boundary as before. Both listeners share the same token gate,
+    // accept loop, semaphore, and lifetime cap.
+    init_proxy_token();
+    let v4 = std::net::TcpListener::bind(("127.0.0.1", PROXY_PORT))?;
+    v4.set_nonblocking(true)?;
+    let v6 = std::net::TcpListener::bind(("::1", PROXY_PORT)).ok();
+    if let Some(l) = &v6 {
+        l.set_nonblocking(true)?;
+    }
+    log::info!(
+        "[onion-proxy] listening on 127.0.0.1:{PROXY_PORT}{}",
+        if v6.is_some() { " and [::1]" } else { " (IPv6 bind failed; IPv4 only)" }
+    );
     let rt = runtime();
     rt.handle().spawn(async move {
-        match TcpListener::from_std(std_listener) {
-            Ok(listener) => accept_loop(listener).await,
-            Err(e) => log::error!("[onion-proxy] failed to adopt listener: {e}"),
+        match TcpListener::from_std(v4) {
+            Ok(listener) => {
+                tokio::spawn(accept_loop(listener));
+            }
+            Err(e) => log::error!("[onion-proxy] failed to adopt IPv4 listener: {e}"),
+        }
+        if let Some(l) = v6 {
+            match TcpListener::from_std(l) {
+                Ok(listener) => {
+                    tokio::spawn(accept_loop(listener));
+                }
+                Err(e) => log::error!("[onion-proxy] failed to adopt IPv6 listener: {e}"),
+            }
         }
     });
     Ok(())
