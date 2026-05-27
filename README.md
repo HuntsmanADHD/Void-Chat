@@ -77,9 +77,11 @@ sudo apt install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
 
 **Fedora:**
 ```bash
-sudo dnf install -y webkit2gtk4.1-devel openssl-devel curl wget file \
+sudo dnf install -y gcc gcc-c++ make \
+                    webkit2gtk4.1-devel openssl-devel curl wget file \
                     libappindicator-gtk3-devel librsvg2-devel
 ```
+(`gcc gcc-c++ make` is Fedora's equivalent of Ubuntu's `build-essential` — Rust needs a C linker. Fedora doesn't bundle one by default, so omitting these gives a `linker 'cc' not found` error the first time cargo compiles a crate.)
 
 **macOS:**
 ```bash
@@ -168,7 +170,7 @@ Void Chat ships with its own Tor — no system install needed. The runtime (`tor
 
 This pulls the official Tor Expert Bundle for your host platform (Linux x86_64/aarch64, macOS x86_64/arm64, or Windows x86_64) and installs it to `src-tauri/binaries/tor-runtime/`. The directory is gitignored — re-run the script to refresh, or override the version with `TOR_VERSION=14.5.x ./scripts/fetch-tor-binaries.sh`.
 
-In v0.1, the bundled Tor is used by the **source-run** flow (`yarn tauri:dev`). If you skip the fetch script, the runtime falls back to a system `tor` on your `PATH` (install via your package manager).
+> **This step is required to build, not just to run.** `tauri.conf.json` lists `binaries/tor-runtime` under `bundle.resources`, and Tauri's build script refuses to compile if a listed resource path doesn't exist on disk. Skipping this step gives you a confusing `resource path 'binaries/tor-runtime' doesn't exist` failure deep inside the cargo build. (The runtime separately falls back to a system `tor` on your `PATH` if the bundled one isn't started — but that's a runtime fallback, not a build one.)
 
 > **About installers:** `yarn tauri:build` produces `.deb` / `.rpm` artifacts that bundle the frontend, the Rust shell, the Rust relay (now a sidecar), and the Tor binary into a single self-contained installer. v0.1 is still tagged a **source-run release** while the bundled installer gets wider testing — clone, install deps, `yarn tauri:dev` is the supported path. The artifacts produced by `yarn tauri:build` are now self-contained; if you choose to distribute them, expect them to behave as a v0.1.x preview.
 
