@@ -20,6 +20,7 @@ mod auth;
 mod config;
 mod db;
 mod http;
+mod realtime;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -47,7 +48,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("database ready");
 
     let state = http::AppState::new(db);
-    let app = http::router(state, &cfg);
+    let rt_state = realtime::RealtimeState::new();
+    let (io_layer, _io) = realtime::build(rt_state);
+    let app = http::router(state, &cfg).layer(io_layer);
 
     // Pinned to loopback. The relay is only ever reached via either
     // the local Tauri renderer or the local onion proxy forwarding
