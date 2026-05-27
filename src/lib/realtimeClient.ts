@@ -205,6 +205,29 @@ function resolveRelayUrl(): string {
   return `http://localhost:${RELAY_PORT}`;
 }
 
+/**
+ * Split a relay URL into the `(origin, socket.io path)` pair that
+ * socket.io-client wants. For local (`http://localhost:3001`) the
+ * path is the default `/socket.io/`; for cross-host
+ * (`http://localhost:11811/o/<token>/<onion>`) the path becomes
+ * `/o/<token>/<onion>/socket.io/` so the proxy can route by onion.
+ *
+ * Falls back to the input string + default path if URL parsing fails
+ * — better to attempt the connect than refuse silently.
+ */
+function splitSocketIoUrl(url: string): { origin: string; path: string } {
+  try {
+    const u = new URL(url);
+    const base = u.pathname.replace(/\/+$/, '');
+    return {
+      origin: `${u.protocol}//${u.host}`,
+      path: `${base}/socket.io/`,
+    };
+  } catch {
+    return { origin: url, path: '/socket.io/' };
+  }
+}
+
 class RealtimeClient {
   private socket: Socket | null = null;
   private session: Session | null = null;
@@ -278,8 +301,17 @@ class RealtimeClient {
 
     this.currentUrl = url;
     this.setState('connecting');
-    this.socket = ioClient(url, {
+    // socket.io always appends its own path (`/socket.io/?...`) to the
+    // host:port of the URL — it ignores any pathname you supply. For
+    // cross-host (`http://localhost:11811/o/<token>/<onion>`) we need
+    // the proxy prefix to land in the wire path, otherwise the proxy
+    // sees a bare `/socket.io/` and can't tell which onion to dial.
+    // Fix: extract the pathname and feed it via the `path` option,
+    // which socket.io DOES respect.
+    const { origin, path: socketPath } = splitSocketIoUrl(url);
+    this.socket = ioClient(origin, {
       transports: ['websocket'],
+      path: socketPath,
       reconnection: true,
       reconnectionDelay: 500,
       reconnectionDelayMax: 5_000,
