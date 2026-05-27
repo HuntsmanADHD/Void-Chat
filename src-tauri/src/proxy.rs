@@ -168,15 +168,12 @@ pub fn start() -> std::io::Result<()> {
     // Fedora VM was hitting this exact failure mode end-to-end.
     //
     // Keep this loopback-only (no 0.0.0.0 / [::]) — same trust
-    // boundary as before. Both listeners share the same token gate,
-    // accept loop, semaphore, and lifetime cap.
-    init_proxy_token();
-    let v4 = std::net::TcpListener::bind(("127.0.0.1", PROXY_PORT))?;
-    v4.set_nonblocking(true)?;
-    let v6 = std::net::TcpListener::bind(("::1", PROXY_PORT)).ok();
-    if let Some(l) = &v6 {
-        l.set_nonblocking(true)?;
-    }
+    // boundary as before. Each listener gets SO_REUSEADDR so a
+    // Ctrl+C / restart doesn't lose the bind to TIME_WAIT. The IPv6
+    // listener gets IPV6_V6ONLY so it doesn't try to claim IPv4 (we
+    // have a separate IPv4 listener for that).
+    let v4 = bind_loopback("127.0.0.1:0".replace(":0", &format!(":{PROXY_PORT}")), false)?;
+    let v6 = bind_loopback(format!("[::1]:{PROXY_PORT}"), true).ok();
     log::info!(
         "[onion-proxy] listening on 127.0.0.1:{PROXY_PORT}{}",
         if v6.is_some() { " and [::1]" } else { " (IPv6 bind failed; IPv4 only)" }
@@ -199,6 +196,112 @@ pub fn start() -> std::io::Result<()> {
         }
     });
     Ok(())
+}
+
+/// Bind a loopback TCP listener with `SO_REUSEADDR` set so the next
+/// process startup doesn't collide with sockets still in TIME_WAIT.
+/// For IPv6, also set `IPV6_V6ONLY` so the listener doesn't try to
+/// shadow the separate IPv4 listener via dual-stack mapping.
+fn bind_loopback(addr_str: String, v6_only: bool) -> std::io::Result<std::net::TcpListener> {
+    use std::net::SocketAddr;
+    use std::str::FromStr;
+
+    let addr = SocketAddr::from_str(&addr_str)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("addr parse: {e}")))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::fd::FromRawFd;
+        let domain = if addr.is_ipv6() { libc::AF_INET6 } else { libc::AF_INET };
+        // SAFETY: socket()/setsockopt()/bind()/listen() are standard
+        // POSIX. We own the fd until we hand it to TcpListener.
+        let fd = unsafe { libc::socket(domain, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // RAII guard so an early return after this point still closes the fd.
+        struct FdGuard(libc::c_int);
+        impl Drop for FdGuard {
+            fn drop(&mut self) {
+                unsafe { libc::close(self.0); }
+            }
+        }
+        let guard = FdGuard(fd);
+
+        let on: libc::c_int = 1;
+        let r = unsafe {
+            libc::setsockopt(
+                fd, libc::SOL_SOCKET, libc::SO_REUSEADDR,
+                &on as *const _ as *const libc::c_void,
+                std::mem::size_of_val(&on) as libc::socklen_t,
+            )
+        };
+        if r != 0 { return Err(std::io::Error::last_os_error()); }
+
+        if addr.is_ipv6() && v6_only {
+            let r = unsafe {
+                libc::setsockopt(
+                    fd, libc::IPPROTO_IPV6, libc::IPV6_V6ONLY,
+                    &on as *const _ as *const libc::c_void,
+                    std::mem::size_of_val(&on) as libc::socklen_t,
+                )
+            };
+            if r != 0 { return Err(std::io::Error::last_os_error()); }
+        }
+
+        // Build the sockaddr structures by hand and bind.
+        let bind_r = match addr {
+            SocketAddr::V4(v4) => {
+                let sa = libc::sockaddr_in {
+                    sin_family: libc::AF_INET as libc::sa_family_t,
+                    sin_port: v4.port().to_be(),
+                    sin_addr: libc::in_addr { s_addr: u32::from(*v4.ip()).to_be() },
+                    sin_zero: [0; 8],
+                };
+                unsafe {
+                    libc::bind(
+                        fd,
+                        &sa as *const _ as *const libc::sockaddr,
+                        std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                    )
+                }
+            }
+            SocketAddr::V6(v6) => {
+                let sa = libc::sockaddr_in6 {
+                    sin6_family: libc::AF_INET6 as libc::sa_family_t,
+                    sin6_port: v6.port().to_be(),
+                    sin6_flowinfo: 0,
+                    sin6_addr: libc::in6_addr { s6_addr: v6.ip().octets() },
+                    sin6_scope_id: v6.scope_id(),
+                };
+                unsafe {
+                    libc::bind(
+                        fd,
+                        &sa as *const _ as *const libc::sockaddr,
+                        std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+                    )
+                }
+            }
+        };
+        if bind_r != 0 { return Err(std::io::Error::last_os_error()); }
+
+        let listen_r = unsafe { libc::listen(fd, 128) };
+        if listen_r != 0 { return Err(std::io::Error::last_os_error()); }
+
+        // Defuse the guard — TcpListener takes ownership now.
+        let raw = guard.0;
+        std::mem::forget(guard);
+        let listener = unsafe { std::net::TcpListener::from_raw_fd(raw) };
+        listener.set_nonblocking(true)?;
+        Ok(listener)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = v6_only;
+        let listener = std::net::TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
+        Ok(listener)
+    }
 }
 
 async fn accept_loop(listener: TcpListener) {
