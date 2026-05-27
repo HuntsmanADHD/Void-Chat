@@ -345,16 +345,29 @@ fn is_header_allowed(lower_line: &str) -> bool {
     //   - content-type / content-length: standard JSON request body
     //   - x-community-password: relay's auth gate for private
     //     communities AND delete-tokens (audit pt6 C2)
-    // Headers needed for transport / socket.io to work:
+    // CORS preflight: must pass through so the relay's CORS layer
+    // sees an OPTIONS as a preflight and responds with ACAO. Without
+    // these the browser silently fails every cross-host fetch.
+    //   - access-control-request-method
+    //   - access-control-request-headers
+    // Modern browser fetch metadata: not load-bearing for the relay,
+    // but stripping them breaks fetch in some webviews that expect
+    // their own headers to come back unchanged. Cheap to allow.
+    //   - sec-fetch-*
+    //   - dnt
+    // Transport / socket.io:
     //   - connection / upgrade / sec-websocket-*: WebSocket handshake
     //   - accept / accept-encoding / user-agent: standard fetch
     //   - origin / referer: needed for the relay's CORS check
     //   - cookie: socket.io may set its sid cookie; passing through
     //     keeps the cross-host session sticky
+    //   - if-modified-since / if-none-match: cache validation
     const ALLOWED_PREFIXES: &[&str] = &[
         "content-type:",
         "content-length:",
         "x-community-password:",
+        "access-control-request-method:",
+        "access-control-request-headers:",
         "accept:",
         "accept-encoding:",
         "accept-language:",
@@ -368,6 +381,13 @@ fn is_header_allowed(lower_line: &str) -> bool {
         "sec-websocket-version:",
         "sec-websocket-protocol:",
         "sec-websocket-extensions:",
+        "sec-fetch-mode:",
+        "sec-fetch-site:",
+        "sec-fetch-dest:",
+        "sec-fetch-user:",
+        "dnt:",
+        "if-modified-since:",
+        "if-none-match:",
         "pragma:",
         "cache-control:",
     ];
