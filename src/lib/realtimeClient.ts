@@ -19,7 +19,15 @@ import { io as ioClient, type Socket } from 'socket.io-client';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 
-import { MAX_PLAINTEXT_BYTES, openFromSender, sealForRecipient, signDM, verifyDM } from './encryption';
+import {
+  MAX_PLAINTEXT_BYTES,
+  openFromSender,
+  sealForRecipient,
+  signChannelJoin,
+  signDM,
+  verifyChannelJoin,
+  verifyDM,
+} from './encryption';
 import { appendChannel as storeAppendChannel, appendDM as storeAppendDM, setActiveSession } from './messageStore';
 import type { Session } from '@/types/session';
 import {
@@ -157,6 +165,28 @@ function verifyRosterMember(m: RosterMember): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Verify a roster member's per-channel join sig binds to THIS channel.
+ * Audit pt6 H8: without this, a malicious relay could replay a captured
+ * roster sig from one channel as a member of a different channel,
+ * making the user appear in a channel they never joined. The announce
+ * sig (above) only binds identity; this one binds identity → THIS
+ * channel.
+ *
+ * Members without a `joinSig` are dropped — rollout-phase compat is
+ * intentionally NOT relaxed because the threat the sig closes is real.
+ */
+function verifyMemberInChannel(channelId: string, m: RosterMember): boolean {
+  if (typeof m.joinSig !== 'string' || typeof m.joinTs !== 'number') return false;
+  return verifyChannelJoin({
+    channelId,
+    signingPublicKeyB58: m.signingPublicKey,
+    boxPublicKeyB58: m.boxPublicKey,
+    joinTs: m.joinTs,
+    sigB58: m.joinSig,
+  });
 }
 
 /**
@@ -358,8 +388,28 @@ class RealtimeClient {
     // mid-handshake the SESSION_ACK handler will replay every channel we've
     // got refs for, so a pre-ready join lands on reconnect for free.
     if (entry.refCount === 1 && this.state === 'ready' && this.socket) {
-      this.socket.emit(WIRE.CHANNEL_JOIN, { channelId });
+      this.emitJoin(this.socket, channelId);
     }
+  }
+
+  /**
+   * Build and emit a `channel:join` with a per-channel join sig.
+   * Audit pt6 H8: every join is signed `void/join/v1|<channelId>|...`
+   * by the joiner so a captured roster sig can't be replayed by a
+   * malicious relay into a different channel context.
+   */
+  private emitJoin(socket: Socket, channelId: string): void {
+    if (!this.session) return;
+    const joinTs = Date.now();
+    const joinSig = signChannelJoin({
+      channelId,
+      signingPublicKeyB58: this.session.signingPublicKey,
+      signingSecretKey: this.session.signingSecretKey,
+      boxPublicKeyB58: this.session.boxPublicKey,
+      joinTs,
+    });
+    if (!joinSig) return;
+    socket.emit(WIRE.CHANNEL_JOIN, { channelId, joinSig, joinTs });
   }
 
   leaveChannel(channelId: string): void {
@@ -494,9 +544,10 @@ class RealtimeClient {
       // uniform across every event.
       if (!safeParse(SessionAckSchema, rawIn, 'session:ack')) return;
       this.setState('ready');
-      // Replay channel joins (covers reconnects too).
+      // Replay channel joins (covers reconnects too) — each one with
+      // a fresh join sig binding the current session to the channel.
       for (const channelId of this.channels.keys()) {
-        socket.emit(WIRE.CHANNEL_JOIN, { channelId });
+        this.emitJoin(socket, channelId);
       }
     });
 
@@ -508,6 +559,7 @@ class RealtimeClient {
       entry.roster.clear();
       for (const m of parsed.members) {
         if (!verifyRosterMember(m as RosterMember)) continue;
+        if (!verifyMemberInChannel(parsed.channelId, m as RosterMember)) continue;
         entry.roster.set(m.boxPublicKey, m as RosterMember);
         this.rememberPeer(m as RosterMember);
       }
@@ -520,6 +572,7 @@ class RealtimeClient {
       const entry = this.channels.get(parsed.channelId);
       if (!entry) return;
       if (!verifyRosterMember(parsed.member as RosterMember)) return;
+      if (!verifyMemberInChannel(parsed.channelId, parsed.member as RosterMember)) return;
       entry.roster.set(parsed.member.boxPublicKey, parsed.member as RosterMember);
       this.rememberPeer(parsed.member as RosterMember);
       this.emitRoster(parsed.channelId);

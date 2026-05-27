@@ -251,10 +251,11 @@ struct CreateCommunityBody {
 async fn create_community(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(body): Json<CreateCommunityBody>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let ip = ip_key(&addr);
-    if let Err(retry) = state.rate_allowed(&format!("community-create:{ip}")) {
+    let bucket = rate_bucket_key(&addr, &headers);
+    if let Err(retry) = state.rate_allowed(&format!("community-create:{bucket}")) {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             format!("Rate limit exceeded. Retry after {retry} seconds"),
@@ -384,8 +385,8 @@ async fn delete_community(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let ip = ip_key(&addr);
-    if let Err(retry) = state.rate_allowed(&format!("community-delete:{ip}")) {
+    let bucket = rate_bucket_key(&addr, &headers);
+    if let Err(retry) = state.rate_allowed(&format!("community-delete:{bucket}")) {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             format!("Rate limit exceeded. Retry after {retry} seconds"),
@@ -450,8 +451,8 @@ async fn create_channel(
     headers: HeaderMap,
     Json(body): Json<CreateChannelBody>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let ip = ip_key(&addr);
-    if let Err(retry) = state.rate_allowed(&format!("channel-create:{ip}")) {
+    let bucket = rate_bucket_key(&addr, &headers);
+    if let Err(retry) = state.rate_allowed(&format!("channel-create:{bucket}")) {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             format!("Rate limit exceeded. Retry after {retry} seconds"),
@@ -500,10 +501,29 @@ async fn create_channel(
 
 /// Per audit pt2 H6: never trust `X-Forwarded-For` on the loopback
 /// listener. Any local process can forge it. Use only the connection
-/// peer's IP.
-fn ip_key(addr: &SocketAddr) -> String {
+/// peer's IP — plus, for cross-host visitors who reach us through the
+/// local onion proxy (and therefore appear as `127.0.0.1`), the
+/// per-circuit token the proxy injects (audit pt6 H2). Without the
+/// token, every cross-host visitor shares the single `127.0.0.1`
+/// bucket and one flooder DoSes everyone including the local user.
+///
+/// The token is TRUSTED FOR KEYING ONLY — not for identity. Stripping
+/// any client-supplied value happens in proxy.rs before our injected
+/// token is appended; here we just look at whatever's in the request.
+fn rate_bucket_key(addr: &SocketAddr, headers: &HeaderMap) -> String {
+    if let Some(circuit) = headers
+        .get("x-voidchat-proxy-circuit")
+        .and_then(|v| v.to_str().ok())
+    {
+        // Loose length sanity-check; refuse to use a giant string as
+        // a HashMap key. The real value is 32 hex chars (16 bytes).
+        if !circuit.is_empty() && circuit.len() <= 128 {
+            return format!("circuit:{circuit}");
+        }
+    }
     addr.ip().to_string()
 }
+
 
 fn sanitize(s: &str, max_len: usize) -> String {
     let cleaned: String = s.chars().filter(|c| *c != '\0').collect();

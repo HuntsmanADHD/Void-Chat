@@ -1,6 +1,7 @@
 mod proxy;
 mod relay;
 mod tor;
+mod wash;
 
 use tauri::{Emitter, Manager, RunEvent};
 

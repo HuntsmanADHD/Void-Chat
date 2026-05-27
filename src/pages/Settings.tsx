@@ -276,8 +276,8 @@ function OnionBackupSection({ hostname }: { hostname: string }) {
     }
     setBusy(true);
     try {
-      const washed = await buildEncryptedBackup(pass);
-      downloadBackupFile(washed, hostname);
+      const { washed, hostname: backupHostname } = await buildEncryptedBackup(pass);
+      downloadBackupFile(washed, backupHostname || hostname);
       setSuccess('Backup downloaded. Store it somewhere safe — the passphrase is the only thing protecting it.');
       setMode('idle');
       setPass('');
@@ -301,8 +301,8 @@ function OnionBackupSection({ hostname }: { hostname: string }) {
     }
     setBusy(true);
     try {
-      const restored = await restoreFromEncryptedBackup(restoreFile, pass);
-      setSuccess(`Restored. Your .onion is now ${restored.hostname}. Tor is restarting — give it a moment to re-bootstrap.`);
+      const newHostname = await restoreFromEncryptedBackup(restoreFile, pass);
+      setSuccess(`Restored. Your .onion is now ${newHostname}. Tor is restarting — give it a moment to re-bootstrap.`);
       setMode('idle');
       setPass('');
       setRestoreFile(null);

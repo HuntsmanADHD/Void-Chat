@@ -132,6 +132,39 @@ impl Db {
                 if msg.contains("duplicate column name") => {}
             Err(e) => return Err(DbError::Sqlite(e)),
         }
+        // Surface "legacy" rows — created before pt6, no password and
+        // no delete-token. The DELETE handler refuses these (no
+        // credential to verify against), so without this log the user
+        // sees "delete does nothing" with no explanation. Telling
+        // them to wipe the DB is the cleanest unblock; we point at
+        // both the file and the exact SQL fallback.
+        let legacy: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT id, name FROM Community
+                 WHERE passwordHash IS NULL AND deleteTokenHash IS NULL",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>("id")?, row.get::<_, String>("name")?))
+            })?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r?);
+            }
+            out
+        };
+        if !legacy.is_empty() {
+            tracing::warn!(
+                count = legacy.len(),
+                "legacy communities (pre-pt6, no credential on file) — DELETE via API will return 403"
+            );
+            for (id, name) in &legacy {
+                tracing::warn!(id = %id, name = %name, "legacy community");
+            }
+            tracing::warn!(
+                db = %path.display(),
+                "to wipe legacy rows: `sqlite3 <path> \"DELETE FROM Community WHERE passwordHash IS NULL AND deleteTokenHash IS NULL\"` (or just rm the file to start fresh)"
+            );
+        }
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })

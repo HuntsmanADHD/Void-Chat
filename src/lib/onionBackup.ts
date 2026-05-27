@@ -1,28 +1,28 @@
 /**
  * Onion identity backup + restore wrapper.
  *
- * The Rust side (src-tauri/src/tor.rs) reads the v3 hidden-service key
- * files into a JSON payload. This module passphrase-encrypts that
- * payload with the existing Wash cipher (AES-256-GCM via PBKDF2) and
- * downloads it as a `.washed` file the user can store anywhere.
+ * Audit pt6 H7: encrypt + decrypt happen Rust-side now. The renderer
+ * passes the passphrase to the IPC and receives the already-washed
+ * blob; the raw `.onion` secret key never lands in JS heap memory.
+ * Previously the secret was returned to JS, JSON-stringified, then
+ * passphrase-encrypted via `src/lib/wash.ts` — that gave an XSS
+ * window between IPC return and Wash encrypt to exfil the plaintext.
  *
- * Restore is the same in reverse: read file, unwash with passphrase,
- * hand the payload back to Rust which atomically replaces the local
- * key files and restarts Tor.
+ * The Wash blob format (PBKDF2-SHA256 + AES-256-GCM, `void$wash$v1$`
+ * prefix) is identical between the JS and Rust implementations, so
+ * backups produced before this change still restore.
  *
  * Security note: the raw payload contains the v3 secret key — anyone
  * who possesses it can impersonate this .onion. The passphrase is the
  * ONLY thing standing between a leaked backup file and identity theft.
- * Pick a strong one; the UI enforces a minimum length.
+ * Pick a strong one; both the UI and Rust enforce a minimum length.
  */
 
-import { wash, unwash } from './wash';
-
-export interface TorBackup {
-  publicKeyB64: string;
-  secretKeyB64: string;
+interface TorBackupBlob {
+  /** Encrypted backup ready to download — `void$wash$v1$...` */
+  washed: string;
+  /** Hostname returned alongside so the renderer can build the filename. */
   hostname: string;
-  formatVersion: number;
 }
 
 export const MIN_BACKUP_PASSPHRASE_LEN = 12;
@@ -31,10 +31,10 @@ function inTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
-/** Read the local hidden-service keys, encrypt with the passphrase, and
- *  return the washed string ready for download. Throws if not in Tauri,
- *  if the passphrase is too short, or if the Rust read fails. */
-export async function buildEncryptedBackup(passphrase: string): Promise<string> {
+/** Ask Rust to read the hidden-service keys and encrypt them with the
+ *  passphrase. Returns the washed blob + hostname; the renderer writes
+ *  the blob verbatim to a `.washed` file. */
+export async function buildEncryptedBackup(passphrase: string): Promise<TorBackupBlob> {
   if (!inTauri()) throw new Error('Backups are only available in the desktop app.');
   if (passphrase.length < MIN_BACKUP_PASSPHRASE_LEN) {
     throw new Error(
@@ -42,35 +42,23 @@ export async function buildEncryptedBackup(passphrase: string): Promise<string> 
     );
   }
   const { invoke } = await import('@tauri-apps/api/core');
-  const payload = await invoke<TorBackup>('tor_backup_keys');
-  const json = JSON.stringify(payload);
-  return wash(json, passphrase);
+  return invoke<TorBackupBlob>('tor_backup_keys', { passphrase });
 }
 
-/** Decrypt a previously-built backup string and hand the keys to Rust
- *  for atomic restore + Tor restart. The new .onion appears in
- *  tor://status shortly after this resolves. */
+/** Hand the washed blob + passphrase to Rust, which decrypts, prompts
+ *  for native confirmation, and atomically replaces the local key
+ *  files + restarts Tor. Returns the new .onion hostname so the UI
+ *  can show what's now active. */
 export async function restoreFromEncryptedBackup(
   washedString: string,
   passphrase: string,
-): Promise<TorBackup> {
+): Promise<string> {
   if (!inTauri()) throw new Error('Restore is only available in the desktop app.');
-  const plaintext = await unwash(washedString.trim(), passphrase);
-  if (plaintext === null) {
-    throw new Error('Could not decrypt — wrong passphrase or corrupted backup.');
-  }
-  let parsed: TorBackup;
-  try {
-    parsed = JSON.parse(plaintext) as TorBackup;
-  } catch {
-    throw new Error('Decrypted payload is not a valid backup file.');
-  }
-  if (!parsed.publicKeyB64 || !parsed.secretKeyB64 || !parsed.hostname) {
-    throw new Error('Backup file is missing required fields.');
-  }
   const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('tor_restore_keys', { backup: parsed });
-  return parsed;
+  return invoke<string>('tor_restore_keys', {
+    washed: washedString.trim(),
+    passphrase,
+  });
 }
 
 /** Trigger a browser download of `content` as a file. Uses the standard

@@ -46,6 +46,20 @@ export interface RosterMember {
   announceNonce?: string;
   announceTs?: number;
   sig?: string;
+  /**
+   * Per-channel join attestation — audit pt6 H8. ed25519 sig over
+   * `void/join/v1|<channelId>|<signingPublicKey>|<boxPublicKey>|<joinTs>`
+   * by the member's signing-secret. Receivers MUST verify the sig
+   * binds to the CURRENT channel before accepting the member — without
+   * this check, a malicious relay could replay a captured roster sig
+   * from one channel as roster state in a different channel.
+   *
+   * Currently optional only because rollout-phase relays may not
+   * propagate it yet; once shipped, new code drops members without
+   * a valid joinSig.
+   */
+  joinSig?: string;
+  joinTs?: number;
 }
 
 export interface ChannelRosterMessage {
@@ -124,6 +138,9 @@ export interface SessionAnnounceMessage {
 
 export interface ChannelJoinMessage {
   channelId: string;
+  /** Per-channel join attestation — see `RosterMember.joinSig`. */
+  joinSig: string;
+  joinTs: number;
 }
 
 export interface ChannelLeaveMessage {

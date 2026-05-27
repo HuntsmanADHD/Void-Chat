@@ -119,6 +119,15 @@ session model can't provide.
 - **Wash key rotation surfaced in Settings.** Landed in v0.1 (audit
   pt5 L1 cleanup) — confirming it's documented here so the v0.3 docs
   are accurate.
+- **Chat-protocol crypto → Web Crypto (non-extractable handles).**
+  Today the chat session's ed25519 signing-secret and Curve25519
+  box-secret are stored as base58 strings in `sessionStorage`,
+  recoverable by any script in the renderer (audit pt6 C3; documented
+  in `THREAT_MODEL.md` under "Renderer-side compromise of chat session
+  keys"). Migrating to Web Crypto's ed25519 / X25519 with
+  `extractable=false` brings the chat keys to parity with Wash keys.
+  Touches every call site that signs an announce, opens a DM, seals a
+  channel recipient, or verifies a roster member — meaningful refactor.
 - **`Code of Conduct` and `CONTRIBUTING.md`** as first-class repo docs.
 
 ---

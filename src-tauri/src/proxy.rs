@@ -266,12 +266,28 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Rewrite the Host header to point at the onion. The relay validates
-/// nothing about Host (other than CORS, which we handle separately), but
-/// some HTTP intermediaries care, and it keeps the wire format honest.
-fn rewrite_host_header(headers: &str, onion: &str) -> String {
+/// HTTP header carrying a per-proxy-connection circuit token. Used by
+/// the relay solely as a rate-limit bucket key. Audit pt6 H2: every
+/// cross-host visitor reaches the relay from `127.0.0.1` (proxy → relay
+/// on loopback), so without a per-circuit hint they all share the
+/// single `127.0.0.1` rate bucket — one flooder DoSes everyone
+/// including the local user. With this header, each proxy circuit gets
+/// its own bucket; the local renderer (which has no proxy in front of
+/// it and thus no token) gets its own bucket too.
+///
+/// The relay TRUSTS this header for keying but NOT for IP attribution.
+/// Strip any client-supplied value first so a cross-host attacker
+/// can't pre-stuff the header to share a bucket with the local user.
+pub const PROXY_CIRCUIT_HEADER: &str = "X-Voidchat-Proxy-Circuit";
+
+/// Rewrite the Host header to point at the onion + inject the
+/// per-circuit token (and strip any client-supplied one). The relay
+/// validates nothing about Host (other than CORS, which we handle
+/// separately), but some HTTP intermediaries care, and it keeps the
+/// wire format honest.
+fn rewrite_host_header(headers: &str, onion: &str, circuit_token: &str) -> String {
     let mut out = String::with_capacity(headers.len());
-    let mut replaced = false;
+    let mut host_replaced = false;
     for line in headers.split("\r\n") {
         if line.is_empty() {
             out.push_str("\r\n");
@@ -280,14 +296,35 @@ fn rewrite_host_header(headers: &str, onion: &str) -> String {
         let lower = line.to_ascii_lowercase();
         if lower.starts_with("host:") {
             out.push_str(&format!("Host: {onion}"));
-            replaced = true;
+            host_replaced = true;
+        } else if lower.starts_with(&format!("{}:", PROXY_CIRCUIT_HEADER.to_ascii_lowercase())) {
+            // Drop any client-supplied circuit header so a malicious
+            // visitor can't pre-stuff it to alias the local-renderer
+            // bucket. Our own header (injected below) is the only
+            // value the relay should ever see.
+            continue;
         } else {
             out.push_str(line);
         }
         out.push_str("\r\n");
     }
-    if !replaced {
+    if !host_replaced {
         out.push_str(&format!("Host: {onion}\r\n"));
+    }
+    out.push_str(&format!("{PROXY_CIRCUIT_HEADER}: {circuit_token}\r\n"));
+    out
+}
+
+/// Mint a fresh per-connection circuit token. 16 bytes hex = 32 chars,
+/// plenty of entropy for an HTTP header value. Lives only for the
+/// proxy connection's lifetime; the relay doesn't persist anything
+/// keyed on it beyond the rate-window TTL.
+fn mint_circuit_token() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).expect("OS RNG unavailable");
+    let mut out = String::with_capacity(32);
+    for b in &bytes {
+        out.push_str(&format!("{b:02x}"));
     }
     out
 }
@@ -352,10 +389,13 @@ async fn handle_connection(mut client: TcpStream) -> std::io::Result<()> {
     let mut upstream = upstream.into_inner();
 
     // 4) Send the rewritten request line, host-fixed headers, then any
-    //    body bytes that came in with the head.
+    //    body bytes that came in with the head. Mint a per-connection
+    //    circuit token so the relay can rate-limit this visitor in
+    //    their own bucket (see PROXY_CIRCUIT_HEADER docs above).
+    let circuit_token = mint_circuit_token();
     upstream.write_all(rewritten_line.as_bytes()).await?;
     upstream.write_all(b"\r\n").await?;
-    let new_headers = rewrite_host_header(header_block, &onion);
+    let new_headers = rewrite_host_header(header_block, &onion, &circuit_token);
     upstream.write_all(new_headers.as_bytes()).await?;
     if !leftover_body.is_empty() {
         upstream.write_all(leftover_body).await?;

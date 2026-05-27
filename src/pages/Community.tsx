@@ -335,6 +335,12 @@ export default function Community() {
           setNeedsPassword(true);
           return;
         }
+        let reason = `Delete failed (${res.status})`;
+        try {
+          const body = await res.json();
+          if (body && typeof body.error === 'string') reason = body.error;
+        } catch { /* non-JSON response, keep the status code message */ }
+        toastError(reason);
         setShowDeleteConfirm(false);
         return;
       }
@@ -342,11 +348,12 @@ export default function Community() {
       clearDeleteToken(communityId);
       navigate('/app');
     } catch {
+      toastError('Delete request failed — relay unreachable?');
       setShowDeleteConfirm(false);
     } finally {
       setIsDeleting(false);
     }
-  }, [communityId, navigate]);
+  }, [communityId, navigate, toastError]);
 
   const handleCreateChannel = useCallback(
     async (data: CreateChannelFormData) => {

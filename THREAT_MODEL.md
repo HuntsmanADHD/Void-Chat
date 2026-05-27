@@ -65,13 +65,18 @@ The machine your messages route through.
 
 ### Casual XSS / supply-chain compromise
 
-- Wash private keys are non-extractable Web Crypto handles; cannot be
-  exfiltrated via `subtle.exportKey` from compromised JS.
+- **Wash** private keys are non-extractable Web Crypto handles; cannot
+  be exfiltrated via `subtle.exportKey` from compromised JS.
 - The bundled Tor binary is fetched with GPG signature verification
   by default; a tampered upstream archive is a hard fail.
 - The local onion proxy requires a per-session token (192-bit, generated
   fresh per launch) to accept connections another local process
   cannot use Void Chat's Tor circuit attributed to the user.
+- Per-message DM sender signatures (audit pt6 C1) prevent a malicious
+  relay from re-attributing your real ciphertext to a different
+  "sender" on the recipient's screen. The receiver verifies the sig
+  AND cross-checks `(signing, box)` against a peer cache populated
+  only by roster-sig-verified bindings.
 
 ---
 
@@ -134,6 +139,40 @@ can read every message you've received.
 BitLocker) at minimum. Encrypted-at-rest message storage is on the
 roadmap for v0.2 via OS keychain integration; until then, FDE is the
 floor.
+
+### Renderer-side compromise of chat session keys
+
+The chat protocol's ed25519 signing-secret and Curve25519 box-secret
+for the current tab are stored in `sessionStorage` as base58 strings,
+recoverable by any script running in the renderer:
+
+- An XSS regression (e.g. a future dev introducing `'unsafe-inline'`
+  scripts via CSP relaxation) would let an attacker exfiltrate them
+  via `sessionStorage.getItem('voidchat_session_keys')`.
+- A compromised npm dependency loading at runtime could do the same.
+
+The protections in place are CSP (currently disallows inline scripts +
+foreign script sources in production), dependency hygiene (audited
+`yarn.lock`, `enableScripts: false` in `.yarnrc.yml`, supply-chain
+checksum enforcement), and the per-tab session-isolation model that
+caps the blast radius of a successful exfil to that single tab's
+lifetime of messages.
+
+The **Wash** off-channel cipher's keys are a separate story — those
+ARE non-extractable Web Crypto handles, immune to `subtle.exportKey`.
+Wash and chat use different cipher families on purpose; a renderer
+compromise that lifts chat keys does NOT lift Wash keys.
+
+**Why not WebCrypto for chat too?** TweetNaCl-JS, which the chat
+protocol uses, predates Web Crypto's ed25519 / X25519 support and
+exposes raw key bytes by design. Porting chat crypto to Web Crypto's
+non-extractable handles is a meaningful refactor (every signing,
+verifying, sealing, and opening call site changes) — queued for v0.3.
+See `ROADMAP.md`.
+
+**Mitigation in the meantime:** keep the dependency tree small and
+audited; treat sessions as the trust boundary (close the tab if you
+suspect compromise; identity rotates).
 
 ### Forward secrecy in the per-message (Signal/SimpleX) sense
 

@@ -173,6 +173,15 @@ struct SessionAnnounceIn {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ChannelJoinIn {
     channel_id: String,
+    /// Per-channel ed25519 sig from the joiner. Audit pt6 H8: binds
+    /// `(channelId|signingPub|boxPub|joinTs)` to this specific
+    /// channel, so a captured roster sig from one channel can't be
+    /// replayed by a malicious relay to make the user appear in a
+    /// different channel. The relay never inspects this sig — it
+    /// forwards it verbatim in roster broadcasts and the receiving
+    /// clients verify it binds to the channel they're rendering.
+    join_sig: String,
+    join_ts: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -224,6 +233,11 @@ struct RosterMember {
     announce_nonce: String,
     announce_ts: i64,
     sig: String,
+    /// Per-channel join sig. See `ChannelJoinIn::join_sig`. The relay
+    /// stores and re-broadcasts these verbatim alongside the existing
+    /// announce sig; receivers verify both before accepting a member.
+    join_sig: String,
+    join_ts: i64,
 }
 
 #[derive(Serialize)]
@@ -550,6 +564,8 @@ async fn on_channel_join(socket: SocketRef, raw: serde_json::Value, state: Realt
             announce_nonce: session.announce_nonce.clone(),
             announce_ts: session.announce_ts,
             sig: session.sig.clone(),
+            join_sig: parsed.join_sig.clone(),
+            join_ts: parsed.join_ts,
         };
         let already_in = roster.contains_key(&sid);
         roster.insert(sid.clone(), member.clone());

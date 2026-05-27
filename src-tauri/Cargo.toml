@@ -26,6 +26,15 @@ tokio = { version = "1", features = ["rt-multi-thread", "io-util", "net", "macro
 tokio-socks = "0.5"
 ctrlc = "3"
 getrandom = "0.2"
+# Audit pt6 H7: backup encrypt now happens Rust-side so the .onion
+# secret never lands in renderer JS memory. Wash format = PBKDF2-SHA256
+# + AES-256-GCM — must match `src/lib/wash.ts` exactly so existing
+# `.washed` backups still decrypt.
+aes-gcm = "0.10"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -1005,24 +1005,30 @@ pub fn tor_has_obfs4proxy(app: AppHandle) -> bool {
     find_obfs4proxy(&app).is_some()
 }
 
-/// Read the hidden-service key files and return them as a base64-encoded
-/// backup payload. The caller is expected to wrap this in passphrase
-/// encryption (via the existing Wash flow) before writing to disk — the
-/// raw secret key reproduces this identity for anyone who possesses it.
+/// Read the hidden-service key files, encrypt them in-process with the
+/// user's passphrase via the Wash cipher (PBKDF2-SHA256 + AES-256-GCM),
+/// and return the washed string ready for the renderer to download.
+///
+/// Audit pt6 H7: the previous shape returned the raw secret to the
+/// renderer (which then ran Wash in JS). That gave any XSS-during-
+/// backup attacker a window to exfil the plaintext key from JS heap
+/// memory between IPC return and Wash encrypt. Now the secret never
+/// leaves the Rust process; the renderer only sees the already-
+/// encrypted blob.
 ///
 /// **Security gate:** before doing anything, surface a native OS dialog
 /// asking the user to confirm. This is the last line of defense against
-/// renderer-side XSS silently exfiltrating the .onion secret key —
-/// the dialog runs in the native process and can't be dismissed by JS.
-/// A user who clicks "Cancel" stops the export with no key material
-/// having left the Rust side.
+/// renderer-side XSS silently invoking this IPC — the dialog runs in
+/// the native process and can't be dismissed by JS. A user who clicks
+/// "Cancel" stops the export with no key material having left the
+/// Rust side.
 #[tauri::command]
-pub fn tor_backup_keys(app: AppHandle) -> Result<TorBackup, String> {
+pub fn tor_backup_keys(app: AppHandle, passphrase: String) -> Result<TorBackupBlob, String> {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
     let confirmed = app
         .dialog()
         .message(
-            "Void Chat is about to read your .onion private key and hand it to the renderer to encrypt + save as a backup file.\n\n\
+            "Void Chat is about to read your .onion private key, encrypt it with your passphrase, and hand the encrypted blob to the renderer to save as a backup file.\n\n\
              Only continue if you (just) clicked the Backup button in Settings. If you didn't, click Cancel — something else may be trying to steal your identity.",
         )
         .title("Export Tor identity?")
@@ -1036,6 +1042,10 @@ pub fn tor_backup_keys(app: AppHandle) -> Result<TorBackup, String> {
         return Err("Backup cancelled by user.".to_string());
     }
 
+    if passphrase.len() < 12 {
+        return Err("Passphrase must be at least 12 characters.".to_string());
+    }
+
     let dir = hs_dir(&app)?;
     let public = fs::read(dir.join("hs_ed25519_public_key"))
         .map_err(|e| format!("could not read public key: {e}"))?;
@@ -1045,12 +1055,34 @@ pub fn tor_backup_keys(app: AppHandle) -> Result<TorBackup, String> {
         .map_err(|e| format!("could not read hostname: {e}"))?
         .trim()
         .to_string();
-    Ok(TorBackup {
+
+    // Serialize the payload in the same JSON shape the old JS flow
+    // produced so existing backup readers/restores stay compatible.
+    let payload = TorBackup {
         public_key_b64: base64_encode(&public),
         secret_key_b64: base64_encode(&secret),
-        hostname,
+        hostname: hostname.clone(),
         format_version: BACKUP_FORMAT_VERSION,
+    };
+    let json = serde_json::to_string(&payload).map_err(|e| format!("serialize: {e}"))?;
+    let washed = crate::wash::wash_encrypt(json.as_bytes(), &passphrase)?;
+    Ok(TorBackupBlob {
+        washed,
+        hostname,
     })
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TorBackupBlob {
+    /// The PBKDF2 + AES-GCM encrypted blob (`void$wash$v1$...`). The
+    /// renderer writes this verbatim to a `.washed` file; the plain
+    /// secret never crosses the Rust → JS boundary.
+    pub washed: String,
+    /// Returned alongside the blob so the renderer can include it in
+    /// the suggested filename. Not sensitive — the .onion hostname is
+    /// shown in Settings anyway.
+    pub hostname: String,
 }
 
 /// Replace the local hidden-service identity with the one in `backup`.
@@ -1062,8 +1094,19 @@ pub fn tor_backup_keys(app: AppHandle) -> Result<TorBackup, String> {
 /// current identity — old invites pointing at the previous .onion will
 /// stop resolving.
 #[tauri::command]
-pub fn tor_restore_keys(app: AppHandle, backup: TorBackup) -> Result<(), String> {
+pub fn tor_restore_keys(
+    app: AppHandle,
+    washed: String,
+    passphrase: String,
+) -> Result<String, String> {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    // Audit pt6 H7: decrypt happens in Rust now too, so the secret
+    // never lands in renderer JS memory on the restore path either.
+    let plaintext = crate::wash::wash_decrypt(washed.trim(), &passphrase)?;
+    let backup: TorBackup = serde_json::from_slice(&plaintext)
+        .map_err(|_| "decrypted payload is not a valid backup file".to_string())?;
+
     let new_hostname_preview = backup.hostname.clone();
     let confirmed = app
         .dialog()
@@ -1127,7 +1170,7 @@ pub fn tor_restore_keys(app: AppHandle, backup: TorBackup) -> Result<(), String>
     // Restart Tor with the imported identity. start() emits a fresh
     // tor://status event so the UI updates.
     start(&app).map_err(|e| format!("failed to restart tor: {e}"))?;
-    Ok(())
+    Ok(new_hostname_preview)
 }
 
 fn write_key_file(path: &Path, bytes: &[u8]) -> Result<(), String> {

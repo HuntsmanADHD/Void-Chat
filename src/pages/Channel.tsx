@@ -195,6 +195,17 @@ export default function Channel() {
           setNeedsPassword(true);
           return;
         }
+        // Surface whatever the relay told us. The 403 case
+        // ("legacy row, no credential on file") was invisible
+        // before — users saw the modal close with no message and
+        // assumed delete had succeeded. Now they get the relay's
+        // actual reason via a toast.
+        let reason = `Delete failed (${res.status})`;
+        try {
+          const body = await res.json();
+          if (body && typeof body.error === 'string') reason = body.error;
+        } catch { /* non-JSON response, keep the status code message */ }
+        toastError(reason);
         setShowDeleteConfirm(false);
         return;
       }
@@ -202,11 +213,12 @@ export default function Channel() {
       clearDeleteToken(communityId);
       navigate('/app');
     } catch {
+      toastError('Delete request failed — relay unreachable?');
       setShowDeleteConfirm(false);
     } finally {
       setIsDeleting(false);
     }
-  }, [communityId, navigate]);
+  }, [communityId, navigate, toastError]);
 
   useEffect(() => {
     if (!channelId || !isReady) return;

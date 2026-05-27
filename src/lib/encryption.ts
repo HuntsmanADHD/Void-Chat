@@ -180,3 +180,90 @@ export function verifyDM(args: {
     return false;
   }
 }
+
+// ── Per-channel join attestation ───────────────────────────────────────
+//
+// Audit pt6 H8: the existing announce sig binds (signing, box, name)
+// at session start, but a malicious relay holding a year-old captured
+// roster sig could replay it as a roster member in a new channel
+// context — making the user appear to be in a channel they never
+// joined. Not MITM (the binding is still genuine) but a cosmetic-state
+// integrity gap.
+//
+// The fix: every channel join is accompanied by a fresh ed25519 sig
+// over a tuple that includes the channelId. Receivers verify the sig
+// binds to the CURRENT channel; replays into a different channel
+// fail because the channelId is part of the signed bytes.
+//
+// Domain tag `void/join/v1` separates this sig from the announce sig
+// and the DM sig — even captured, a join sig can't be cast as either.
+
+const JOIN_SIG_TAG = 'void/join/v1';
+
+function joinSignedBytes(args: {
+  channelId: string;
+  signingPublicKeyB58: string;
+  boxPublicKeyB58: string;
+  joinTs: number;
+}): Uint8Array {
+  const canonical = [
+    JOIN_SIG_TAG,
+    args.channelId,
+    args.signingPublicKeyB58,
+    args.boxPublicKeyB58,
+    String(args.joinTs),
+  ].join('|');
+  return new TextEncoder().encode(canonical);
+}
+
+/** Sign a per-channel join attestation. Returns base58 sig or null if
+ *  the signing secret is malformed. */
+export function signChannelJoin(args: {
+  channelId: string;
+  signingPublicKeyB58: string;
+  signingSecretKey: Uint8Array;
+  boxPublicKeyB58: string;
+  joinTs: number;
+}): string | null {
+  if (args.signingSecretKey.length !== nacl.sign.secretKeyLength) return null;
+  try {
+    const message = joinSignedBytes({
+      channelId: args.channelId,
+      signingPublicKeyB58: args.signingPublicKeyB58,
+      boxPublicKeyB58: args.boxPublicKeyB58,
+      joinTs: args.joinTs,
+    });
+    const sig = nacl.sign.detached(message, args.signingSecretKey);
+    return bs58.encode(sig);
+  } catch {
+    return null;
+  }
+}
+
+/** Verify a roster member's join sig binds to the channel this
+ *  roster broadcast belongs to. Receivers MUST call this for every
+ *  roster member; a member that fails verification should be dropped
+ *  from the local roster (treated as if not present in the channel). */
+export function verifyChannelJoin(args: {
+  channelId: string;
+  signingPublicKeyB58: string;
+  boxPublicKeyB58: string;
+  joinTs: number;
+  sigB58: string;
+}): boolean {
+  try {
+    const sigBytes = bs58.decode(args.sigB58);
+    const pubBytes = bs58.decode(args.signingPublicKeyB58);
+    if (sigBytes.length !== nacl.sign.signatureLength) return false;
+    if (pubBytes.length !== nacl.sign.publicKeyLength) return false;
+    const message = joinSignedBytes({
+      channelId: args.channelId,
+      signingPublicKeyB58: args.signingPublicKeyB58,
+      boxPublicKeyB58: args.boxPublicKeyB58,
+      joinTs: args.joinTs,
+    });
+    return nacl.sign.detached.verify(message, sigBytes, pubBytes);
+  } catch {
+    return false;
+  }
+}

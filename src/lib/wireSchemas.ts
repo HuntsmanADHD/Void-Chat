@@ -25,16 +25,25 @@ const NonEmptyString = z.string().min(1);
  */
 const MAX_CIPHERTEXT_BYTES = 96 * 1024;
 
-// Used by ChannelRoster / ChannelMemberJoined.
+// Used by ChannelRoster / ChannelMemberJoined. Two signature paths:
+//   - announceSig (sig): binds (signing-pub → box-pub, displayName)
+//     at session-start time. Audit pt1 #2.
+//   - joinSig: binds (signing-pub, box-pub) to THIS channelId at
+//     join time. Audit pt6 H8. Without this, a captured roster sig
+//     can be replayed across channels — appears in rosters the
+//     user never joined.
+// Both stay optional during rollout; the client verifies both and
+// drops members missing either.
 export const RosterMemberSchema = z
   .object({
     signingPublicKey: Base58Str,
     boxPublicKey: Base58Str,
     displayName: z.string().max(64),
-    // Optional during rollout; verifyRosterMember already rejects when missing.
     announceNonce: NonceStr.optional(),
     announceTs: z.number().int().optional(),
     sig: Bs58Sig.optional(),
+    joinSig: Bs58Sig.optional(),
+    joinTs: z.number().int().optional(),
   })
   .strict();
 
