@@ -183,12 +183,15 @@ fn is_safe_bridge_line(line: &str) -> bool {
     if matches!(first_token, "obfs4" | "webtunnel" | "meek_lite" | "snowflake" | "scramblesuit") {
         return true;
     }
-    // Bare IP:port form — first token contains a `:` and no letters.
-    if first_token.contains(':')
-        && first_token
-            .chars()
-            .all(|c| c.is_ascii_digit() || matches!(c, '.' | ':' | '[' | ']'))
-    {
+    // Bare IP:port form. Audit pt6 H10: the previous char-allowlist
+    // rejected `a-f` hex digits, silently dropping every bare IPv6
+    // bridge line. Parsing via `SocketAddr::from_str` handles both
+    // IPv4 (`1.2.3.4:9001`) and IPv6 bracketed forms
+    // (`[2001:db8::1]:9001`) correctly. Real obfs4 lines hit the
+    // transport branch above; this branch is for legitimate
+    // bare-IP entries that the user may have pasted from a bridge
+    // distributor.
+    if first_token.parse::<std::net::SocketAddr>().is_ok() {
         return true;
     }
     false
@@ -384,8 +387,14 @@ fn write_torrc(
     if !bridges.is_empty() {
         torrc.push_str("UseBridges 1\n");
         if let Some(obfs4) = find_obfs4proxy(app) {
+            // Audit pt6 H11: quote the path so directories with
+            // spaces (Windows `C:\Program Files\…`, macOS
+            // `/Users/Some User/…`) don't make Tor parse
+            // `exec /Users/Some` with `User/…/lyrebird` as args and
+            // silently fail to spawn obfs4. Tor's torrc parser
+            // accepts double-quoted exec paths.
             torrc.push_str(&format!(
-                "ClientTransportPlugin obfs4 exec {}\n",
+                "ClientTransportPlugin obfs4 exec \"{}\"\n",
                 obfs4.display(),
             ));
         }

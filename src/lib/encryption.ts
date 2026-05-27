@@ -93,3 +93,90 @@ export function isValidBoxPublicKey(b58: string): boolean {
     return false;
   }
 }
+
+// ── DM per-message sender attribution ──────────────────────────────────
+//
+// Audit pt6 C1 closed: without a per-message sig, a malicious relay can
+// re-attribute Alice's real ciphertext to "Mallory" by swapping
+// `senderSigningPublicKey` on the outbound `dm:message`. NaCl box only
+// authenticates `senderBoxPublicKey` (decryption succeeds → that
+// box-key holder produced the ciphertext) — nothing previously bound
+// `senderSigningPublicKey` to the message.
+//
+// The sender signs an ed25519 detached signature over a tagged
+// canonical encoding of (sender-signing, sender-box, recipient-box,
+// nonce, ciphertext). The `void/dm/v1|` tag domain-separates this from
+// the announce sig and any future sig types — a captured sig can never
+// be replayed against a different protocol or version.
+//
+// The receiver MUST also cross-check `(senderSigningPub, senderBoxPub)`
+// against the verified peer cache before rendering. Verifying the sig
+// alone doesn't help: a relay-acting-as-Mallory can sign with Mallory's
+// own secret, and the verification would pass against Mallory's pubkey.
+// The binding check (signing-key was previously seen via roster sig
+// bound to this box-key) is what attributes the message to a real
+// peer. realtimeClient.ts owns that policy.
+
+const DM_SIG_TAG = 'void/dm/v1';
+
+function dmSignedBytes(args: {
+  senderSigningPublicKeyB58: string;
+  senderBoxPublicKeyB58: string;
+  recipientBoxPublicKeyB58: string;
+  nonceB64: string;
+  ciphertextB64: string;
+}): Uint8Array {
+  const canonical = [
+    DM_SIG_TAG,
+    args.senderSigningPublicKeyB58,
+    args.senderBoxPublicKeyB58,
+    args.recipientBoxPublicKeyB58,
+    args.nonceB64,
+    args.ciphertextB64,
+  ].join('|');
+  return new TextEncoder().encode(canonical);
+}
+
+/** Sign a DM with the sender's ed25519 signing secret. Returns base58
+ *  sig or null if any input is malformed. */
+export function signDM(args: {
+  senderSigningPublicKeyB58: string;
+  senderSigningSecretKey: Uint8Array;
+  senderBoxPublicKeyB58: string;
+  recipientBoxPublicKeyB58: string;
+  nonceB64: string;
+  ciphertextB64: string;
+}): string | null {
+  if (args.senderSigningSecretKey.length !== nacl.sign.secretKeyLength) return null;
+  try {
+    const message = dmSignedBytes(args);
+    const sig = nacl.sign.detached(message, args.senderSigningSecretKey);
+    return bs58.encode(sig);
+  } catch {
+    return null;
+  }
+}
+
+/** Verify a DM signature. Returns true only if the sig was produced
+ *  by the holder of `senderSigningPublicKeyB58`'s secret over the
+ *  exact (sender-signing, sender-box, recipient-box, nonce,
+ *  ciphertext) tuple of this message. */
+export function verifyDM(args: {
+  senderSigningPublicKeyB58: string;
+  senderBoxPublicKeyB58: string;
+  recipientBoxPublicKeyB58: string;
+  nonceB64: string;
+  ciphertextB64: string;
+  sigB58: string;
+}): boolean {
+  try {
+    const sigBytes = bs58.decode(args.sigB58);
+    const pubBytes = bs58.decode(args.senderSigningPublicKeyB58);
+    if (sigBytes.length !== nacl.sign.signatureLength) return false;
+    if (pubBytes.length !== nacl.sign.publicKeyLength) return false;
+    const message = dmSignedBytes(args);
+    return nacl.sign.detached.verify(message, sigBytes, pubBytes);
+  } catch {
+    return false;
+  }
+}

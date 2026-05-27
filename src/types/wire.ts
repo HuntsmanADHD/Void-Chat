@@ -82,6 +82,15 @@ export interface DMMessageRelay {
   nonce: string;
   msgId: string;
   ts: number;
+  /**
+   * Per-message ed25519 sig from the sender binding signing-pub to
+   * the message (see `signDM` in encryption.ts). Audit pt6 C1: without
+   * this, a malicious relay could re-attribute Alice's real ciphertext
+   * to "Mallory" since `senderSigningPublicKey` is server-asserted.
+   * Receivers MUST verify this sig AND cross-check `(senderSigningPub,
+   * senderBoxPub)` against the verified peer cache before rendering.
+   */
+  senderSig: string;
 }
 
 // `DMOfflineMessage` (and the WIRE.DM_OFFLINE constant below) were
@@ -139,6 +148,8 @@ export interface DMSendMessage {
   recipientBoxPublicKey: string;
   ciphertext: string;
   nonce: string;
+  /** Per-message ed25519 sig — see `DMMessageRelay.senderSig`. */
+  senderSig: string;
 }
 
 // ── Event name constants (keeps client + server in lockstep) ───────────────

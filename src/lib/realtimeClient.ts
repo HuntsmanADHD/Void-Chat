@@ -19,7 +19,7 @@ import { io as ioClient, type Socket } from 'socket.io-client';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 
-import { MAX_PLAINTEXT_BYTES, openFromSender, sealForRecipient } from './encryption';
+import { MAX_PLAINTEXT_BYTES, openFromSender, sealForRecipient, signDM, verifyDM } from './encryption';
 import { appendChannel as storeAppendChannel, appendDM as storeAppendDM, setActiveSession } from './messageStore';
 import type { Session } from '@/types/session';
 import {
@@ -411,10 +411,24 @@ class RealtimeClient {
     if (!this.session || !this.socket || this.state !== 'ready') return false;
     const out = sealForRecipient(plaintext, recipientBoxPublicKey, this.session.boxSecretKey);
     if (!out) return false;
+    // Audit pt6 C1: attach a per-message sig binding our signing-pub
+    // to this exact (sender-signing, sender-box, recipient-box, nonce,
+    // ciphertext) tuple. Without this the relay could re-attribute
+    // our ciphertext to a different "sender" on Bob's screen.
+    const senderSig = signDM({
+      senderSigningPublicKeyB58: this.session.signingPublicKey,
+      senderSigningSecretKey: this.session.signingSecretKey,
+      senderBoxPublicKeyB58: this.session.boxPublicKey,
+      recipientBoxPublicKeyB58: recipientBoxPublicKey,
+      nonceB64: out.nonce,
+      ciphertextB64: out.ciphertext,
+    });
+    if (!senderSig) return false;
     const payload: DMSendMessage = {
       recipientBoxPublicKey,
       ciphertext: out.ciphertext,
       nonce: out.nonce,
+      senderSig,
     };
     return emitWithAck(this.socket, WIRE.DM_SEND, payload);
   }
@@ -583,6 +597,45 @@ class RealtimeClient {
       const raw = safeParse(DMMessageRelaySchema, rawIn, 'dm:message');
       if (!raw) return;
       if (!this.session) return;
+      // Audit pt6 C1: a malicious relay can swap `senderSigningPub`
+      // and produce a fresh valid sig (the relay holds Mallory's
+      // secret if Mallory IS the relay). Two checks together close
+      // the attack:
+      //   (a) verify the per-message sig against the asserted signing
+      //       pub — proves the asserted holder generated this exact
+      //       (signing, box, recipient, nonce, ciphertext) binding.
+      //   (b) cross-check (signing, box) against the verified peer
+      //       cache — proves the binding was established earlier via
+      //       a roster sig path, not by the relay alone.
+      // Without (b), Mallory's freshly-minted (signing=mallory,
+      // box=alice) binding would verify against itself — Bob's UI
+      // would still attribute Alice's real ciphertext to Mallory.
+      const sigOk = verifyDM({
+        senderSigningPublicKeyB58: raw.senderSigningPublicKey,
+        senderBoxPublicKeyB58: raw.senderBoxPublicKey,
+        recipientBoxPublicKeyB58: this.session.boxPublicKey,
+        nonceB64: raw.nonce,
+        ciphertextB64: raw.ciphertext,
+        sigB58: raw.senderSig,
+      });
+      if (!sigOk) {
+        // Either the sig is malformed, or someone (relay) tried to
+        // re-attribute without holding the asserted signing-key's
+        // secret. Silently drop — surfacing would teach an attacker
+        // which forgeries get noticed.
+        return;
+      }
+      const cached = this.peerCache.get(raw.senderSigningPublicKey);
+      if (!cached || cached.boxPublicKey !== raw.senderBoxPublicKey) {
+        // No verified binding yet for this sender. The design assumes
+        // any legitimate DM partner has been observed via roster sig
+        // at some prior point. To start a new DM with someone whose
+        // binding we don't have, join a channel where they're present
+        // — that's the documented "share a channel first" path. Drop
+        // here rather than render unverified (which is what audit pt6
+        // C1 specifically called out as the spoofing vector).
+        return;
+      }
       const plaintext = openFromSender(
         raw.ciphertext,
         raw.nonce,
@@ -590,13 +643,9 @@ class RealtimeClient {
         this.session.boxSecretKey,
       );
       if (plaintext === null) return;
-      // Refresh-only: a DM from a peer we don't already have a verified
-      // roster binding for is treated as unverified — the relay could
-      // be claiming any signing key + its own box key. We accept the
-      // message (it decrypted, so somebody who knows our box key sent
-      // it) but don't poison the peer cache for future DMs. To reply,
-      // the user must share a channel where the sender's binding can
-      // be verified via the roster sig path.
+      // Sig + binding + decryption all passed — safe to refresh the
+      // cached display name (sender may have updated it via re-announce)
+      // and surface the message.
       this.touchExistingPeer({
         signingPublicKey: raw.senderSigningPublicKey,
         boxPublicKey: raw.senderBoxPublicKey,

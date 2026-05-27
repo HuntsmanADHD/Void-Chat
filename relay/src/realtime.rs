@@ -202,6 +202,15 @@ struct DmSendIn {
     recipient_box_public_key: String,
     ciphertext: String,
     nonce: String,
+    /// Per-message ed25519 sig from the sender binding signing-pub to
+    /// (signing-pub|sender-box|recipient-box|nonce|ciphertext). Audit
+    /// pt6 C1: without this the relay could re-attribute Alice's real
+    /// ciphertext to "Mallory" since `senderSigningPublicKey` on the
+    /// outbound `dm:message` was server-asserted. The relay never
+    /// inspects this field — it forwards it unchanged so the receiver
+    /// can verify it against the asserted signing-pub AND cross-check
+    /// the (signing, box) pair against its verified peerCache.
+    sender_sig: String,
 }
 
 // ── Outbound payloads ────────────────────────────────────────────────
@@ -271,6 +280,10 @@ struct DmMessagePayload {
     nonce: String,
     msg_id: String,
     ts: i64,
+    /// Forwarded verbatim from the sender's `dm:send`. The receiver
+    /// verifies this against `sender_signing_public_key`; the relay
+    /// never inspects or generates it. See `DmSendIn::sender_sig`.
+    sender_sig: String,
 }
 
 #[derive(Serialize)]
@@ -438,14 +451,22 @@ async fn on_session_announce(socket: SocketRef, raw: serde_json::Value, state: R
         return fail_announce(&socket, &state, "BAD_SIGNATURE", "announce signature invalid");
     }
 
-    // Display name policy — refuse to trim server-side (audit pt2 H1)
-    // because trimming would invalidate the signature. Client must
-    // trim then sign the trimmed value.
-    let display_name = if parsed.display_name.is_empty() {
-        "anon".to_string()
-    } else {
-        parsed.display_name.clone()
-    };
+    // Display name policy — refuse to trim, refuse to coerce. Audit
+    // pt2 H1 said: don't modify server-side because the sig was over
+    // the original bytes. Audit pt6 H3 caught the leftover bug where
+    // empty → "anon" coercion produced a roster member whose sig
+    // didn't verify against the coerced name; the affected user went
+    // silently invisible to peers. Now reject empty too; clients must
+    // pick at least one printable char and sign the value they show.
+    let display_name = parsed.display_name.clone();
+    if display_name.is_empty() {
+        return fail_announce(
+            &socket,
+            &state,
+            "INVALID_PAYLOAD",
+            "displayName must be non-empty — clients pick a name and sign it",
+        );
+    }
     if display_name.chars().count() > 32 {
         return fail_announce(
             &socket,
@@ -676,6 +697,14 @@ async fn on_channel_send(
 
     let msg_id = make_msg_id();
     let ts = chrono::Utc::now().timestamp_millis();
+    // Dedupe recipients by box key. Audit pt6 H5: a sender could
+    // include the same recipient up to MAX_CHANNEL_RECIPIENTS times,
+    // each one passing roster checks and triggering a separate
+    // ~96 KiB delivery to that recipient. 1:256 amplification per
+    // single send. Last-write-wins is the cheapest fix and matches
+    // what a polite client would have done.
+    let mut sent_to: std::collections::HashSet<String> =
+        std::collections::HashSet::with_capacity(parsed.recipients.len());
     for rec in parsed.recipients {
         if rec.box_public_key == session.box_public_key {
             continue; // don't echo to self
@@ -685,6 +714,9 @@ async fn on_channel_send(
             // refuse to fan out to box keys that aren't in this
             // channel's roster.
             continue;
+        }
+        if !sent_to.insert(rec.box_public_key.clone()) {
+            continue; // duplicate — already delivered to this box
         }
         socket
             .to(box_room(&rec.box_public_key))
@@ -758,6 +790,7 @@ async fn on_dm_send(
                 nonce: parsed.nonce,
                 msg_id: make_msg_id(),
                 ts: chrono::Utc::now().timestamp_millis(),
+                sender_sig: parsed.sender_sig,
             },
         )
         .await

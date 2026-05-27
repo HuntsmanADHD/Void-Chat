@@ -15,6 +15,10 @@ import {
   getCommunityPassword,
   setCommunityPassword,
 } from '@/lib/communityPasswordStore';
+import {
+  clearDeleteToken,
+  communityDeleteAuthHeaders,
+} from '@/lib/communityDeleteTokenStore';
 import { CommunityPasswordPrompt } from '@/components/community/CommunityPasswordPrompt';
 import { useToast } from '@/components/ui/Toast';
 import { useBackdropClose } from '@/hooks/useBackdropClose';
@@ -319,9 +323,10 @@ export default function Community() {
   const handleDeleteCommunity = useCallback(async () => {
     setIsDeleting(true);
     try {
+      // Audit pt6 C2: see Channel.tsx for the same notes.
       const res = await fetch(apiUrlFor(communityId, `/api/communities/${communityId}`), {
         method: 'DELETE',
-        headers: communityAuthHeaders(communityId),
+        headers: communityDeleteAuthHeaders(communityId, getCommunityPassword(communityId)),
       });
       if (!res.ok) {
         if (res.status === 401) {
@@ -334,6 +339,7 @@ export default function Community() {
         return;
       }
       clearCommunityPassword(communityId);
+      clearDeleteToken(communityId);
       navigate('/app');
     } catch {
       setShowDeleteConfirm(false);

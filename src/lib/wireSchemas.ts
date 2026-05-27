@@ -95,6 +95,9 @@ export const DMMessageRelaySchema = z
     nonce: z.string().min(1).max(128),
     msgId: NonEmptyString,
     ts: z.number().int(),
+    // Per-message ed25519 sig from the sender — audit pt6 C1.
+    // Verified by `realtimeClient.ts` before the message is surfaced.
+    senderSig: Base58Str,
   })
   .strict();
 

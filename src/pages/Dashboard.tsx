@@ -13,6 +13,7 @@ import { useApi } from '@/hooks/useApi';
 import { useToast } from '@/components/ui/Toast';
 import { CommunityPasswordPrompt } from '@/components/community/CommunityPasswordPrompt';
 import { setCommunityPassword } from '@/lib/communityPasswordStore';
+import { setDeleteToken } from '@/lib/communityDeleteTokenStore';
 import { OnboardingModal, hasSeenOnboarding } from '@/components/onboarding/OnboardingModal';
 import { apiUrl, apiUrlForOnion } from '@/lib/relayBase';
 import { parseInvite } from '@/lib/invite';
@@ -330,12 +331,15 @@ export default function Dashboard() {
         if (data.icon && data.iconPreview) {
           avatarData = data.iconPreview;
         }
-        const response = await api.post<{ id: string; isPrivate: boolean }>('/api/communities', {
-          name: data.name,
-          description: data.description,
-          avatar: avatarData,
-          password: data.isPrivate ? data.password : undefined,
-        });
+        const response = await api.post<{ id: string; isPrivate: boolean; deleteToken?: string }>(
+          '/api/communities',
+          {
+            name: data.name,
+            description: data.description,
+            avatar: avatarData,
+            password: data.isPrivate ? data.password : undefined,
+          },
+        );
         if (response.success) {
           setShowCreateModal(false);
           showSuccess('Community created successfully!');
@@ -345,6 +349,19 @@ export default function Dashboard() {
               try {
                 sessionStorage.setItem(`voidchat_pw:${id}`, data.password);
               } catch {}
+            }
+            // Audit pt6 C2: when the relay creates a password-less
+            // community it returns a one-time delete-token. Persist
+            // it so this creator (and only this creator) can DELETE
+            // the community later. localStorage so it survives tab
+            // close; clearing site data is the user's opt-out.
+            const deleteToken = response.data?.deleteToken;
+            if (deleteToken) {
+              try {
+                setDeleteToken(id, deleteToken);
+              } catch {
+                // best-effort; user just loses delete authority
+              }
             }
             navigate(`/app/community/${id}`);
           }

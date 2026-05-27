@@ -15,6 +15,10 @@ import {
   getCommunityPassword,
   setCommunityPassword,
 } from '@/lib/communityPasswordStore';
+import {
+  clearDeleteToken,
+  communityDeleteAuthHeaders,
+} from '@/lib/communityDeleteTokenStore';
 import { CommunityPasswordPrompt } from '@/components/community/CommunityPasswordPrompt';
 import { useToast } from '@/components/ui/Toast';
 import { useBackdropClose } from '@/hooks/useBackdropClose';
@@ -174,9 +178,15 @@ export default function Channel() {
   const handleDeleteCommunity = useCallback(async () => {
     setIsDeleting(true);
     try {
+      // Audit pt6 C2: for password-less communities, the relay requires
+      // the delete-token issued at create time (stored locally for the
+      // creator). For password-protected ones, the session-cached
+      // password works as before. Either credential lands in the same
+      // `x-community-password` header — the relay tries them against
+      // whichever hash is stored.
       const res = await fetch(apiUrlFor(communityId, `/api/communities/${communityId}`), {
         method: 'DELETE',
-        headers: communityAuthHeaders(communityId),
+        headers: communityDeleteAuthHeaders(communityId, getCommunityPassword(communityId)),
       });
       if (!res.ok) {
         if (res.status === 401) {
@@ -189,6 +199,7 @@ export default function Channel() {
         return;
       }
       clearCommunityPassword(communityId);
+      clearDeleteToken(communityId);
       navigate('/app');
     } catch {
       setShowDeleteConfirm(false);

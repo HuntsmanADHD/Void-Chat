@@ -25,6 +25,16 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// while preventing accidental fork-bomb resource use.
 const MAX_CONCURRENT_CONNECTIONS: usize = 256;
 
+/// Per-connection lifetime cap. After this the bidirectional copy
+/// returns whether or not either side has closed; the connection is
+/// torn down and the semaphore slot freed. Audit pt6 H1: without
+/// this, a slowloris-style onion (or peer that stops reading) pins
+/// a connection forever, and 256 such victims fully exhaust the
+/// concurrency cap. Ten minutes covers any realistic chat /
+/// HTTP-API exchange; long-lived socket.io streams re-establish
+/// transparently when the underlying connection closes.
+const CONNECTION_LIFETIME: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Where the frontend dials to send traffic at a remote onion. Picked
 /// well above the usual ephemeral range so it can't collide with the
 /// relay (3001), Vite (5173), or Tor's own listeners (19050/19051).
@@ -355,8 +365,27 @@ async fn handle_connection(mut client: TcpStream) -> std::io::Result<()> {
     //    request/response chunks, a WebSocket frame stream after a 101
     //    Upgrade, whatever the relay speaks. Just become a transparent
     //    bidirectional byte pump until one side closes.
-    tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
-    Ok(())
+    //
+    //    Audit pt6 H1: a per-connection lifetime cap. Without it, a
+    //    slowloris-style onion (or any peer that stops reading) would
+    //    pin a connection forever; with MAX_CONCURRENT_CONNECTIONS =
+    //    256 an attacker could exhaust the semaphore and fully DoS
+    //    cross-host comms for the session. Ten minutes is generous
+    //    for any realistic chat / API exchange and a long-running
+    //    socket.io stream restarts cleanly when it expires.
+    match tokio::time::timeout(
+        CONNECTION_LIFETIME,
+        tokio::io::copy_bidirectional(&mut client, &mut upstream),
+    )
+    .await
+    {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(std::io::Error::other(format!(
+            "proxy connection to {onion} exceeded {}s lifetime cap",
+            CONNECTION_LIFETIME.as_secs()
+        ))),
+    }
 }
 
 fn find_double_crlf(buf: &[u8]) -> Option<usize> {

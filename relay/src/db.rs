@@ -32,12 +32,13 @@ const SCHEMA: &str = r#"
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS Community (
-    id           TEXT PRIMARY KEY,
-    name         TEXT NOT NULL UNIQUE,
-    description  TEXT,
-    avatar       TEXT,
-    passwordHash TEXT,
-    createdAt    TEXT NOT NULL
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL UNIQUE,
+    description     TEXT,
+    avatar          TEXT,
+    passwordHash    TEXT,
+    deleteTokenHash TEXT,
+    createdAt       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS Community_name_idx ON Community(name);
 
@@ -66,6 +67,12 @@ pub struct Community {
     /// can read it without a separate query.
     #[serde(skip_serializing)]
     pub password_hash: Option<String>,
+    /// Argon2id hash of the random delete-token issued at create time
+    /// when the community has no password. Audit pt6 C2: without
+    /// this, ANY joiner who knew the community ID could DELETE the
+    /// community via the API. Never returned to clients.
+    #[serde(skip_serializing)]
+    pub delete_token_hash: Option<String>,
     pub created_at: String,
     /// Computed at query time. True when `password_hash` is non-NULL.
     /// Exposed to clients so the lock icon can render without leaking
@@ -114,6 +121,17 @@ impl Db {
         }
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        // Lightweight migration: add deleteTokenHash to Community on
+        // databases that pre-date audit pt6 C2. `CREATE TABLE IF NOT
+        // EXISTS` won't add columns to an existing table; this does.
+        // Swallow the "duplicate column" error so the migration is
+        // idempotent across boots.
+        match conn.execute("ALTER TABLE Community ADD COLUMN deleteTokenHash TEXT", []) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+                if msg.contains("duplicate column name") => {}
+            Err(e) => return Err(DbError::Sqlite(e)),
+        }
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -144,7 +162,7 @@ impl Db {
     pub async fn list_communities(&self) -> Result<Vec<Community>, DbError> {
         self.with_conn(|c| {
             let mut stmt = c.prepare(
-                "SELECT id, name, description, avatar, passwordHash, createdAt
+                "SELECT id, name, description, avatar, passwordHash, deleteTokenHash, createdAt
                  FROM Community
                  ORDER BY createdAt DESC",
             )?;
@@ -162,7 +180,7 @@ impl Db {
         let id = id.to_string();
         self.with_conn(move |c| {
             c.query_row(
-                "SELECT id, name, description, avatar, passwordHash, createdAt
+                "SELECT id, name, description, avatar, passwordHash, deleteTokenHash, createdAt
                  FROM Community WHERE id = ?1",
                 params![id],
                 row_to_community,
@@ -179,6 +197,7 @@ impl Db {
         description: Option<String>,
         avatar: Option<String>,
         password_hash: Option<String>,
+        delete_token_hash: Option<String>,
     ) -> Result<(Community, Channel), DbError> {
         self.with_conn(move |c| {
             let community_id = new_id();
@@ -188,9 +207,9 @@ impl Db {
             let tx = c.unchecked_transaction()?;
             tx.execute(
                 "INSERT INTO Community
-                 (id, name, description, avatar, passwordHash, createdAt)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![community_id, name, description, avatar, password_hash, now],
+                 (id, name, description, avatar, passwordHash, deleteTokenHash, createdAt)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![community_id, name, description, avatar, password_hash, delete_token_hash, now],
             )
             .map_err(|e| {
                 // SQLite unique-constraint failure → user-friendly error.
@@ -216,6 +235,7 @@ impl Db {
                 avatar,
                 is_private: password_hash.is_some(),
                 password_hash,
+                delete_token_hash,
                 created_at: now.clone(),
             };
             let channel = Channel {
@@ -329,6 +349,7 @@ impl Db {
 
 fn row_to_community(row: &rusqlite::Row) -> rusqlite::Result<Community> {
     let password_hash: Option<String> = row.get("passwordHash")?;
+    let delete_token_hash: Option<String> = row.get("deleteTokenHash")?;
     Ok(Community {
         id: row.get("id")?,
         name: row.get("name")?,
@@ -336,6 +357,7 @@ fn row_to_community(row: &rusqlite::Row) -> rusqlite::Result<Community> {
         avatar: row.get("avatar")?,
         is_private: password_hash.is_some(),
         password_hash,
+        delete_token_hash,
         created_at: row.get("createdAt")?,
     })
 }

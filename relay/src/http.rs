@@ -314,27 +314,43 @@ async fn create_community(
         }
     };
 
+    // Audit pt6 C2: when no password is set, generate a delete-token
+    // so the creator (and only the creator) can DELETE the community
+    // later. The plaintext is returned ONCE in this response and never
+    // exposed again. The hash is what we persist; verification uses
+    // the same argon2id path as passwords. Without this, any joiner
+    // who learned the community ID could DELETE it.
+    let (delete_token_plain, delete_token_hash) = if password_hash.is_none() {
+        let token = mint_delete_token();
+        let hashed = auth::hash_password(&token)
+            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        (Some(token), Some(hashed))
+    } else {
+        (None, None)
+    };
+
     let (community, channel) = state
         .db
-        .create_community(name, description, avatar, password_hash)
+        .create_community(name, description, avatar, password_hash, delete_token_hash)
         .await?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "id": community.id,
-            "name": community.name,
-            "description": community.description,
-            "avatar": community.avatar,
-            "isPrivate": community.is_private,
-            "channels": [{
-                "id": channel.id,
-                "name": channel.name,
-                "isDefault": channel.is_default,
-            }],
-            "createdAt": community.created_at,
-        })),
-    ))
+    let mut body = json!({
+        "id": community.id,
+        "name": community.name,
+        "description": community.description,
+        "avatar": community.avatar,
+        "isPrivate": community.is_private,
+        "channels": [{
+            "id": channel.id,
+            "name": channel.name,
+            "isDefault": channel.is_default,
+        }],
+        "createdAt": community.created_at,
+    });
+    if let Some(token) = delete_token_plain {
+        body["deleteToken"] = json!(token);
+    }
+    Ok((StatusCode::CREATED, Json(body)))
 }
 
 async fn get_community(
@@ -376,7 +392,26 @@ async fn delete_community(
         ));
     }
     let community = state.db.get_community(&id).await?;
-    gate_community(&state, &community.password_hash, &headers, &community.id).await?;
+    // For DELETE, the password (if set) OR the delete-token (if no
+    // password was set at create time) is the auth credential.
+    // Audit pt6 C2: previously `gate_community` early-returned Ok
+    // when no password was set, so anyone with the community ID
+    // could nuke any password-less community.
+    let credential = community
+        .password_hash
+        .as_ref()
+        .or(community.delete_token_hash.as_ref());
+    let Some(stored) = credential else {
+        // Should be impossible — every community gets either a
+        // password_hash (if user-set) or a delete_token_hash (if
+        // not). A NULL/NULL row would only exist on a pre-pt6 DB
+        // that wasn't migrated through the create-with-token path.
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "this community predates delete-auth migration — cannot delete via API",
+        ));
+    };
+    verify_credential(&state, stored, &headers).await?;
     state.db.delete_community(&id).await?;
     Ok(Json(json!({ "deleted": id })))
 }
@@ -582,6 +617,53 @@ async fn gate_community(
         });
     }
     Ok(())
+}
+
+/// Verify a presented credential (password OR delete-token) against
+/// a stored argon2id hash. Used only by DELETE — the read paths still
+/// go through `gate_community` which is open for password-less rows
+/// (joiners get to list channels without proving ownership). Audit
+/// pt6 C2.
+async fn verify_credential(
+    state: &Arc<AppState>,
+    stored: &str,
+    headers: &HeaderMap,
+) -> Result<(), ApiError> {
+    let _ = state; // unused (no rehash on delete-token path), kept for symmetry
+    let provided = headers
+        .get("x-community-password")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if provided.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "delete requires the password (or delete-token if no password was set)",
+        ));
+    }
+    let candidate = provided.to_string();
+    let stored = stored.to_string();
+    let outcome = tokio::task::spawn_blocking(move || auth::verify_password(&candidate, &stored))
+        .await
+        .map_err(|e| {
+            warn!("verify_credential join error: {e}");
+            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
+        })?;
+    if !outcome.valid {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "invalid credential",
+        ));
+    }
+    Ok(())
+}
+
+/// Random 32-byte delete-token, base58 encoded (~44 chars). Same
+/// alphabet as community IDs to keep the visual character set
+/// consistent for users who copy/paste these.
+fn mint_delete_token() -> String {
+    let mut buf = [0u8; 32];
+    getrandom::getrandom(&mut buf).expect("OS RNG unavailable");
+    bs58::encode(buf).into_string()
 }
 
 // ── Body size limit ─────────────────────────────────────────────────
