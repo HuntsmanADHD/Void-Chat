@@ -339,12 +339,12 @@ pub const PROXY_CIRCUIT_HEADER: &str = "X-Voidchat-Proxy-Circuit";
 fn rewrite_host_header(headers: &str, onion: &str, circuit_token: &str) -> String {
     let mut out = String::with_capacity(headers.len());
     let mut host_replaced = false;
+    let mut is_upgrade = false;
     // Stop at the first empty line — that's the end-of-headers marker
     // in the input, and we emit the terminator ourselves below. Letting
     // the loop preserve it caused injected headers to land *after*
     // `\r\n\r\n`, which upstream parsed as a malformed pipelined
     // request and answered with a 400 right behind every real response.
-    // Curl tolerated the trailing 400; WebKit failed the whole fetch.
     for line in headers.split("\r\n") {
         if line.is_empty() {
             break;
@@ -362,6 +362,30 @@ fn rewrite_host_header(headers: &str, onion: &str, circuit_token: &str) -> Strin
             // value the relay should ever see.
             continue;
         }
+        // Suppress the client's connection-management headers; we
+        // re-emit one below in a deterministic shape. The bug we're
+        // closing: handle_connection parses /o/<token>/<onion>/... on
+        // the FIRST request only and then becomes a transparent byte
+        // pump via copy_bidirectional. WebKit pools HTTP/1.1
+        // connections by origin (localhost:11811), so any earlier
+        // proxy fetch in the session — useTorStatus, useProxyStatus,
+        // devtools probes — would let a later /join fetch reuse the
+        // same TCP connection and skip the parse, arriving at upstream
+        // with the unstripped /o/... prefix. axum returns its default
+        // empty-body 404 for the unmatched path. Forcing one request
+        // per connection via Connection: close makes every fetch open
+        // a fresh socket and hit the parse path.
+        if lower.starts_with("connection:")
+            || lower.starts_with("keep-alive:")
+            || lower.starts_with("proxy-connection:")
+        {
+            continue;
+        }
+        if lower.starts_with("upgrade:") {
+            is_upgrade = true;
+            // fall through so the Upgrade header itself gets forwarded
+            // if the allowlist permits it (WebSocket handshake)
+        }
         if is_header_allowed(&lower) {
             out.push_str(line);
             out.push_str("\r\n");
@@ -370,6 +394,14 @@ fn rewrite_host_header(headers: &str, onion: &str, circuit_token: &str) -> Strin
     }
     if !host_replaced {
         out.push_str(&format!("Host: {onion}\r\n"));
+    }
+    // WebSocket upgrade requests need their keep-alive semantics
+    // preserved; everything else gets force-closed so the next fetch
+    // reopens a fresh connection through the parse path.
+    if is_upgrade {
+        out.push_str("Connection: upgrade\r\n");
+    } else {
+        out.push_str("Connection: close\r\n");
     }
     out.push_str(&format!("{PROXY_CIRCUIT_HEADER}: {circuit_token}\r\n"));
     out.push_str("\r\n");
