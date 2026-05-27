@@ -2,7 +2,7 @@
 name = "voidchat-relay"
 version = "0.1.0"
 edition = "2021"
-description = "Void Chat relay — replaces server/socket-server.ts as a self-contained Rust binary"
+description = "Void Chat relay — HTTP API + socket.io for the desktop messenger, spawned as a Tauri sidecar"
 license = "MIT"
 
 [[bin]]

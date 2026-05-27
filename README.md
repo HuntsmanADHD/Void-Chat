@@ -20,8 +20,7 @@ No accounts. No email. No password. No history. Every browser tab generates a fr
    - [4. Clone the repo](#4-clone-the-repo)
    - [5. Install the JS dependencies](#5-install-the-js-dependencies)
    - [6. Fetch the bundled Tor runtime](#6-fetch-the-bundled-tor-runtime)
-   - [7. Create the SQLite database](#7-create-the-sqlite-database)
-   - [8. Launch the app](#8-launch-the-app)
+   - [7. Launch the app](#7-launch-the-app)
 3. [What happens on first launch](#what-happens-on-first-launch)
 4. [Inviting friends over Tor](#inviting-friends-over-tor)
 5. [Joining someone else's chat](#joining-someone-elses-chat)
@@ -55,7 +54,7 @@ You also get **Wash**, a separate off-Void encryption tool (different cipher fam
 
 ## Step-by-step: from zero to running Void Chat
 
-You'll install five things — system libraries, Rust, Node, the repo, and the dependencies — then run one command. Total time: 10–30 minutes depending on your machine and connection.
+You'll install six things — system libraries, Rust, Node, the repo, the JS dependencies, and the bundled Tor runtime — then run one command. Total time: 10–30 minutes depending on your machine and connection.
 
 ### 1. Install the OS-level prerequisites
 
@@ -272,14 +271,21 @@ cd relay && cargo run
 yarn typecheck
 
 # Build the production Tauri artifacts for your OS.
-# NOTE: in v0.1 these are NOT distribution-ready — see the
-# installer caveat under "Fetch the bundled Tor runtime" above.
+# Self-contained as of v0.1 (Rust shell + Rust relay sidecar + Tor
+# bundled). v0.1 is still tagged a source-run release while the
+# bundled installer gets wider testing — see "Fetch the bundled Tor
+# runtime" above.
 yarn tauri:build
 ```
 
-Stopping is `Ctrl+C` in the terminal that started `yarn tauri:dev`. Tauri sends `RunEvent::Exit` to the Rust side, which kills the relay sidecar and SIGTERMs the Tor child (with a 1.5-second grace before SIGKILL).
+Stopping is `Ctrl+C` in the terminal that started `yarn tauri:dev`. Tauri sends `RunEvent::Exit` to the Rust side, which kills the relay sidecar and SIGTERMs the Tor child (with a 1.5-second grace before SIGKILL). On Linux the relay child is registered with `PR_SET_PDEATHSIG` so it also dies if the parent is SIGKILLed or crashes.
 
-If you see orphan `tor` processes lingering between runs (`pgrep -a tor` shows one), kill them by PID before the next launch — a leftover Tor will hold ports 19050/19051 and the new one will silently fail to bind.
+If a previous launch crashed before cleanup, you may see orphan processes holding the dev ports:
+```bash
+pgrep -a tor              # tor on 19050 / 19051
+pgrep -a voidchat-relay   # relay on 3001 (macOS/Windows only — Linux auto-reaps)
+```
+Kill any survivors by PID before the next `yarn tauri:dev`. A leftover relay will hold `:3001` and the new one will silently fail to bind; you'll get CORS errors from a relay running without the dev origin allowlist.
 
 ---
 
@@ -302,7 +308,7 @@ If you see orphan `tor` processes lingering between runs (`pgrep -a tor` shows o
 - **Desktop shell:** Tauri 2 (Rust)
 - **Network:** Tor v3 hidden services, SOCKS5 forward proxy in Rust
 - **Crypto:** [TweetNaCl](https://github.com/dchest/tweetnacl-js) for chat (Curve25519 + XSalsa20-Poly1305), Web Crypto for Wash (AES-256-GCM + PBKDF2)
-- **Relay:** Node + socket.io, Prisma + SQLite for the directory
-- **Build:** Yarn 4 (Corepack), TypeScript strict
+- **Relay:** Rust sidecar (axum + socketioxide + rusqlite/bundled SQLite), argon2id for community passwords. Spawned by the Tauri shell at startup.
+- **Build:** Yarn 4 (Corepack), TypeScript strict; `src-tauri/build.rs` compiles the relay crate and stages it as a sidecar under `binaries/voidchat-relay-<target-triple>`
 
 License: MIT. Pull requests and forks welcome — see CONTRIBUTING (or just open an issue with what you'd like to change).
