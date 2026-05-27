@@ -339,16 +339,20 @@ pub const PROXY_CIRCUIT_HEADER: &str = "X-Voidchat-Proxy-Circuit";
 fn rewrite_host_header(headers: &str, onion: &str, circuit_token: &str) -> String {
     let mut out = String::with_capacity(headers.len());
     let mut host_replaced = false;
+    // Stop at the first empty line — that's the end-of-headers marker
+    // in the input, and we emit the terminator ourselves below. Letting
+    // the loop preserve it caused injected headers to land *after*
+    // `\r\n\r\n`, which upstream parsed as a malformed pipelined
+    // request and answered with a 400 right behind every real response.
+    // Curl tolerated the trailing 400; WebKit failed the whole fetch.
     for line in headers.split("\r\n") {
         if line.is_empty() {
-            out.push_str("\r\n");
-            continue;
+            break;
         }
         let lower = line.to_ascii_lowercase();
         if lower.starts_with("host:") {
-            out.push_str(&format!("Host: {onion}"));
+            out.push_str(&format!("Host: {onion}\r\n"));
             host_replaced = true;
-            out.push_str("\r\n");
             continue;
         }
         if lower.starts_with(&format!("{}:", PROXY_CIRCUIT_HEADER.to_ascii_lowercase())) {
@@ -368,6 +372,7 @@ fn rewrite_host_header(headers: &str, onion: &str, circuit_token: &str) -> Strin
         out.push_str(&format!("Host: {onion}\r\n"));
     }
     out.push_str(&format!("{PROXY_CIRCUIT_HEADER}: {circuit_token}\r\n"));
+    out.push_str("\r\n");
     out
 }
 

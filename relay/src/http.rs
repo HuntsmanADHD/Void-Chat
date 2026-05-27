@@ -204,9 +204,21 @@ fn build_cors(cfg: &Config) -> CorsLayer {
     // an entire afternoon of chasing ghosts. 60 seconds is plenty
     // in production (preflights are cheap; we're loopback-only) and
     // closes the cache-poisoning footgun for dev.
+    //
+    // `allow_credentials(true)`: WebKit treats `localhost:5173 →
+    // localhost:11811` as same-site (port differs, hostname same) and
+    // can implicitly include credentials. If the server omits
+    // `Access-Control-Allow-Credentials: true`, WebKit silently
+    // blocks the response and reports a synthesized CORS error to
+    // JS — even though the request reached the server fine. We don't
+    // actually rely on cookies, but allowing credentials makes the
+    // response acceptable to WebKit regardless of its same-site
+    // judgement. The relay binds loopback only, so this isn't a CSRF
+    // surface expansion.
     let cors = CorsLayer::new()
         .allow_methods(methods)
         .allow_headers(headers)
+        .allow_credentials(true)
         .max_age(Duration::from_secs(60));
 
     if cfg.cors_allow_any {
