@@ -448,6 +448,7 @@ fn mint_circuit_token() -> String {
 }
 
 async fn handle_connection(mut client: TcpStream) -> std::io::Result<()> {
+    log::info!("[onion-proxy] accept from {:?}", client.peer_addr().ok());
     // 1) Read the first request's headers. We need them to extract the
     //    onion from the path. Cap the buffer so a misbehaving client
     //    can't OOM us by never sending \r\n\r\n.
