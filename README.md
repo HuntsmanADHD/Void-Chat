@@ -161,31 +161,23 @@ This pulls the official Tor Expert Bundle for your host platform (Linux x86_64/a
 
 In v0.1, the bundled Tor is used by the **source-run** flow (`yarn tauri:dev`). If you skip the fetch script, the runtime falls back to a system `tor` on your `PATH` (install via your package manager).
 
-> **About installers in v0.1:** `yarn tauri:build` currently produces `.deb` / `.rpm` artifacts that include the frontend, the Rust shell, and the Tor binary — but **not** the Node relay process the app depends on. As a result, the installed app today can't talk to itself. The relay is being ported from Node to Rust for v0.2; once that lands, the installer ships as a single self-contained binary. Until then, **v0.1 is a source-run release** — clone the repo, install deps, run `yarn tauri:dev`. Don't distribute the build artifacts; they're a build-pipeline artifact, not a release.
+> **About installers:** `yarn tauri:build` produces `.deb` / `.rpm` artifacts that bundle the frontend, the Rust shell, the Rust relay (now a sidecar), and the Tor binary into a single self-contained installer. v0.1 is still tagged a **source-run release** while the bundled installer gets wider testing — clone, install deps, `yarn tauri:dev` is the supported path. The artifacts produced by `yarn tauri:build` are now self-contained; if you choose to distribute them, expect them to behave as a v0.1.x preview.
 
-### 7. Create the SQLite database
-
-The relay (`server/socket-server.ts`) needs an empty schema in `data/voidchat.db`. The repo ships an empty file; one command writes the tables into it:
-
-```bash
-DATABASE_URL='file:../data/voidchat.db' npx prisma db push --skip-generate
-```
-
-You should see `Your database is now in sync with your Prisma schema`. You only do this once.
-
-### 8. Launch the app
+### 7. Launch the app
 
 ```bash
 yarn tauri:dev
 ```
 
-First launch builds the entire Rust crate tree — expect a couple of minutes of `Compiling …` log lines. Subsequent launches are seconds.
+First launch builds the entire Rust crate tree — expect a couple of minutes of `Compiling …` log lines (the relay crate is also compiled by `src-tauri`'s `build.rs` so it gets staged as a sidecar in the same step). Subsequent launches are seconds.
 
 When it finishes you'll get a native window titled **Void Chat**. The terminal will stream three things in parallel:
 
 - **Vite** serving the UI on `:5173`
-- **The relay** listening on `:3001` (HTTP API + socket.io)
+- **The relay** sidecar listening on `:3001` (lines prefixed `[relay/stdout]`; HTTP API + socket.io)
 - **Tor** bootstrapping (`[tor] Bootstrapped 5% → 100%` over 30–60 seconds)
+
+The relay creates its SQLite database automatically on first run at `~/.local/share/dev.voidchat.app/voidchat.db` (or the OS-equivalent app data dir) — no separate `prisma db push` step.
 
 When Tor hits 100% you'll see:
 ```
@@ -273,8 +265,8 @@ yarn dev
 # Production-style build of the frontend only
 yarn build
 
-# Run just the relay (when iterating on server code)
-yarn socket
+# Run just the relay (when iterating on the Rust relay crate)
+cd relay && cargo run
 
 # Type-check the whole project
 yarn typecheck
@@ -285,7 +277,7 @@ yarn typecheck
 yarn tauri:build
 ```
 
-Stopping is `Ctrl+C` in the terminal that started `yarn tauri:dev`. Tauri sends `RunEvent::Exit` to the Rust side, which SIGTERMs the Tor child (with a 1.5-second grace before SIGKILL).
+Stopping is `Ctrl+C` in the terminal that started `yarn tauri:dev`. Tauri sends `RunEvent::Exit` to the Rust side, which kills the relay sidecar and SIGTERMs the Tor child (with a 1.5-second grace before SIGKILL).
 
 If you see orphan `tor` processes lingering between runs (`pgrep -a tor` shows one), kill them by PID before the next launch — a leftover Tor will hold ports 19050/19051 and the new one will silently fail to bind.
 

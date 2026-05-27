@@ -154,9 +154,10 @@ export const CommunityCard = React.memo(function CommunityCard({
       } ${className}`}
     >
       {/* Banner (if available). Defense in depth: the API gate in
-          server/api.ts rejects non-data: avatars, but we also filter
-          here in case a future endpoint forgets to. A bare http(s) URL
-          here would trigger a clearnet fetch and leak the viewer's IP. */}
+          relay/src/http.rs rejects non-data: avatars, but we also
+          filter here in case a future endpoint forgets to. A bare
+          http(s) URL here would trigger a clearnet fetch and leak the
+          viewer's IP. */}
       {community.banner && isSafeImageSrc(community.banner) && size === 'lg' && (
         <div className="h-24 overflow-hidden">
           <img

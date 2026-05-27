@@ -18,12 +18,10 @@ const Bs58Sig = z.string().min(1).max(128);
 const NonEmptyString = z.string().min(1);
 
 /**
- * Ciphertext upper bound. Mirrors `MAX_CIPHERTEXT_BYTES` on the server
- * (`server/socket-server.ts`). Kept in sync by convention — a future
- * refactor that hoists shared constants into a `wire-constants.ts`
- * imported by both sides would close the convention gap, but pulling
- * server symbols into the client bundle has its own footgun (would
- * accidentally drag Prisma deps over). For now: change both at once.
+ * Ciphertext upper bound. Mirrors `MAX_CIPHERTEXT_BYTES` in
+ * `relay/src/realtime.rs`. Kept in sync by convention — the relay is a
+ * separate Rust crate so the constants can't share a module. Change
+ * both at once.
  */
 const MAX_CIPHERTEXT_BYTES = 96 * 1024;
 

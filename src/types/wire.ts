@@ -1,8 +1,8 @@
 /**
- * Wire protocol shared between the Next client (`useRealtime`) and the
- * standalone socket relay (`server/socket-server.ts`). The relay never
- * decrypts; all message bodies are nacl.box-encrypted by the sender to one
- * specific recipient's box public key.
+ * Wire protocol shared between the renderer (`useRealtime`) and the
+ * Rust relay sidecar (`relay/src/realtime.rs`). The relay never
+ * decrypts; all message bodies are nacl.box-encrypted by the sender
+ * to one specific recipient's box public key.
  *
  * Authentication is connection-bound: on connect the server emits
  * `connection:nonce` with a server-issued random nonce. The client signs

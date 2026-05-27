@@ -18,10 +18,6 @@
 # testing
 /coverage
 
-# next.js
-/.next/
-/out/
-
 # vite
 /dist/
 
@@ -54,9 +50,6 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
-next-env.d.ts
-
-/src/generated/prisma
 
 # SQLite runtime data (self-host)
 /data/

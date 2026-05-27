@@ -8,9 +8,9 @@
  * joiner's real IP the moment they load the community list. The whole
  * point of running on Tor is defeated.
  *
- * The server-side gate in `server/api.ts` is the primary defense, but
- * this client-side check is a belt-and-suspenders so the leak can't
- * reopen if any future endpoint forgets to validate.
+ * The server-side gate in `relay/src/http.rs` is the primary defense,
+ * but this client-side check is a belt-and-suspenders so the leak
+ * can't reopen if any future endpoint forgets to validate.
  *
  * Allowed shapes:
  *   - inline `data:image/(png|jpeg|webp|gif);base64,...`
