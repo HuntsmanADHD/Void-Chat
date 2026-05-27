@@ -29,8 +29,10 @@
 /build
 **/dist/
 
-# tauri
+# tauri + rust build artifacts
 **/src-tauri/target/
+**/relay/target/
+**/target/
 
 # misc
 .DS_Store
