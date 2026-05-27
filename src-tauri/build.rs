@@ -91,6 +91,12 @@ fn stage_relay_sidecar() {
     };
     let staged = binaries_dir.join(&staged_name);
     copy_if_changed(&built, &staged);
+
+    // Embed the absolute staged path at compile time so the runtime
+    // fallback can find the binary in dev runs where `tauri dev`
+    // doesn't stage externalBin next to the dev exe (it only does
+    // that for `tauri build`). `option_env!` in relay.rs reads this.
+    println!("cargo:rustc-env=VOIDCHAT_RELAY_DEV_PATH={}", staged.display());
 }
 
 fn copy_if_changed(src: &Path, dst: &Path) {

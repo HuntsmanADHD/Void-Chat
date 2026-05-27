@@ -57,14 +57,46 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
     let mut cmd = Command::new(&bin_path);
     cmd.env("SOCKET_PORT", RELAY_PORT.to_string())
         .env("VOIDCHAT_DATA_DIR", &data_dir)
-        // CORS_ORIGIN inherits the relay's compiled-in production
-        // default (`tauri://localhost`, `https://tauri.localhost`,
-        // `http://tauri.localhost`) — exactly the webview origins.
-        // Dev runs additionally need vite's origin; tauri:dev sets it
-        // there.
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    // CORS:
+    //   Release builds inherit the relay's compiled-in production
+    //   default (`tauri://localhost`, `https://tauri.localhost`,
+    //   `http://tauri.localhost`) — exactly the webview origins.
+    //
+    //   Debug builds also need vite's dev origin (`localhost:5173`)
+    //   because `tauri dev` loads the webview from the vite dev
+    //   server, so the renderer's Origin header is the vite URL.
+    //   Without this override, every fetch from the renderer gets
+    //   CORS-blocked even though the relay is responding.
+    if cfg!(debug_assertions) {
+        cmd.env(
+            "CORS_ORIGIN",
+            "http://localhost:5173,http://localhost:1420,tauri://localhost,https://tauri.localhost,http://tauri.localhost",
+        );
+    }
+
+    // PR_SET_PDEATHSIG: send SIGTERM to the child when this parent
+    // dies for ANY reason — clean shutdown, panic, SIGKILL, crashed
+    // dev session, terminal closed. Without this, a parent that
+    // doesn't get a chance to run its shutdown handler leaves the
+    // relay orphaned on :3001, and the next launch fails to bind
+    // because the old relay is still there. Hit this exact bug
+    // during the v0.2 cutover; locking it down so it doesn't recur.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            // PR_SET_PDEATHSIG = 1, SIGTERM = 15
+            let r = libc::prctl(1, 15, 0, 0, 0);
+            if r != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 
     let mut child = cmd
         .spawn()
@@ -124,10 +156,20 @@ fn resolve_binary(app: &AppHandle) -> Result<PathBuf, String> {
         }
     }
 
-    // Dev fallback: when running `cargo run` directly from the
-    // workspace (no Tauri packaging step), the staged sidecar lives
-    // under src-tauri/binaries/<name>-<triple>. Resolve via the
-    // resource dir so this works without re-running build.rs.
+    // Dev fallback: when running via `tauri dev`, tauri-cli builds
+    // the binary but does NOT stage externalBin entries next to the
+    // dev exe (that staging is only done for `tauri build`). Fall
+    // back to the absolute path embedded by build.rs at compile time
+    // — that always points at the freshly-built sidecar under
+    // src-tauri/binaries/<name>-<triple>.
+    if let Some(staged) = option_env!("VOIDCHAT_RELAY_DEV_PATH") {
+        let p = PathBuf::from(staged);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+
+    // Last-ditch: search the Tauri resource dir.
     if let Ok(res_dir) = app.path().resource_dir() {
         let resource_candidates = [
             res_dir.join("binaries").join(RELAY_BIN),
