@@ -30,11 +30,15 @@ serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Crypto
-argon2 = "0.5"
+argon2 = { version = "0.5", features = ["std"] }
 ed25519-dalek = { version = "2", features = ["std"] }
+scrypt = { version = "0.11", default-features = false } # legacy hash verify only
 sha2 = "0.10"
 getrandom = "0.2"
 constant_time_eq = "0.3"
+
+# Error handling
+thiserror = "1"
 
 # Base58 (matches bs58 in TypeScript client)
 bs58 = "0.5"

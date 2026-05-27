@@ -13,11 +13,13 @@
 
 use std::net::SocketAddr;
 
-use axum::{routing::get, Router};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+mod auth;
 mod config;
+mod db;
+mod http;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,11 +35,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = config::Config::from_env();
     info!(
         port = cfg.port,
+        data_dir = %cfg.data_dir.display(),
         cors_origins = ?cfg.cors_origins,
         "starting voidchat-relay"
     );
 
-    let app = Router::new().route("/healthz", get(healthz));
+    let db_path = cfg.db_path();
+    info!(path = %db_path.display(), "opening database");
+    let db = db::Db::open(&db_path)
+        .map_err(|e| format!("failed to open database at {}: {e}", db_path.display()))?;
+    info!("database ready");
+
+    let state = http::AppState::new(db);
+    let app = http::router(state, &cfg);
 
     // Pinned to loopback. The relay is only ever reached via either
     // the local Tauri renderer or the local onion proxy forwarding
@@ -47,18 +57,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!(%addr, "listening");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // `into_make_service_with_connect_info` exposes the peer address
+    // to handlers via the `ConnectInfo<SocketAddr>` extractor, so
+    // rate-limit IP keys come from the actual connection peer (not
+    // a forgeable header — see audit pt2 H6).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     info!("shutdown complete");
     Ok(())
-}
-
-/// Liveness probe. The Tauri shell can poll this to confirm the relay
-/// is up before letting the renderer make API calls.
-async fn healthz() -> &'static str {
-    "ok\n"
 }
 
 async fn shutdown_signal() {
