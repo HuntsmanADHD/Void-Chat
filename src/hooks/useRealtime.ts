@@ -29,7 +29,11 @@ export interface UseRealtimeOptions {
   /** Subscribe to DM deliveries while this component is mounted. */
   onDMMessage?: (msg: DecryptedDMMessage) => void;
   /** Called when a DM send failed because the recipient is offline. */
-  onDMOffline?: (recipientBoxPublicKey: string) => void;
+  // Note: `onDMOffline` was removed along with the `dm:offline` wire
+  // event — it was a presence oracle (a relay told you whether a
+  // peer's boxPublicKey was currently connected). Server stopped
+  // emitting it in audit pt1 #9; the entire wire surface was deleted
+  // in audit pt5 M1 to close the re-openable client-side path.
   /** Override the relay base URL. Pages that operate on a remote-hosted
    *  community pass the proxy URL (`http://localhost:11811/o/<onion>`)
    *  so socket.io dials through Tor. Falls back to the local relay. */
@@ -57,10 +61,8 @@ export function useRealtime(options: UseRealtimeOptions = {}): UseRealtimeReturn
   // Pin callbacks in refs so subscription effect doesn't churn on every render.
   const channelCbRef = useRef(options.onChannelMessage);
   const dmCbRef = useRef(options.onDMMessage);
-  const offlineCbRef = useRef(options.onDMOffline);
   channelCbRef.current = options.onChannelMessage;
   dmCbRef.current = options.onDMMessage;
-  offlineCbRef.current = options.onDMOffline;
 
   // Initialize the singleton when the session becomes available.
   // If `relayUrl` changes (e.g. the user navigates from a local community
@@ -82,11 +84,9 @@ export function useRealtime(options: UseRealtimeOptions = {}): UseRealtimeReturn
   useEffect(() => {
     const offChannel = client.onChannelMessage((m) => channelCbRef.current?.(m));
     const offDM = client.onDMMessage((m) => dmCbRef.current?.(m));
-    const offOffline = client.onDMOffline((k) => offlineCbRef.current?.(k));
     return () => {
       offChannel();
       offDM();
-      offOffline();
     };
   }, [client]);
 

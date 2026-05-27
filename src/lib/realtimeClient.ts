@@ -36,7 +36,6 @@ import {
   ChannelRosterSchema,
   ConnectionNonceSchema,
   DMMessageRelaySchema,
-  DMOfflineSchema,
   SessionAckSchema,
   WireErrorSchema,
   safeParse,
@@ -71,7 +70,8 @@ type ChannelMessageListener = (msg: DecryptedChannelMessage) => void;
 type DMMessageListener = (msg: DecryptedDMMessage) => void;
 type RosterListener = (channelId: string, roster: RosterMember[]) => void;
 type StateListener = (state: ConnectionState) => void;
-type OfflineDMListener = (recipientBoxPublicKey: string) => void;
+// (Previous `OfflineDMListener` type removed — `dm:offline` wire event
+// deleted to close the re-openable presence oracle. See audit pt5 M1.)
 
 interface ChannelEntry {
   /** Reference count — channel stays joined while any subscriber is mounted. */
@@ -198,7 +198,6 @@ class RealtimeClient {
   private dmMessageListeners = new Set<DMMessageListener>();
   private rosterListeners = new Set<RosterListener>();
   private stateListeners = new Set<StateListener>();
-  private offlineDMListeners = new Set<OfflineDMListener>();
 
   init(session: Session, urlOverride?: string): void {
     const url = urlOverride ?? resolveRelayUrl();
@@ -219,6 +218,14 @@ class RealtimeClient {
       // refCounts stay so when consumers re-join channels against the new
       // relay, they reattach naturally. Peer cache is dropped too since
       // box-key mappings from the old relay don't apply.
+      //
+      // NOTE: this branch only fires when URL changes. If a user
+      // returns to the SAME relay later, peerCache survives from the
+      // earlier session — fine because the (signing→box) bindings were
+      // verified-via-sig at the time. The per-channel cross-check in
+      // CHANNEL_MESSAGE handling (`rosterMatch`) still guards against
+      // a relay claiming a known-signing-key with a substituted box;
+      // don't remove that check without re-reading audit pt5 L4.
       this.tearDownSocket();
       this.channels.clear();
       this.peerCache.clear();
@@ -429,10 +436,6 @@ class RealtimeClient {
     this.stateListeners.add(fn);
     return () => this.stateListeners.delete(fn);
   }
-  onDMOffline(fn: OfflineDMListener): () => void {
-    this.offlineDMListeners.add(fn);
-    return () => this.offlineDMListeners.delete(fn);
-  }
 
   // ── internals ─────────────────────────────────────────────────────
 
@@ -618,11 +621,10 @@ class RealtimeClient {
       for (const fn of this.dmMessageListeners) fn(decoded);
     });
 
-    socket.on(WIRE.DM_OFFLINE, (rawIn: unknown) => {
-      const raw = safeParse(DMOfflineSchema, rawIn, 'dm:offline');
-      if (!raw) return;
-      for (const fn of this.offlineDMListeners) fn(raw.recipientBoxPublicKey);
-    });
+    // `dm:offline` deliberately not handled — server stopped emitting
+    // it (audit pt1 #9, presence oracle), and the entire wire surface
+    // was removed in audit pt5 M1 so a malicious remote relay couldn't
+    // synthesize the event and re-open the oracle from the client side.
 
     socket.on(WIRE.ERROR, (rawIn: unknown) => {
       const raw = safeParse(WireErrorSchema, rawIn, 'wire:error');

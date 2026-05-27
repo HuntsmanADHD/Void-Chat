@@ -42,12 +42,25 @@ const PORT = process.env['SOCKET_PORT'] ? parseInt(process.env['SOCKET_PORT'], 1
 // hostname). Accept a comma-separated list. The literal "*" disables the
 // allowlist entirely — convenient for LAN-only setups where you don't care
 // what address your friends type, but DO NOT use over the internet.
-const CORS_RAW = process.env['CORS_ORIGIN'] ||
-  'http://localhost:5173,http://localhost:1420,http://localhost:3000,tauri://localhost,https://tauri.localhost';
+// Mirrors server/api.ts production-only default. Dev origins are added
+// via CORS_ORIGIN env in the yarn dev:all flow.
+const PRODUCTION_DEFAULT_CORS =
+  'tauri://localhost,https://tauri.localhost,http://tauri.localhost';
+const CORS_RAW = process.env['CORS_ORIGIN'] || PRODUCTION_DEFAULT_CORS;
 const CORS_ALLOW_ANY = CORS_RAW.trim() === '*';
 const CORS_ORIGIN_LIST = CORS_RAW.split(',').map(s => s.trim()).filter(Boolean);
 
 const ANNOUNCE_MAX_SKEW_MS = 5 * 60 * 1000;
+
+// Constant hoisted up here from the constants block below so the
+// wire schemas can reference it as a single source of truth. The
+// business-rule constants block keeps a re-export for readability
+// in context (see below).
+//
+// 64 KiB plaintext cap → ciphertext is plaintext + 16-byte Poly1305
+// tag, then base64-expanded by 4/3. Bound well above polite-client
+// usage to leave headroom for nonce/json overhead.
+const MAX_CIPHERTEXT_BYTES = 96 * 1024;
 
 /** Wire schema for SESSION_ANNOUNCE. `.strict()` rejects unknown
  *  fields so an attacker can't tunnel extra unsigned data through the
@@ -77,10 +90,14 @@ const CHANNEL_JOIN_SCHEMA = z
 
 const CHANNEL_LEAVE_SCHEMA = CHANNEL_JOIN_SCHEMA;
 
+// Schema cap derives from MAX_CIPHERTEXT_BYTES — single source of
+// truth. Previous hardcoded 256 KiB diverged from the 96 KiB
+// business rule; any future "trust the schema" refactor would have
+// silently raised the effective limit 2.7×.
 const CHANNEL_RECIPIENT_SCHEMA = z
   .object({
     boxPublicKey: z.string().min(1).max(128),
-    ciphertext: z.string().min(1).max(256 * 1024),
+    ciphertext: z.string().min(1).max(MAX_CIPHERTEXT_BYTES),
     nonce: z.string().min(1).max(128),
   })
   .strict();
@@ -99,7 +116,7 @@ const CHANNEL_SEND_SCHEMA = z
 const DM_SEND_SCHEMA = z
   .object({
     recipientBoxPublicKey: z.string().min(1).max(128),
-    ciphertext: z.string().min(1).max(256 * 1024),
+    ciphertext: z.string().min(1).max(MAX_CIPHERTEXT_BYTES),
     nonce: z.string().min(1).max(128),
   })
   .strict();
@@ -107,10 +124,8 @@ const RATE_WINDOW_MS = 60_000;
 const RATE_MAX_MESSAGES = 120;
 const RATE_MAX_JOINS = 60;
 const MAX_CHANNEL_RECIPIENTS = 256;
-// 64 KiB plaintext cap → ciphertext is plaintext + 16-byte Poly1305 tag,
-// then base64-expanded by 4/3. Bound it well above what a polite client
-// would ever send to leave room for nonce/json overhead.
-const MAX_CIPHERTEXT_BYTES = 96 * 1024;
+// MAX_CIPHERTEXT_BYTES is declared above the wire schemas so they
+// can reference it without forward-reference issues.
 
 // ── DoS bounds ─────────────────────────────────────────────────────────────
 // Caps on in-memory state to prevent a single misbehaving client (or a

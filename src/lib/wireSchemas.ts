@@ -17,6 +17,16 @@ const NonceStr = z.string().min(1).max(128);
 const Bs58Sig = z.string().min(1).max(128);
 const NonEmptyString = z.string().min(1);
 
+/**
+ * Ciphertext upper bound. Mirrors `MAX_CIPHERTEXT_BYTES` on the server
+ * (`server/socket-server.ts`). Kept in sync by convention — a future
+ * refactor that hoists shared constants into a `wire-constants.ts`
+ * imported by both sides would close the convention gap, but pulling
+ * server symbols into the client bundle has its own footgun (would
+ * accidentally drag Prisma deps over). For now: change both at once.
+ */
+const MAX_CIPHERTEXT_BYTES = 96 * 1024;
+
 // Used by ChannelRoster / ChannelMemberJoined.
 export const RosterMemberSchema = z
   .object({
@@ -71,7 +81,7 @@ export const ChannelMessageRelaySchema = z
     senderDisplayName: z.string().max(64),
     // Ciphertext + nonce shape: enforcement of size limits is by the
     // server (MAX_CIPHERTEXT_BYTES); here we just bound the upper end.
-    ciphertext: z.string().max(256 * 1024),
+    ciphertext: z.string().max(MAX_CIPHERTEXT_BYTES),
     nonce: z.string().min(1).max(128),
     msgId: NonEmptyString,
     ts: z.number().int(),
@@ -83,18 +93,17 @@ export const DMMessageRelaySchema = z
     senderBoxPublicKey: Base58Str,
     senderSigningPublicKey: Base58Str,
     senderDisplayName: z.string().max(64),
-    ciphertext: z.string().max(256 * 1024),
+    ciphertext: z.string().max(MAX_CIPHERTEXT_BYTES),
     nonce: z.string().min(1).max(128),
     msgId: NonEmptyString,
     ts: z.number().int(),
   })
   .strict();
 
-export const DMOfflineSchema = z
-  .object({
-    recipientBoxPublicKey: Base58Str,
-  })
-  .strict();
+// DMOfflineSchema removed in audit pt5 M1 along with the wire event
+// itself — a malicious remote relay could otherwise synthesize
+// dm:offline frames to re-open the presence oracle the server-side
+// fix closed.
 
 export const WireErrorSchema = z
   .object({

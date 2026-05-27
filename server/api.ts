@@ -25,8 +25,20 @@ import {
 
 // ── CORS allowlist ────────────────────────────────────────────────────────
 
-const CORS_RAW = process.env['CORS_ORIGIN'] ||
-  'http://localhost:5173,http://localhost:1420,http://localhost:3000,tauri://localhost,https://tauri.localhost';
+// In production, only the Tauri webview's own origin is legitimate.
+// Dev origins (localhost:5173/1420/3000) are added back when running
+// `yarn dev:all` — the dev:all script sets CORS_ORIGIN explicitly via
+// env so the relay accepts the Vite dev server's fetches.
+//
+// Why this matters: even on a loopback-bound listener, any local
+// process that can bind one of the dev ports (e.g. another app's
+// Vite default :5173) could pose as a legit Tauri webview by setting
+// the right Origin header and exfiltrate community/channel metadata.
+// Tightening the prod default removes that handle without breaking
+// any user-facing flow.
+const PRODUCTION_DEFAULT_CORS =
+  'tauri://localhost,https://tauri.localhost,http://tauri.localhost';
+const CORS_RAW = process.env['CORS_ORIGIN'] || PRODUCTION_DEFAULT_CORS;
 const CORS_ALLOW_ANY = CORS_RAW.trim() === '*';
 const CORS_ORIGINS = new Set(CORS_RAW.split(',').map(o => o.trim()).filter(Boolean));
 
@@ -63,6 +75,34 @@ function applyCors(req: IncomingMessage, res: ServerResponse): void {
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 60;
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+/**
+ * Daily budget on inline-image bytes accepted via community-create
+ * avatars. Without a global cap, a malicious joiner (in the cross-host
+ * model the SQLite file lives on the *host's* disk) could spam community
+ * creates with 256 KiB avatars at the rate-limit ceiling and fill the
+ * host's disk: 60/min × 256 KiB = 15 MiB/min = 21 GiB/day per IP, and
+ * IP-keying on loopback collapses to one bucket on a Tor-fronted host.
+ *
+ * Budget resets every 24h. Conservative — 50 MiB/day = ~200 large
+ * avatars; a real friend-group host creates a handful per day. The
+ * resulting "host capacity" error lands at the same layer as the
+ * other 429s so existing client error paths handle it.
+ */
+const AVATAR_DAILY_BUDGET_BYTES = 50 * 1024 * 1024;
+let avatarBytesThisWindow = 0;
+let avatarWindowStartMs = Date.now();
+
+function avatarBudgetAllows(size: number): boolean {
+  const now = Date.now();
+  if (now - avatarWindowStartMs > 24 * 60 * 60 * 1000) {
+    avatarBytesThisWindow = 0;
+    avatarWindowStartMs = now;
+  }
+  if (avatarBytesThisWindow + size > AVATAR_DAILY_BUDGET_BYTES) return false;
+  avatarBytesThisWindow += size;
+  return true;
+}
 
 function rateAllowed(key: string): { ok: true } | { ok: false; retryAfter: number } {
   const now = Date.now();
@@ -235,6 +275,9 @@ async function createCommunity(req: IncomingMessage, res: ServerResponse): Promi
   // a FileReader, so this only rejects malicious inputs.
   if (avatar !== null && !isAllowedDataImageUri(avatar)) {
     return err(res, 400, 'Avatar must be an inline data:image/(png|jpeg|webp|gif);base64 URI');
+  }
+  if (avatar !== null && !avatarBudgetAllows(avatar.length)) {
+    return err(res, 429, 'Avatar storage budget reached — retry tomorrow or create without an avatar');
   }
 
   let passwordHash: string | null = null;

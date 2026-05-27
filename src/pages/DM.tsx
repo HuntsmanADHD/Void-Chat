@@ -57,13 +57,14 @@ export default function DM() {
     [publicId, recipientSigningKey],
   );
 
-  const handleDMOffline = useCallback(() => {
-    setSendError('Recipient is offline. Messages do not persist in ephemeral mode.');
-  }, []);
-
+  // Note: the previous version subscribed to `dm:offline` to surface a
+  // "recipient is offline" banner. That wire event has been removed
+  // entirely — it was a presence oracle (server told you whether the
+  // recipient was connected, queryable indefinitely by polling). The
+  // honest replacement is "delivered but no reply looks identical to
+  // delivered but recipient offline" — which is what users see now.
   const { sendDM, isReady: isRealtimeReady, lookupBoxKey } = useRealtime({
     onDMMessage: handleDMMessage,
-    onDMOffline: handleDMOffline,
   });
 
   useEffect(() => {

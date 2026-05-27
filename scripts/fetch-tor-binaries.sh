@@ -91,14 +91,42 @@ sig_name="${archive_name}.asc"
 sig_url="${url}.asc"
 keyring="$repo_root/scripts/tor-signing-keys.asc"
 
+# Default to FAIL when verification can't run, not SKIP. The previous
+# default ("warn and continue") meant every developer who ran the
+# script with the placeholder keyring got zero signature verification
+# — opt-in by accident. Now you have to explicitly set
+#   VOIDCHAT_INSECURE_FETCH=1
+# to bypass, which makes the loose-bird state visible to anyone
+# reading the script's output and gives a one-liner audit trail.
+INSECURE="${VOIDCHAT_INSECURE_FETCH:-0}"
+
 if ! command -v gpg >/dev/null 2>&1; then
-    echo "⚠  gpg not installed — skipping signature verification."
-    echo "   For shipped builds, install gpg and re-run:"
-    echo "     pacman -S gnupg / apt install gnupg / brew install gnupg"
+    if [ "$INSECURE" = "1" ]; then
+        echo "⚠  gpg not installed AND VOIDCHAT_INSECURE_FETCH=1 — bypassing verification."
+        echo "   Do NOT use this for shipped builds."
+    else
+        echo "ERROR: gpg not installed. Install it and re-run:" >&2
+        echo "  pacman -S gnupg / apt install gnupg / brew install gnupg" >&2
+        echo "(Set VOIDCHAT_INSECURE_FETCH=1 to bypass — dev only, never for releases.)" >&2
+        exit 1
+    fi
 elif ! grep -q "^[a-zA-Z0-9]" "$keyring" 2>/dev/null; then
-    echo "⚠  scripts/tor-signing-keys.asc is a placeholder — skipping verification."
-    echo "   Populate it from https://support.torproject.org/tbb/how-to-verify-signature/"
-    echo "   to enable signature verification."
+    if [ "$INSECURE" = "1" ]; then
+        echo "⚠  scripts/tor-signing-keys.asc is a placeholder AND"
+        echo "   VOIDCHAT_INSECURE_FETCH=1 — bypassing verification."
+        echo "   Do NOT use this for shipped builds."
+    else
+        echo "ERROR: scripts/tor-signing-keys.asc is a placeholder — refusing to" >&2
+        echo "       install unverified Tor. Populate the keyring first:" >&2
+        echo "         gpg --auto-key-locate nodefault,wkd --locate-keys \\" >&2
+        echo "             torbrowser@torproject.org" >&2
+        echo "         gpg --output scripts/tor-signing-keys.asc --armor \\" >&2
+        echo "             --export torbrowser@torproject.org" >&2
+        echo "       Then verify the fingerprint matches:" >&2
+        echo "         EF6E 286D DA85 EA2A 4BA7  DE68 4E2C 6E87 9329 8290" >&2
+        echo "       (Set VOIDCHAT_INSECURE_FETCH=1 to bypass — dev only.)" >&2
+        exit 1
+    fi
 else
     echo "→ Downloading detached signature $sig_url"
     if ! curl -fL --proto '=https' --tlsv1.2 --silent -o "$tmpdir/$sig_name" "$sig_url"; then
@@ -117,6 +145,35 @@ else
         exit 1
     fi
     echo "✓ Signature verified"
+fi
+
+# Optional belt-and-suspenders: SHA-256 pinning per TOR_VERSION. If a
+# pinned hash exists for the version we just downloaded, the archive
+# must match it. Catches the case where the signing key is rotated
+# under coercion (the signature would verify, but the hash wouldn't
+# match what we vetted out-of-band).
+case "$tor_arch-$TOR_VERSION" in
+    "linux-x86_64-14.5.6")
+        # Looked up out-of-band by maintainer + committed. Pin
+        # additional (arch, version) tuples here as you bump TOR_VERSION.
+        # Leave empty to skip pinning for this combo.
+        expected_sha256=""
+        ;;
+    *)
+        expected_sha256=""
+        ;;
+esac
+
+if [ -n "$expected_sha256" ]; then
+    actual_sha256="$(sha256sum "$tmpdir/$archive_name" | awk '{print $1}')"
+    if [ "$actual_sha256" != "$expected_sha256" ]; then
+        echo "ERROR: SHA-256 mismatch for $archive_name" >&2
+        echo "  expected: $expected_sha256" >&2
+        echo "  actual:   $actual_sha256" >&2
+        echo "Refusing to install — archive may be tampered or this is a Tor release we haven't vetted." >&2
+        exit 1
+    fi
+    echo "✓ SHA-256 matches pinned hash"
 fi
 
 echo "→ Extracting Tor runtime"

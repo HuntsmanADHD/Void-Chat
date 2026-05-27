@@ -37,7 +37,7 @@ No accounts. No email. No password. No history. Every browser tab generates a fr
 | What | Where it lives | When it's gone |
 |---|---|---|
 | Your private keys | Browser sessionStorage | The tab closes |
-| Your display name | Browser localStorage | You clear it |
+| Your display name | Browser sessionStorage | The tab closes |
 | Messages — in flight | Relay RAM, microseconds | Forwarded and forgotten |
 | Messages — your local copy | Browser IndexedDB | You "End Session" or wipe browser data |
 | Community + channel directory | A single SQLite file | You delete it |
@@ -159,7 +159,9 @@ Void Chat ships with its own Tor — no system install needed. The runtime (`tor
 
 This pulls the official Tor Expert Bundle for your host platform (Linux x86_64/aarch64, macOS x86_64/arm64, or Windows x86_64) and installs it to `src-tauri/binaries/tor-runtime/`. The directory is gitignored — re-run the script to refresh, or override the version with `TOR_VERSION=14.5.x ./scripts/fetch-tor-binaries.sh`.
 
-`yarn tauri:build` ships this runtime inside the installer, so the resulting `.AppImage` / `.deb` / `.dmg` / `.msi` is fully self-contained. If you skip this step, `yarn tauri:dev` falls back to a system `tor` on your `PATH` (install via your package manager).
+In v0.1, the bundled Tor is used by the **source-run** flow (`yarn tauri:dev`). If you skip the fetch script, the runtime falls back to a system `tor` on your `PATH` (install via your package manager).
+
+> **About installers in v0.1:** `yarn tauri:build` currently produces `.deb` / `.rpm` artifacts that include the frontend, the Rust shell, and the Tor binary — but **not** the Node relay process the app depends on. As a result, the installed app today can't talk to itself. The relay is being ported from Node to Rust for v0.2; once that lands, the installer ships as a single self-contained binary. Until then, **v0.1 is a source-run release** — clone the repo, install deps, run `yarn tauri:dev`. Don't distribute the build artifacts; they're a build-pipeline artifact, not a release.
 
 ### 7. Create the SQLite database
 
@@ -277,7 +279,9 @@ yarn socket
 # Type-check the whole project
 yarn typecheck
 
-# Build the production Tauri installer for your OS
+# Build the production Tauri artifacts for your OS.
+# NOTE: in v0.1 these are NOT distribution-ready — see the
+# installer caveat under "Fetch the bundled Tor runtime" above.
 yarn tauri:build
 ```
 

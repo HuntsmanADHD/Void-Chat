@@ -5,6 +5,7 @@ import { useSession } from '@/hooks/useSession';
 import { destroyActiveSession } from '@/lib/messageStore';
 import { useTorStatus } from '@/hooks/useTorStatus';
 import { useProxyStatus } from '@/hooks/useProxyStatus';
+import { clearWashIdentity } from '@/lib/wash';
 import {
   buildEncryptedBackup,
   downloadBackupFile,
@@ -443,6 +444,15 @@ export default function Settings() {
     if (trimmed && trimmed !== displayName) setDisplayName(trimmed);
   }, [draftName, displayName, setDisplayName]);
 
+  const [washRotated, setWashRotated] = useState(false);
+  const handleRotateWash = useCallback(() => {
+    clearWashIdentity();
+    setWashRotated(true);
+    // Visual confirmation only — the new identity is generated lazily
+    // on next wash operation (passphrase encrypt or SubPub seal).
+    setTimeout(() => setWashRotated(false), 3000);
+  }, []);
+
   const handleEndSession = useCallback(async () => {
     if (typeof window === 'undefined') return;
     await destroyActiveSession().catch(() => {});
@@ -611,6 +621,26 @@ export default function Settings() {
               </p>
             </div>
           </div>
+        </SettingsSection>
+
+        <SettingsSection
+          title="Rotate Wash identity"
+          description="Drop your SubPub keypair without ending the chat session"
+          icon={Key}
+        >
+          <p className="text-sm text-zinc-400 mb-4">
+            Your Wash SubPub key is what people encrypt to when they send you
+            washed blobs out-of-band. If you sent your public key to someone
+            you later don&apos;t trust, rotate — a new keypair generates on
+            the next Wash operation. Your chat identity is not affected.
+          </p>
+          <button
+            onClick={handleRotateWash}
+            className="flex items-center gap-2 px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-zinc-200 rounded-lg transition-colors"
+          >
+            <Key className="w-4 h-4" />
+            {washRotated ? 'Rotated — next Wash uses a fresh key' : 'Rotate Wash key'}
+          </button>
         </SettingsSection>
 
         <SettingsSection

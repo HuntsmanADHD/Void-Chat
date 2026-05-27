@@ -84,9 +84,8 @@ export interface DMMessageRelay {
   ts: number;
 }
 
-export interface DMOfflineMessage {
-  recipientBoxPublicKey: string;
-}
+// `DMOfflineMessage` (and the WIRE.DM_OFFLINE constant below) were
+// removed in audit pt5 M1. See realtimeClient.ts for the rationale.
 
 export interface WireErrorMessage {
   code:
@@ -153,7 +152,7 @@ export const WIRE = {
   CHANNEL_MEMBER_LEFT: 'channel:member-left',
   CHANNEL_MESSAGE: 'channel:message',
   DM_MESSAGE: 'dm:message',
-  DM_OFFLINE: 'dm:offline',
+  // DM_OFFLINE removed (audit pt5 M1) — presence oracle.
   ERROR: 'wire:error',
   // client → server
   SESSION_ANNOUNCE: 'session:announce',

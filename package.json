@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "socket": "tsx server/socket-server.ts",
-    "dev:all": "concurrently \"yarn dev\" \"yarn socket\"",
+    "socket:dev": "CORS_ORIGIN='http://localhost:5173,http://localhost:1420,http://localhost:3000,tauri://localhost,https://tauri.localhost,http://tauri.localhost' tsx server/socket-server.ts",
+    "dev:all": "concurrently \"yarn dev\" \"yarn socket:dev\"",
     "tauri": "tauri",
     "tauri:dev": "WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 tauri dev",
     "tauri:build": "WEBKIT_DISABLE_DMABUF_RENDERER=1 tauri build"

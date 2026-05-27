@@ -340,24 +340,26 @@ fn write_torrc(
     }
 
     let torrc_path = tor_dir.join("torrc");
-    let notices_path = tor_dir.join("notices.log");
 
-    // NOTE: `Log` lines are additive in tor — both directives fire for
-    // every notice. We need stdout because the Rust watcher thread parses
-    // "Bootstrapped N%" from there; the file is kept for after-the-fact
-    // diagnostics. A single `Log notice file ...` would silence stdout
-    // entirely (the watcher would never detect hostname readiness).
-    // RelayBandwidthRate caps the SOCKS port's data rate so a
-    // misbehaving local process (or a future bug in our own proxy)
-    // can't drain Tor circuits at full speed. Numbers are bytes/sec;
-    // 5 MiB/s sustained with 10 MiB burst is well above any
-    // legitimate chat traffic but caps a runaway pipe. CookieAuthFile
-    // path is explicit so the cookie's perms can be enforced.
+    // Log to stdout only — no file sink. The Rust watcher thread reads
+    // stdout to parse bootstrap progress, and we surface the same info
+    // via tauri_plugin_log (app.log). Tor's own file logging used to
+    // mirror `notices.log` with full .onion hostname lines and
+    // descriptor-publish events, which persisted the onion to disk in
+    // plaintext — a recovery surface for any backup tool that sweeps
+    // app_data. Our own log lines truncate the onion to an 8-char
+    // fingerprint (`tor.rs:reusing existing hidden service`); dropping
+    // Tor's file sink closes the half of M1 the prior fix missed.
+    //
+    // BandwidthRate caps the SOCKS port's data rate so a misbehaving
+    // local process can't drain Tor circuits. 5 MiB/s sustained with
+    // 10 MiB burst is well above legitimate chat traffic.
+    // CookieAuthFile path is explicit so the cookie's perms can be
+    // enforced from outside Tor.
     let cookie_path = tor_dir.join("control_auth_cookie");
     let mut torrc = format!(
         "DataDirectory {data}\n\
          Log notice stdout\n\
-         Log notice file {notices}\n\
          SocksPort 127.0.0.1:{socks}\n\
          BandwidthRate 5242880\n\
          BandwidthBurst 10485760\n\
@@ -368,7 +370,6 @@ fn write_torrc(
          HiddenServiceVersion 3\n\
          HiddenServicePort {virt} 127.0.0.1:{relay}\n",
         data = tor_dir.display(),
-        notices = notices_path.display(),
         socks = SOCKS_PORT,
         control = CONTROL_PORT,
         cookie = cookie_path.display(),
@@ -909,8 +910,48 @@ pub fn tor_get_bridges(app: AppHandle) -> Result<String, String> {
 ///     ip:port [fingerprint]
 /// Tor validates the lines itself at startup; if any are malformed the
 /// new tor process will fail to bootstrap and surface an error.
+///
+/// **Security gate:** native OS confirmation dialog before the swap.
+/// Bridges control Tor's entry guard — the relay that sees the user's
+/// real IP. An attacker with renderer-side JS execution could otherwise
+/// silently route the user's traffic through their own bridge,
+/// deanonymizing them. The dialog runs in the native process and can't
+/// be dismissed by JS, turning a silent attack into one the user has a
+/// chance to refuse. Same shape as the tor_backup_keys gate.
 #[tauri::command]
 pub fn tor_set_bridges(app: AppHandle, bridges_text: String) -> Result<(), String> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let preview = if bridges_text.trim().is_empty() {
+        "(empty — bridges will be disabled, Tor will use direct connections)".to_string()
+    } else {
+        // Show the first ~3 lines so the user can sanity-check what's
+        // being applied. Truncated to keep the dialog readable.
+        bridges_text
+            .lines()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let confirmed = app
+        .dialog()
+        .message(format!(
+            "Void Chat is about to change which Tor bridges your traffic enters through.\n\n\
+             {preview}\n\n\
+             Only continue if you JUST clicked the Apply button in Settings → Tor bridges. \
+             If you didn't, click Cancel — bridges control which relay sees your real IP, so \
+             an attacker who can change them silently can deanonymize you.",
+        ))
+        .title("Change Tor bridges?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Apply bridges".to_string(),
+            "Cancel".to_string(),
+        ))
+        .blocking_show();
+    if !confirmed {
+        return Err("Bridge change cancelled by user.".to_string());
+    }
+
     let data_dir = app
         .path()
         .app_data_dir()
@@ -918,7 +959,22 @@ pub fn tor_set_bridges(app: AppHandle, bridges_text: String) -> Result<(), Strin
     let path = bridges_file(&data_dir);
     fs::create_dir_all(path.parent().expect("bridges file has no parent"))
         .map_err(|e| format!("could not create tor dir: {e}"))?;
-    fs::write(&path, bridges_text).map_err(|e| format!("could not write bridges file: {e}"))?;
+
+    // Filter at the write boundary too, not just on read. Without this
+    // a malicious paste persists in bridges.txt on disk even though
+    // it'd never reach Tor (the read-side filter drops it). A user
+    // inspecting the file later would be confused about why bad lines
+    // are there. Same shape filter as `is_safe_bridge_line` —
+    // unsafe lines silently dropped, comments preserved.
+    let filtered: String = bridges_text
+        .lines()
+        .filter(|l| {
+            let trimmed = l.trim();
+            trimmed.is_empty() || trimmed.starts_with('#') || is_safe_bridge_line(trimmed)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&path, &filtered).map_err(|e| format!("could not write bridges file: {e}"))?;
 
     // Restart Tor so the new torrc is applied. tor_restore_keys does
     // the same dance; share the pattern.
