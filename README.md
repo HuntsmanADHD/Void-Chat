@@ -109,9 +109,9 @@ cargo --version
 
 ### 3. Install Node 25 and Yarn 4
 
-We use Node 25 via `nvm` and Yarn 4 via Corepack (the version manager Node ships with).
+We use Node 25 and Yarn 4. Recommended path is `nvm` + Corepack, but the repo ships its own Yarn 4 binary at `.yarn/releases/yarn-4.15.0.cjs` — so once you have *any* yarn on PATH, the project's `.yarnrc.yml` will defer to the bundled Yarn 4 the moment you `cd` into the directory.
 
-**Linux / macOS:**
+**Recommended: nvm + Corepack (Linux / macOS):**
 ```bash
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
 # Close and reopen your terminal so nvm is on PATH
@@ -127,10 +127,20 @@ nvm use 25
 corepack enable
 ```
 
-Verify:
+**Fallback if `corepack enable` says "command not found":** Fedora's `dnf install nodejs` doesn't include Corepack in the main package (it's a separate `corepack` package), and a few distro Node builds drop it entirely. Either install Corepack directly, or just bootstrap Yarn via npm:
+
+```bash
+# Fedora: corepack as a separate package
+sudo dnf install -y corepack && corepack enable
+
+# OR universal fallback — any yarn works, the project redirects to Yarn 4
+npm install -g yarn
+```
+
+Verify (run inside the cloned repo after step 4):
 ```bash
 node --version    # v25.x
-yarn --version    # 4.x  (the first run inside the repo will pin to 4.15.0)
+yarn --version    # 4.15.0  ← if you see 1.x here, you're not inside the project dir
 ```
 
 ### 4. Clone the repo
