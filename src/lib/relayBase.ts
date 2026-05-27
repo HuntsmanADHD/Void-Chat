@@ -75,14 +75,34 @@ export function apiUrlFor(communityId: string, path: string): string {
 
 /** Direct form: route to a specific onion (or local if null). Used by
  *  the join flow before the community-host mapping is persisted —
- *  i.e. when verifying an invite from an untrusted remote host. */
+ *  i.e. when verifying an invite from an untrusted remote host.
+ *
+ *  Audit pt6 L3: validate the onion looks like a v3 hostname before
+ *  spending a SOCKS dial on it. Catches paste typos / corrupted invite
+ *  codes at the boundary instead of bouncing through proxy.rs. The
+ *  proxy itself also validates length + suffix; this is defense in
+ *  depth + earlier error surfacing. */
 export function apiUrlForOnion(onion: string | null, path: string): string {
   if (!onion) return apiUrl(path);
+  if (!isV3OnionHostname(onion)) {
+    throw new Error(`Invalid onion hostname: ${onion.slice(0, 32)}…`);
+  }
   const tokenSegment = encodeURIComponent(proxyToken);
   return joinPath(
     HTTP_PROXY_BASE,
     `/o/${tokenSegment}/${onion}${path.startsWith('/') ? path : `/${path}`}`,
   );
+}
+
+/** v3 onion hostnames are exactly 56 base32 chars + ".onion" (62
+ *  total), case-insensitive, base32 alphabet (a-z + 2-7). Anything
+ *  else is malformed and the relay won't accept it. */
+function isV3OnionHostname(onion: string): boolean {
+  if (typeof onion !== 'string') return false;
+  if (onion.length !== 62) return false;
+  if (!onion.toLowerCase().endsWith('.onion')) return false;
+  const stem = onion.slice(0, 56);
+  return /^[a-z2-7]+$/i.test(stem);
 }
 
 /** Compute the realtime (socket.io) base URL for a community. socket.io

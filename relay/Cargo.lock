@@ -1535,6 +1535,7 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "axum",
+ "base64",
  "bs58",
  "chrono",
  "constant_time_eq",

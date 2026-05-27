@@ -43,6 +43,9 @@ thiserror = "1"
 # Base58 (matches bs58 in TypeScript client)
 bs58 = "0.5"
 
+# Base64 — for audit pt6 H4 (decode + magic-byte sniff avatar payloads).
+base64 = "0.22"
+
 # Time + logging
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tracing = "0.1"

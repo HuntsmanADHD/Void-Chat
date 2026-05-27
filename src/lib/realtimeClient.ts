@@ -363,10 +363,18 @@ class RealtimeClient {
     if (!existing) return;
     if (existing.boxPublicKey !== member.boxPublicKey) {
       // Relay claims this sender's box key changed. Could be a real
-      // identity rotation (user re-announced) but indistinguishable
-      // from a MITM attempt. The safe default is to drop the cached
-      // entry and wait for a fresh verified roster broadcast.
-      this.peerCache.delete(member.signingPublicKey);
+      // identity rotation (user re-announced) or a MITM attempt.
+      // Audit pt6 M7 + interaction with pt6 C1: the previous policy
+      // DELETED the cached entry, which a malicious relay could
+      // weaponize as a peerCache-flush DoS — one crafted message
+      // citing (real_signing, mallory_box) erased Alice's verified
+      // binding, and every subsequent DM to Alice then failed the
+      // C1 binding check silently. Now we IGNORE the claim and keep
+      // the verified entry — a real rotation will land via a fresh
+      // roster-sig broadcast (which goes through `rememberPeer`,
+      // not this function) and overwrite it legitimately. The
+      // relay's word alone is never authority to flush a
+      // sig-verified binding.
       return;
     }
     // Same binding — safe to refresh display name + LRU-touch.

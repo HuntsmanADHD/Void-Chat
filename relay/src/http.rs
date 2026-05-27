@@ -54,6 +54,13 @@ const MAX_BODY_BYTES: usize = 512 * 1024;
 const MAX_AVATAR_BYTES: usize = 256 * 1024;
 const AVATAR_DAILY_BUDGET: usize = 50 * 1024 * 1024;
 const AVATAR_BUDGET_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
+/// Audit pt6 H14: cap rate-bucket map growth. Loopback-only operation
+/// effectively keeps the map at one key (`127.0.0.1`), but the H2
+/// per-circuit token keying can produce many keys under sustained
+/// cross-host traffic; without a cap a long-running relay grows the
+/// map until the bucket-reset sweep happens lazily on the next
+/// access. Match the realtime layer's MAX_RATE_BUCKETS shape.
+const MAX_RATE_BUCKETS: usize = 50_000;
 
 // ── Shared state ────────────────────────────────────────────────────
 
@@ -88,6 +95,15 @@ impl AppState {
     fn rate_allowed(&self, key: &str) -> Result<(), u64> {
         let mut buckets = self.rate_buckets.lock().expect("rate_buckets poisoned");
         let now = Instant::now();
+        // Audit pt6 H14: backstop the map size. Insertion-order
+        // eviction (HashMap iteration is arbitrary; close enough as
+        // a backstop). Friend-group scale won't hit this — it's the
+        // wall against rotating-token abuse from cross-host visitors.
+        if !buckets.contains_key(key) && buckets.len() >= MAX_RATE_BUCKETS {
+            if let Some(k) = buckets.keys().next().cloned() {
+                buckets.remove(&k);
+            }
+        }
         let bucket = buckets
             .entry(key.to_string())
             .or_insert(RateBucket {
@@ -269,7 +285,8 @@ async fn create_community(
         .filter(|s| !s.is_empty());
     let avatar = body.avatar.map(|s| sanitize_avatar(&s)).filter(|s| !s.is_empty());
 
-    if name.len() < 2 || name.len() > 64 {
+    let name_chars = name.chars().count();
+    if name_chars < 2 || name_chars > 64 {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "Community name must be 2–64 characters",
@@ -467,7 +484,8 @@ async fn create_channel(
         .map(|s| sanitize(&s, 200))
         .filter(|s| !s.is_empty());
 
-    if name.is_empty() || name.len() > 32 {
+    let name_chars = name.chars().count();
+    if name_chars == 0 || name_chars > 32 {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "Channel name must be 1–32 characters",
@@ -525,10 +543,18 @@ fn rate_bucket_key(addr: &SocketAddr, headers: &HeaderMap) -> String {
 }
 
 
+/// Sanitize user input + cap length in CHARACTERS (not bytes). Audit
+/// pt6 M2: previously the size check was bytes (`trimmed.len()`) but
+/// the truncation was chars, so a 100-char emoji string (~400 bytes)
+/// triggered the truncation branch, produced a 100-char output, and
+/// then the validator saw 400 bytes vs max_len-as-bytes and rejected
+/// with a misleading message. Picking chars for both fixes the cliff
+/// and matches user-visible length expectations.
 fn sanitize(s: &str, max_len: usize) -> String {
     let cleaned: String = s.chars().filter(|c| *c != '\0').collect();
     let trimmed = cleaned.trim();
-    if trimmed.len() > max_len {
+    let char_count = trimmed.chars().count();
+    if char_count > max_len {
         trimmed.chars().take(max_len).collect()
     } else {
         trimmed.to_string()
@@ -575,10 +601,76 @@ fn is_allowed_data_image_uri(value: &str) -> bool {
         return false;
     }
     // base64 alphabet (RFC 4648 standard with padding)
-    payload
+    let alphabet_ok = payload
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
-        && !payload.is_empty()
+        && !payload.is_empty();
+    if !alphabet_ok {
+        return false;
+    }
+    // Audit pt6 H4: decode the payload and verify the magic bytes
+    // match the declared MIME. Previously the only check was the
+    // prefix + base64 alphabet, so `data:image/png;base64,QUFBQQ==`
+    // (4 bytes of `A`) passed the validator, decoded to non-image
+    // bytes, and counted against the daily avatar budget. ~200
+    // creates at the per-avatar cap (256 KiB) exhausted the 50 MiB
+    // daily budget. Magic-byte sniff closes that.
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let Ok(decoded) = STANDARD.decode(payload) else {
+        return false;
+    };
+    image_magic_matches_mime(&decoded, mime_suffix)
+}
+
+/// Magic-byte sniff. Doesn't fully validate the image (no codec
+/// decode) — just checks that the leading bytes are consistent with
+/// the declared format. Cheap, catches the audit pt6 H4 budget-abuse
+/// attack and obvious tampering, lets the browser do the real parse.
+fn image_magic_matches_mime(bytes: &[u8], mime_suffix: &str) -> bool {
+    match mime_suffix {
+        "png" => bytes.len() >= 8 && &bytes[..8] == b"\x89PNG\r\n\x1a\n",
+        "jpeg" => bytes.len() >= 3 && &bytes[..3] == b"\xff\xd8\xff",
+        "gif" => bytes.len() >= 6 && (&bytes[..6] == b"GIF87a" || &bytes[..6] == b"GIF89a"),
+        "webp" => {
+            // RIFF....WEBP — 4 bytes "RIFF", 4 bytes size, 4 bytes "WEBP"
+            bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP"
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod image_sniff_tests {
+    use super::image_magic_matches_mime;
+
+    #[test]
+    fn accepts_real_magic() {
+        assert!(image_magic_matches_mime(b"\x89PNG\r\n\x1a\nrest", "png"));
+        assert!(image_magic_matches_mime(b"\xff\xd8\xffrest", "jpeg"));
+        assert!(image_magic_matches_mime(b"GIF89a...", "gif"));
+        assert!(image_magic_matches_mime(b"GIF87a...", "gif"));
+        let mut webp = Vec::new();
+        webp.extend_from_slice(b"RIFF");
+        webp.extend_from_slice(&[0u8; 4]);
+        webp.extend_from_slice(b"WEBPextra");
+        assert!(image_magic_matches_mime(&webp, "webp"));
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(!image_magic_matches_mime(b"AAAA", "png"));
+        assert!(!image_magic_matches_mime(b"AAAA", "jpeg"));
+        assert!(!image_magic_matches_mime(b"AAAA", "gif"));
+        assert!(!image_magic_matches_mime(b"AAAAAAAAAAAA", "webp"));
+        // Right magic for the wrong declared type
+        assert!(!image_magic_matches_mime(b"\x89PNG\r\n\x1a\n", "jpeg"));
+    }
+
+    #[test]
+    fn rejects_too_short() {
+        assert!(!image_magic_matches_mime(b"", "png"));
+        assert!(!image_magic_matches_mime(b"\x89PN", "png"));
+    }
 }
 
 async fn gate_community(

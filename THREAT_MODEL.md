@@ -119,6 +119,24 @@ Prefer small/trusted channels. The display name is intentionally
 spoofable (anyone can pick "alice"); the truncated signing-key
 fingerprint shown next to messages is the actual identity.
 
+### Sustained announce-flood from a rotating-identity attacker
+
+The relay's bad-announce counter (5 strikes in a 5-min window →
+forced disconnect) is keyed on the claimed `box_public_key` of the
+attempted announce, falling back to socket_id when no claim is parsed
+yet (audit pt6 H13). This is stickier than the previous socket_id-only
+key, but the claim is whatever bytes the attacker chose to put in the
+announce — they can rotate it per attempt and keep their per-key
+counter at 1. Single-key bad-signers hit the wall; an attacker willing
+to mint a fresh fake box-pub per attempt does not.
+
+Mitigating this fully needs a per-listener global token bucket on
+expensive verify operations — a meaningful change with its own design
+trade-offs (false-positive risk against legitimate burst joins).
+Tracked but not implemented; the announce-verify CPU cost (~1ms per
+attempt with `ed25519-dalek`) bounds the practical throughput even
+under the worst case.
+
 ### Traffic analysis
 
 No padding, no cover traffic, no decorrelation beyond what Tor itself

@@ -5,7 +5,9 @@
 //! Wire format MUST match the JS implementation exactly so existing
 //! `.washed` backups remain decryptable:
 //!
+//! ```text
 //!     "void$wash$v1$" + base64(salt(16) || iv(12) || ciphertext)
+//! ```
 //!
 //! Parameters:
 //!   - PBKDF2-HMAC-SHA256, 200,000 iterations

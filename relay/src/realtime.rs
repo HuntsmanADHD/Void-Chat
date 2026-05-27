@@ -428,6 +428,13 @@ async fn on_session_announce(socket: SocketRef, raw: serde_json::Value, state: R
         _ => return fail_announce(&socket, &state, "INVALID_PAYLOAD", "malformed public key"),
     }
 
+    // Past this point we have a parsed claim — bind the bad-announce
+    // bucket to the claimed `box_public_key` rather than the socket_id
+    // so reconnect doesn't reset the counter. Audit pt6 H13. The
+    // limitation (claim is rotatable per attempt) is documented in
+    // the THREAT_MODEL.
+    let claimed_box = parsed.box_public_key.as_str();
+
     // Pull the expected nonce (without consuming yet — only consume on
     // successful verify, otherwise a flooder could exhaust the nonce
     // map by hitting bad-announce paths).
@@ -435,10 +442,12 @@ async fn on_session_announce(socket: SocketRef, raw: serde_json::Value, state: R
         .lock()
         .and_then(|inner| inner.nonces.get(&socket_id_string(&socket)).map(|n| n.nonce.clone()));
     let Some(expected) = expected_nonce else {
-        return fail_announce(&socket, &state, "BAD_NONCE", "no nonce issued for this socket");
+        return fail_announce_keyed(
+            &socket, &state, "BAD_NONCE", "no nonce issued for this socket", Some(claimed_box),
+        );
     };
     if parsed.nonce != expected {
-        return fail_announce(&socket, &state, "BAD_NONCE", "nonce mismatch");
+        return fail_announce_keyed(&socket, &state, "BAD_NONCE", "nonce mismatch", Some(claimed_box));
     }
 
     let signed = format!(
@@ -447,22 +456,22 @@ async fn on_session_announce(socket: SocketRef, raw: serde_json::Value, state: R
     );
     let sig_bytes = match bs58::decode(&parsed.sig).into_vec() {
         Ok(b) if b.len() == 64 => b,
-        _ => return fail_announce(&socket, &state, "BAD_SIGNATURE", "announce signature invalid"),
+        _ => return fail_announce_keyed(&socket, &state, "BAD_SIGNATURE", "announce signature invalid", Some(claimed_box)),
     };
     let sign_arr: [u8; 32] = match sign_bytes.as_slice().try_into() {
         Ok(a) => a,
-        Err(_) => return fail_announce(&socket, &state, "BAD_SIGNATURE", "announce signature invalid"),
+        Err(_) => return fail_announce_keyed(&socket, &state, "BAD_SIGNATURE", "announce signature invalid", Some(claimed_box)),
     };
     let sig_arr: [u8; 64] = match sig_bytes.as_slice().try_into() {
         Ok(a) => a,
-        Err(_) => return fail_announce(&socket, &state, "BAD_SIGNATURE", "announce signature invalid"),
+        Err(_) => return fail_announce_keyed(&socket, &state, "BAD_SIGNATURE", "announce signature invalid", Some(claimed_box)),
     };
     let Ok(verifying_key) = VerifyingKey::from_bytes(&sign_arr) else {
-        return fail_announce(&socket, &state, "BAD_SIGNATURE", "announce signature invalid");
+        return fail_announce_keyed(&socket, &state, "BAD_SIGNATURE", "announce signature invalid", Some(claimed_box));
     };
     let signature = Signature::from_bytes(&sig_arr);
     if verifying_key.verify(signed.as_bytes(), &signature).is_err() {
-        return fail_announce(&socket, &state, "BAD_SIGNATURE", "announce signature invalid");
+        return fail_announce_keyed(&socket, &state, "BAD_SIGNATURE", "announce signature invalid", Some(claimed_box));
     }
 
     // Display name policy — refuse to trim, refuse to coerce. Audit
@@ -820,7 +829,12 @@ async fn on_disconnect(socket: SocketRef, state: RealtimeState) {
         let Some(mut inner) = state.lock() else { return };
         let session = inner.sessions.remove(&sid);
         inner.nonces.remove(&sid);
-        inner.bad_announce_counts.remove(&sid);
+        // Audit pt6 H13: only the socket-keyed bucket gets reaped on
+        // disconnect. The box-pub-keyed buckets persist until the GC
+        // sweeper expires them — that's the whole point of the H13
+        // change (reconnect doesn't reset). The sock: prefix matches
+        // what fail_announce_keyed uses when no claim is available.
+        inner.bad_announce_counts.remove(&format!("sock:{sid}"));
 
         let Some(session) = session else {
             return;
@@ -868,15 +882,56 @@ async fn on_disconnect(socket: SocketRef, state: RealtimeState) {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-fn fail_announce(socket: &SocketRef, state: &RealtimeState, code: &str, message: &str) {
+fn fail_announce(
+    socket: &SocketRef,
+    state: &RealtimeState,
+    code: &str,
+    message: &str,
+) {
+    fail_announce_keyed(socket, state, code, message, None);
+}
+
+/// Same as [`fail_announce`] but lets the caller bind the bad-announce
+/// bucket to a specific identity claim (the box public key the bad
+/// announce purported to be from). Audit pt6 H13.
+///
+/// Why this exists: the previous bucket was keyed on `socket_id`,
+/// which resets on disconnect/reconnect — an attacker could disconnect
+/// after every 4 bad announces and reconnect with zero cost (Tor adds
+/// some latency but no throttling at the relay). Keying on the claimed
+/// `box_public_key` makes the bucket sticky across socket cycles for
+/// the duration of `BAD_ANNOUNCE_WINDOW_MS` (5 min).
+///
+/// Honest limitation: the claimed box pub is whatever bytes the
+/// attacker put in the announce payload. They can rotate it just as
+/// cheaply as they rotate socket_ids — only a single-key bad-signer
+/// hits the wall. A determined flooder who rotates claimed box pubs
+/// per attempt still defeats this. A truly hard limit would need a
+/// per-listener global token bucket on bad verifies; flagged for
+/// future hardening in `THREAT_MODEL.md`. For the malformed-payload
+/// paths (no parsed claim yet) we still fall back to socket_id, which
+/// is the same as the previous behavior — cheap to detect, so the
+/// looser bucket is acceptable.
+fn fail_announce_keyed(
+    socket: &SocketRef,
+    state: &RealtimeState,
+    code: &str,
+    message: &str,
+    claimed_box_pub: Option<&str>,
+) {
     send_error(socket, code, message);
     let should_disconnect = {
         let Some(mut inner) = state.lock() else { return };
-        let sid = socket_id_string(socket);
+        let bucket_key = match claimed_box_pub {
+            Some(box_pub) if !box_pub.is_empty() && box_pub.len() <= 128 => {
+                format!("box:{box_pub}")
+            }
+            _ => format!("sock:{}", socket_id_string(socket)),
+        };
         let now = now_ms();
         let entry = inner
             .bad_announce_counts
-            .entry(sid)
+            .entry(bucket_key)
             .or_insert(BadAnnounceEntry {
                 count: 0,
                 window_start: now,
@@ -967,10 +1022,16 @@ fn issue_nonce() -> String {
 }
 
 fn make_msg_id() -> String {
-    let mut buf = [0u8; 6];
+    // Audit pt6 M3: 16 bytes = 128 bits of randomness. Birthday
+    // collision is astronomical even across millions of messages per
+    // millisecond; the previous 48-bit suffix had a ~16M-id birthday
+    // bound in the same ms, and the client uses msgId as a dedup key
+    // (`prev.some(m => m.id === msg.msgId)`) so a collision would
+    // silently drop one of the colliding messages.
+    let mut buf = [0u8; 16];
     getrandom::getrandom(&mut buf).expect("OS RNG unavailable");
     let ts = chrono::Utc::now().timestamp_millis() as u64;
-    // Format mirrors Node's `m_${ts.toString(36)}_${hex6}` closely
+    // Format mirrors Node's `m_${ts.toString(36)}_<hex>` closely
     // enough for any client-side prefix check to keep working; exact
     // base of the ts segment is opaque.
     format!("m_{:x}_{}", ts, hex_encode(&buf))
@@ -1044,5 +1105,17 @@ fn sweep(state: &RealtimeState) -> usize {
         inner.last_channel_activity.remove(&k);
         removed += 1;
     }
+
+    // Audit pt6 H13: expire box-pub-keyed bad-announce entries.
+    // socket-keyed entries get reaped on disconnect; box-pub-keyed
+    // ones outlive any single socket and need this sweep.
+    inner.bad_announce_counts.retain(|_, entry| {
+        let keep = now - entry.window_start <= BAD_ANNOUNCE_WINDOW_MS;
+        if !keep {
+            removed += 1;
+        }
+        keep
+    });
+
     removed
 }

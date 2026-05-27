@@ -64,7 +64,9 @@ static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 /// to the renderer via the `get_proxy_token` Tauri command. Every
 /// request hitting the proxy must include this token in its path:
 ///
+/// ```text
 ///     GET /o/<token>/<onion>/<rest> HTTP/1.1
+/// ```
 ///
 /// Without it the proxy returns 403. Closes the "any local process on
 /// this machine can use our Tor circuit" hole — even malware sharing
@@ -224,6 +226,16 @@ fn split_request_line(line: &str) -> Option<(String, String)> {
     let path = parts.next()?;
     let version = parts.next()?;
 
+    // Audit pt6 H9: method whitelist. The renderer's CSP + the relay's
+    // route definitions limit methods on the legitimate path, but a
+    // compromised renderer (or future XSS regression) could otherwise
+    // send arbitrary methods to remote .onion relays. Restrict to the
+    // set this app actually uses; anything else gets rejected at the
+    // proxy boundary instead of hoping CSP catches it.
+    if !matches!(method, "GET" | "POST" | "DELETE" | "OPTIONS") {
+        return None;
+    }
+
     let stripped = path.strip_prefix("/o/")?;
     // First segment is the auth token.
     let token_end = stripped.find('/')?;
@@ -281,10 +293,15 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 pub const PROXY_CIRCUIT_HEADER: &str = "X-Voidchat-Proxy-Circuit";
 
 /// Rewrite the Host header to point at the onion + inject the
-/// per-circuit token (and strip any client-supplied one). The relay
-/// validates nothing about Host (other than CORS, which we handle
-/// separately), but some HTTP intermediaries care, and it keeps the
-/// wire format honest.
+/// per-circuit token (and strip any client-supplied one). Drops any
+/// headers outside a small allowlist before forwarding upstream.
+///
+/// Audit pt6 H9: previously every header was passed through verbatim
+/// (minus Host). A compromised renderer (or future XSS regression)
+/// could send arbitrary headers to a remote .onion relay — auth
+/// tokens it wasn't supposed to see, fake forwarding hints, etc. The
+/// allowlist below is the small set the relay actually reads; anything
+/// else gets dropped at the boundary.
 fn rewrite_host_header(headers: &str, onion: &str, circuit_token: &str) -> String {
     let mut out = String::with_capacity(headers.len());
     let mut host_replaced = false;
@@ -297,22 +314,64 @@ fn rewrite_host_header(headers: &str, onion: &str, circuit_token: &str) -> Strin
         if lower.starts_with("host:") {
             out.push_str(&format!("Host: {onion}"));
             host_replaced = true;
-        } else if lower.starts_with(&format!("{}:", PROXY_CIRCUIT_HEADER.to_ascii_lowercase())) {
+            out.push_str("\r\n");
+            continue;
+        }
+        if lower.starts_with(&format!("{}:", PROXY_CIRCUIT_HEADER.to_ascii_lowercase())) {
             // Drop any client-supplied circuit header so a malicious
             // visitor can't pre-stuff it to alias the local-renderer
             // bucket. Our own header (injected below) is the only
             // value the relay should ever see.
             continue;
-        } else {
-            out.push_str(line);
         }
-        out.push_str("\r\n");
+        if is_header_allowed(&lower) {
+            out.push_str(line);
+            out.push_str("\r\n");
+        }
+        // else: drop silently — header outside the allowlist
     }
     if !host_replaced {
         out.push_str(&format!("Host: {onion}\r\n"));
     }
     out.push_str(&format!("{PROXY_CIRCUIT_HEADER}: {circuit_token}\r\n"));
     out
+}
+
+/// HTTP headers the proxy forwards upstream. Anything else gets
+/// stripped (see audit pt6 H9). Lower-cased prefix match against
+/// "<name>:" — the caller has already lower-cased the line.
+fn is_header_allowed(lower_line: &str) -> bool {
+    // Headers the relay actually reads / cares about:
+    //   - content-type / content-length: standard JSON request body
+    //   - x-community-password: relay's auth gate for private
+    //     communities AND delete-tokens (audit pt6 C2)
+    // Headers needed for transport / socket.io to work:
+    //   - connection / upgrade / sec-websocket-*: WebSocket handshake
+    //   - accept / accept-encoding / user-agent: standard fetch
+    //   - origin / referer: needed for the relay's CORS check
+    //   - cookie: socket.io may set its sid cookie; passing through
+    //     keeps the cross-host session sticky
+    const ALLOWED_PREFIXES: &[&str] = &[
+        "content-type:",
+        "content-length:",
+        "x-community-password:",
+        "accept:",
+        "accept-encoding:",
+        "accept-language:",
+        "user-agent:",
+        "origin:",
+        "referer:",
+        "cookie:",
+        "connection:",
+        "upgrade:",
+        "sec-websocket-key:",
+        "sec-websocket-version:",
+        "sec-websocket-protocol:",
+        "sec-websocket-extensions:",
+        "pragma:",
+        "cache-control:",
+    ];
+    ALLOWED_PREFIXES.iter().any(|p| lower_line.starts_with(p))
 }
 
 /// Mint a fresh per-connection circuit token. 16 bytes hex = 32 chars,

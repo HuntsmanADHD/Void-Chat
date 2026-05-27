@@ -814,63 +814,23 @@ pub struct TorBackup {
 
 const BACKUP_FORMAT_VERSION: u32 = 1;
 
+// Audit pt6 H12: backup/restore round-trip integrity is load-bearing
+// (corruption silently produces invalid Tor identities on restore).
+// The previous hand-rolled base64 had no tests. The `base64` crate
+// (added for pt6 H7's wash module) is audited + fuzzed and shaves
+// off our own bug surface for free.
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+
 fn base64_encode(bytes: &[u8]) -> String {
-    // Hand-rolled to avoid pulling a base64 crate just for this. Standard
-    // RFC 4648 alphabet, no line wrap.
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0];
-        let b1 = if chunk.len() > 1 { chunk[1] } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] } else { 0 };
-        out.push(ALPHABET[(b0 >> 2) as usize] as char);
-        out.push(ALPHABET[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(ALPHABET[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(ALPHABET[(b2 & 0x3f) as usize] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
+    B64.encode(bytes)
 }
 
-fn base64_decode(s: &str) -> Result<Vec<u8>, &'static str> {
-    fn val(c: u8) -> Result<u8, &'static str> {
-        match c {
-            b'A'..=b'Z' => Ok(c - b'A'),
-            b'a'..=b'z' => Ok(c - b'a' + 26),
-            b'0'..=b'9' => Ok(c - b'0' + 52),
-            b'+' => Ok(62),
-            b'/' => Ok(63),
-            _ => Err("invalid base64 char"),
-        }
-    }
-    let bytes: Vec<u8> = s.bytes().filter(|&b| !b.is_ascii_whitespace()).collect();
-    if bytes.len() % 4 != 0 {
-        return Err("base64 length not multiple of 4");
-    }
-    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
-    for chunk in bytes.chunks(4) {
-        let pad0 = chunk[2] == b'=';
-        let pad1 = chunk[3] == b'=';
-        let v0 = val(chunk[0])?;
-        let v1 = val(chunk[1])?;
-        out.push((v0 << 2) | (v1 >> 4));
-        if !pad0 {
-            let v2 = val(chunk[2])?;
-            out.push((v1 << 4) | (v2 >> 2));
-            if !pad1 {
-                let v3 = val(chunk[3])?;
-                out.push((v2 << 6) | v3);
-            }
-        }
-    }
-    Ok(out)
+fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
+    // Strip whitespace before decoding so files with stray newlines /
+    // CR / tabs from clipboard round-trips still decode (preserves
+    // the old hand-rolled function's lenient behavior).
+    let trimmed: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    B64.decode(trimmed).map_err(|e| format!("base64 decode: {e}"))
 }
 
 fn hs_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -930,16 +890,37 @@ pub fn tor_get_bridges(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 pub fn tor_set_bridges(app: AppHandle, bridges_text: String) -> Result<(), String> {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-    let preview = if bridges_text.trim().is_empty() {
-        "(empty — bridges will be disabled, Tor will use direct connections)".to_string()
+    // Audit pt6 L1: show the FILTERED preview, not the raw input.
+    // Previously the dialog displayed the first 3 lines of the user's
+    // paste verbatim while the write path silently dropped any line
+    // that failed `is_safe_bridge_line`. A malicious paste that
+    // sandwiched a legit line above an injected one would reassure
+    // the user with the legit line + injected one, then silently
+    // drop the injection on apply. Cosmetic but confusing — better
+    // to show exactly what'll land in torrc.
+    let filtered_lines: Vec<&str> = bridges_text
+        .lines()
+        .filter(|l| {
+            let trimmed = l.trim();
+            !trimmed.is_empty() && !trimmed.starts_with('#') && is_safe_bridge_line(trimmed)
+        })
+        .collect();
+    let preview = if filtered_lines.is_empty() {
+        if bridges_text.trim().is_empty() {
+            "(empty — bridges will be disabled, Tor will use direct connections)".to_string()
+        } else {
+            "(no lines passed the bridge-format filter — none will be applied)".to_string()
+        }
     } else {
-        // Show the first ~3 lines so the user can sanity-check what's
-        // being applied. Truncated to keep the dialog readable.
-        bridges_text
-            .lines()
-            .take(3)
-            .collect::<Vec<_>>()
-            .join("\n")
+        // First ~3 valid lines so the dialog stays readable. If more
+        // were pasted than fit, hint the user that the rest are also
+        // being applied (just not shown).
+        let shown: String = filtered_lines.iter().take(3).copied().collect::<Vec<_>>().join("\n");
+        if filtered_lines.len() > 3 {
+            format!("{shown}\n…(+{} more, all will be applied)", filtered_lines.len() - 3)
+        } else {
+            shown
+        }
     };
     let confirmed = app
         .dialog()
