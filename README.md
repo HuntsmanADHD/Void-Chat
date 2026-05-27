@@ -83,6 +83,16 @@ sudo dnf install -y gcc gcc-c++ make \
 ```
 (`gcc gcc-c++ make` is Fedora's equivalent of Ubuntu's `build-essential` — Rust needs a C linker. Fedora doesn't bundle one by default, so omitting these gives a `linker 'cc' not found` error the first time cargo compiles a crate.)
 
+**Void Linux (glibc):**
+```bash
+sudo xbps-install -Sy base-devel pkg-config \
+                      webkit2gtk-devel openssl-devel \
+                      librsvg-devel libappindicator-devel \
+                      curl wget file gnupg
+```
+
+> **Use glibc Void, not musl Void.** The bundled Tor Expert Bundle from `scripts/fetch-tor-binaries.sh` is glibc-linked and won't load on musl (you'll get a confusing `Exec format error` or `not found`). On musl, skip the fetch script and `sudo xbps-install tor` instead — the runtime falls back to system tor on `PATH`. Some Rust crates (notably the `openssl` family) also need extra work on musl.
+
 **macOS:**
 ```bash
 xcode-select --install   # Apple's command-line tools, includes the C toolchain
