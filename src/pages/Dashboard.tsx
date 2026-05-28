@@ -19,6 +19,7 @@ import { apiUrl, apiUrlForOnion } from '@/lib/relayBase';
 import { parseInvite } from '@/lib/invite';
 import { useTorStatus } from '@/hooks/useTorStatus';
 import { setCommunityHost, getCommunityHost } from '@/lib/communityHostStore';
+import { listPinnedCrossHost } from '@/lib/pinnedCrossHostStore';
 import type { Community, DirectMessage, CurrentUser } from '@/components/layout/Sidebar';
 
 function truncatePublicId(id: string, chars = 4): string {
@@ -182,13 +183,32 @@ export default function Dashboard() {
             isPrivate: !!c.isPrivate,
           }),
         );
-        const communityList: Community[] = transformedCommunities.map((c) => ({
+        const localList: Community[] = transformedCommunities.map((c) => ({
           id: c.id,
           name: c.name,
           icon: c.icon ?? null,
           unreadCount: 0,
         }));
-        setCommunities(communityList);
+        // Merge pinned cross-host communities into the sidebar. They
+        // live in localStorage (not the local relay DB), so the
+        // `/api/communities` fetch above doesn't see them. Audit pt6
+        // user-perspective analysis: this is the opt-in fix for the
+        // documented "cross-host communities aren't surfaced in the
+        // sidebar yet" gap. Dedupe by id so the local fetch wins if
+        // both somehow claim the same community (shouldn't happen,
+        // but defensive).
+        const pinnedList = listPinnedCrossHost();
+        const localIds = new Set(localList.map((c) => c.id));
+        const pinnedAsCommunities: Community[] = pinnedList
+          .filter((p) => !localIds.has(p.id))
+          .map((p) => ({
+            id: p.id,
+            name: p.name,
+            icon: p.icon ?? null,
+            unreadCount: 0,
+            isRemote: true,
+          }));
+        setCommunities([...localList, ...pinnedAsCommunities]);
         setCommunityData(transformedCommunities);
       }
       setDirectMessages([]);

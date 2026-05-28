@@ -50,6 +50,9 @@ export interface AppLayoutProps {
   /** Community menu actions (sidebar header dropdown) */
   onCopyInviteLink?: () => void;
   onDeleteCommunity?: () => void;
+  /** Cross-host pin/unpin — see Sidebar.tsx for the contract. */
+  onPinCommunity?: () => void;
+  onUnpinCommunity?: () => void;
   /** Open search */
   onOpenSearch?: () => void;
   /** Open notifications */
@@ -86,6 +89,8 @@ export const AppLayout = React.memo(function AppLayout({
   onUserSettings,
   onCopyInviteLink,
   onDeleteCommunity,
+  onPinCommunity,
+  onUnpinCommunity,
   onOpenSearch,
   onOpenNotifications,
   onOpenSettings,
@@ -166,6 +171,8 @@ export const AppLayout = React.memo(function AppLayout({
           onUserSettings={onUserSettings}
           onCopyInviteLink={onCopyInviteLink}
           onDeleteCommunity={onDeleteCommunity}
+          onPinCommunity={onPinCommunity}
+          onUnpinCommunity={onUnpinCommunity}
           onMobileClose={closeMobileSidebar}
           isMobile={mobileSidebarOpen}
         />

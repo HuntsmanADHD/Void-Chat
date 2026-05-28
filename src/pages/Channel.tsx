@@ -19,6 +19,12 @@ import {
   clearDeleteToken,
   communityDeleteAuthHeaders,
 } from '@/lib/communityDeleteTokenStore';
+import { getCommunityHost, setCommunityHost } from '@/lib/communityHostStore';
+import {
+  isPinned,
+  pinCrossHost,
+  unpinCrossHost,
+} from '@/lib/pinnedCrossHostStore';
 import { CommunityPasswordPrompt } from '@/components/community/CommunityPasswordPrompt';
 import { useToast } from '@/components/ui/Toast';
 import { useBackdropClose } from '@/hooks/useBackdropClose';
@@ -53,6 +59,10 @@ export default function Channel() {
   const [pwSubmitting, setPwSubmitting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  // Cross-host detection — see Community.tsx for the rationale.
+  const remoteHost = getCommunityHost(communityId);
+  const isRemote = Boolean(remoteHost);
+  const [pinned, setPinned] = useState<boolean>(() => isPinned(communityId));
   const { success: toastSuccess, error: toastError } = useToast();
   const tor = useTorStatus();
   const deleteConfirmBackdrop = useBackdropClose(
@@ -159,6 +169,30 @@ export default function Channel() {
   );
 
   const handlePasswordCancel = useCallback(() => navigate('/app'), [navigate]);
+
+  // Cross-host pin/unpin — see Community.tsx for the full design notes.
+  const handlePinCommunity = useCallback(() => {
+    if (!isRemote || !remoteHost) return;
+    const known = communities.find((c) => c.id === communityId);
+    pinCrossHost({
+      id: communityId,
+      onion: remoteHost,
+      name: known?.name ?? communityId,
+      icon: known?.icon ?? undefined,
+    });
+    setPinned(true);
+    toastSuccess('Pinned to sidebar');
+  }, [isRemote, remoteHost, communities, communityId, toastSuccess]);
+
+  const handleUnpinCommunity = useCallback(() => {
+    if (!isRemote) return;
+    unpinCrossHost(communityId);
+    setCommunityHost(communityId, null);
+    clearCommunityPassword(communityId);
+    setPinned(false);
+    toastSuccess('Unpinned. Community removed from sidebar.');
+    navigate('/app');
+  }, [isRemote, communityId, navigate, toastSuccess]);
 
   const handleCopyInvite = useCallback(async () => {
     if (typeof window === 'undefined') return;
@@ -408,7 +442,9 @@ export default function Channel() {
         onAddCommunity={() => navigate('/app')}
         onUserSettings={handleSettings}
         onCopyInviteLink={handleCopyInvite}
-        onDeleteCommunity={() => setShowDeleteConfirm(true)}
+        onDeleteCommunity={isRemote ? undefined : () => setShowDeleteConfirm(true)}
+        onPinCommunity={isRemote && !pinned ? handlePinCommunity : undefined}
+        onUnpinCommunity={isRemote && pinned ? handleUnpinCommunity : undefined}
         onMemberClick={handleMemberClick}
       >
         <ChatContainer

@@ -5,6 +5,9 @@ import {
   ChevronDown,
   ChevronRight,
   Droplets,
+  Globe,
+  Pin,
+  PinOff,
   Settings,
   Share2,
   Trash2,
@@ -21,6 +24,10 @@ export interface Community {
   icon?: string | null;
   unreadCount?: number;
   hasNotification?: boolean;
+  /** True when this is a PINNED cross-host community (lives on someone
+   *  else's onion). Rendered with a small globe overlay so the user can
+   *  tell at a glance which sidebar entries route through Tor. */
+  isRemote?: boolean;
 }
 
 export interface Channel {
@@ -81,6 +88,11 @@ export interface SidebarProps {
    *  the community name. Pages provide these when they have an active community. */
   onCopyInviteLink?: () => void;
   onDeleteCommunity?: () => void;
+  /** Cross-host community pin/unpin. Only one of these should be provided
+   *  at a time — Pin when viewing an UN-pinned remote community, Unpin
+   *  when viewing a pinned one. Both are absent for local communities. */
+  onPinCommunity?: () => void;
+  onUnpinCommunity?: () => void;
   /** Mobile close handler */
   onMobileClose?: () => void;
   /** Whether sidebar is in mobile mode */
@@ -103,6 +115,8 @@ export const Sidebar = React.memo(function Sidebar({
   onUserSettings,
   onCopyInviteLink,
   onDeleteCommunity,
+  onPinCommunity,
+  onUnpinCommunity,
   onMobileClose,
   isMobile = false,
 }: SidebarProps) {
@@ -195,6 +209,14 @@ export const Sidebar = React.memo(function Sidebar({
                   {community.name.slice(0, 2).toUpperCase()}
                 </span>
               )}
+              {community.isRemote && (
+                <span
+                  className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-zinc-950 border border-zinc-700 flex items-center justify-center"
+                  title="Cross-host community (routes through Tor)"
+                >
+                  <Globe className="w-2.5 h-2.5 text-zinc-300" />
+                </span>
+              )}
             </div>
             {/* Active indicator */}
             {activeCommunityId === community.id && (
@@ -260,7 +282,7 @@ export const Sidebar = React.memo(function Sidebar({
             <div className="relative flex-1 min-w-0" ref={communityMenuRef}>
               <button
                 onClick={() => {
-                  if (onCopyInviteLink || onDeleteCommunity) {
+                  if (onCopyInviteLink || onDeleteCommunity || onPinCommunity || onUnpinCommunity) {
                     setCommunityMenuOpen((v) => !v);
                   }
                 }}
@@ -269,7 +291,7 @@ export const Sidebar = React.memo(function Sidebar({
                 <span className="font-semibold text-[var(--text-primary)] truncate">
                   {communities.find((c) => c.id === activeCommunityId)?.name || 'Community'}
                 </span>
-                {(onCopyInviteLink || onDeleteCommunity) && (
+                {(onCopyInviteLink || onDeleteCommunity || onPinCommunity || onUnpinCommunity) && (
                   <ChevronDown
                     size={16}
                     className={`flex-shrink-0 text-zinc-500 transition-transform ${
@@ -290,6 +312,30 @@ export const Sidebar = React.memo(function Sidebar({
                     >
                       <Share2 size={14} />
                       Copy invite link
+                    </button>
+                  )}
+                  {onPinCommunity && (
+                    <button
+                      onClick={() => {
+                        onPinCommunity();
+                        setCommunityMenuOpen(false);
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors"
+                    >
+                      <Pin size={14} />
+                      Pin to sidebar
+                    </button>
+                  )}
+                  {onUnpinCommunity && (
+                    <button
+                      onClick={() => {
+                        onUnpinCommunity();
+                        setCommunityMenuOpen(false);
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors"
+                    >
+                      <PinOff size={14} />
+                      Unpin from sidebar
                     </button>
                   )}
                   {onDeleteCommunity && (

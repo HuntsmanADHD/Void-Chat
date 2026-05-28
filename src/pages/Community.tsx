@@ -19,6 +19,13 @@ import {
   clearDeleteToken,
   communityDeleteAuthHeaders,
 } from '@/lib/communityDeleteTokenStore';
+import { getCommunityHost, setCommunityHost } from '@/lib/communityHostStore';
+import {
+  isPinned,
+  pinCrossHost,
+  refreshPinnedMetadata,
+  unpinCrossHost,
+} from '@/lib/pinnedCrossHostStore';
 import { CommunityPasswordPrompt } from '@/components/community/CommunityPasswordPrompt';
 import { useToast } from '@/components/ui/Toast';
 import { useBackdropClose } from '@/hooks/useBackdropClose';
@@ -75,6 +82,15 @@ export default function Community() {
     () => setShowDeleteConfirm(false),
     showDeleteConfirm && !isDeleting,
   );
+
+  // Cross-host = there's a host-onion mapping for this community ID.
+  // Local communities (created on this user's own relay) don't have
+  // one. The Pin/Unpin sidebar action only makes sense for remote
+  // ones — local communities already appear in the sidebar via the
+  // local `/api/communities` fetch.
+  const remoteHost = getCommunityHost(communityId);
+  const isRemote = Boolean(remoteHost);
+  const [pinned, setPinned] = useState<boolean>(() => isPinned(communityId));
 
   const handleChannelMessage = useCallback(
     (msg: DecryptedChannelMessage) => {
@@ -302,6 +318,44 @@ export default function Community() {
 
   const handlePasswordCancel = useCallback(() => navigate('/app'), [navigate]);
 
+  const handlePinCommunity = useCallback(() => {
+    if (!isRemote || !remoteHost || !community) return;
+    pinCrossHost({
+      id: communityId,
+      onion: remoteHost,
+      name: community.name,
+      icon: community.icon ?? undefined,
+    });
+    setPinned(true);
+    toastSuccess('Pinned to sidebar');
+  }, [isRemote, remoteHost, community, communityId, toastSuccess]);
+
+  const handleUnpinCommunity = useCallback(() => {
+    if (!isRemote) return;
+    unpinCrossHost(communityId);
+    // Unpinning is the user telling us they're done with this community.
+    // Clear the routing map AND any cached password — leaving them
+    // behind would mean a future paste of the same invite would
+    // silently use stale state. This is the ONLY full-cleanup path
+    // for cross-host communities (see pinnedCrossHostStore design note).
+    setCommunityHost(communityId, null);
+    clearCommunityPassword(communityId);
+    setPinned(false);
+    toastSuccess('Unpinned. Community removed from sidebar.');
+    navigate('/app');
+  }, [isRemote, communityId, navigate, toastSuccess]);
+
+  // When metadata loads (or changes — e.g. host renamed it), refresh
+  // the cached snapshot in the pinned store so the sidebar reflects it
+  // next render. No-op if not pinned.
+  useEffect(() => {
+    if (!community || !pinned) return;
+    refreshPinnedMetadata(communityId, {
+      name: community.name,
+      icon: community.icon ?? undefined,
+    });
+  }, [community, pinned, communityId]);
+
   const handleCopyInvite = useCallback(async () => {
     if (typeof window === 'undefined') return;
     try {
@@ -476,7 +530,9 @@ export default function Community() {
         onAddChannel={() => setShowCreateChannelModal(true)}
         onUserSettings={handleSettings}
         onCopyInviteLink={handleCopyInvite}
-        onDeleteCommunity={() => setShowDeleteConfirm(true)}
+        onDeleteCommunity={isRemote ? undefined : () => setShowDeleteConfirm(true)}
+        onPinCommunity={isRemote && !pinned ? handlePinCommunity : undefined}
+        onUnpinCommunity={isRemote && pinned ? handleUnpinCommunity : undefined}
         onOpenSettings={handleOpenSettings}
         onOpenHelp={handleOpenHelp}
         onOpenPinned={handleOpenPinned}
