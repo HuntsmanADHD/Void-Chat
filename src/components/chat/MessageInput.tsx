@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState, KeyboardEvent } from 'react';
-import { Droplets } from 'lucide-react';
+import { WashIcon } from '@/components/wash/WashIcon';
 import { EmojiPicker } from './EmojiPicker';
 import { WashModal } from '@/components/wash/WashModal';
 import { useHarmonicTyping } from '@/hooks/useHarmonicTyping';
@@ -209,7 +209,7 @@ function MessageInputBase({
             className="p-1 text-zinc-600 hover:text-zinc-400 transition-colors flex-shrink-0"
             title="Wash a phrase or invite code (off-Void encryption layer)"
           >
-            <Droplets className="w-5 h-5" />
+            <WashIcon className="w-5 h-5" />
           </button>
 
           {/* Emoji */}

@@ -4,7 +4,6 @@ import {
   Hash,
   ChevronDown,
   ChevronRight,
-  Droplets,
   Globe,
   Pin,
   PinOff,
@@ -13,6 +12,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import { WashIcon } from '@/components/wash/WashIcon';
 import { Avatar } from '../ui/Avatar';
 import { WashFloating } from '@/components/wash/WashFloating';
 import { truncatePublicId as truncateId } from '@/lib/format';
@@ -523,7 +523,7 @@ export const Sidebar = React.memo(function Sidebar({
             aria-label="Wash a phrase"
             title="Wash — off-Void encryption tool"
           >
-            <Droplets size={18} />
+            <WashIcon className="w-[18px] h-[18px]" />
           </button>
           <button
             className="p-1.5 rounded hover:bg-[var(--discord-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"

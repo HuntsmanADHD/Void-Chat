@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Droplets, Eye, Lock, Shield, Trash2, UserX, Zap } from 'lucide-react';
+import { Eye, Lock, Shield, Trash2, UserX, Zap } from 'lucide-react';
+import { WashIcon } from '@/components/wash/WashIcon';
 import { WarrantCanaryBadge } from '@/components/legal/WarrantCanary';
 
 function DecodingText({ text, className }: { text: string; className?: string }) {
@@ -209,7 +210,7 @@ export default function Landing() {
         <div className="max-w-xl mx-auto mt-8 text-center">
           <div className="bg-gradient-to-r from-zinc-900/40 via-zinc-800/30 to-zinc-700/20 rounded-2xl p-6 border border-white/10 backdrop-blur-md">
             <h3 className="text-lg font-semibold text-white text-shadow-lg mb-3 flex items-center justify-center gap-2">
-              <Droplets className="w-5 h-5 text-zinc-300" />
+              <WashIcon className="w-5 h-5" />
               Wash a phrase
             </h3>
             <p className="text-sm text-zinc-400 mb-4">
