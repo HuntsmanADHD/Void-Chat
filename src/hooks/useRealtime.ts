@@ -69,8 +69,16 @@ export function useRealtime(options: UseRealtimeOptions = {}): UseRealtimeReturn
   // to a remote one), the client tears down the old socket and rebuilds
   // against the new endpoint. The session identity is preserved across
   // that swap so we don't burn a fresh keypair every navigation.
+  //
+  // Callers that pass NO `relayUrl` (status-only consumers like
+  // ConnectionStatusBanner) must not (re)init — otherwise they'd
+  // resolve to the local relay and clobber an active proxy socket
+  // opened by a parent page that IS on a remote community. The
+  // cross-host WS would then die microseconds after handshake while
+  // the local one survived, producing an empty "wrong relay" UI.
   useEffect(() => {
     if (!session) return;
+    if (options.relayUrl === undefined) return;
     client.init(session, options.relayUrl);
   }, [client, session, options.relayUrl]);
 

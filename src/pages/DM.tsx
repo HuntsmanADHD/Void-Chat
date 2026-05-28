@@ -7,6 +7,7 @@ import type { MessageData } from '@/components/chat/Message';
 import { useSession } from '@/hooks/useSession';
 import { useRealtime, type DecryptedDMMessage } from '@/hooks/useRealtime';
 import { useApi } from '@/hooks/useApi';
+import { HTTP_RELAY_BASE } from '@/lib/relayBase';
 import { appendDM as storeAppendDM, listDM as storeListDM } from '@/lib/messageStore';
 import type { Community, DirectMessage, CurrentUser } from '@/components/layout/Sidebar';
 import type { Member } from '@/components/layout/MemberList';
@@ -63,8 +64,14 @@ export default function DM() {
   // recipient was connected, queryable indefinitely by polling). The
   // honest replacement is "delivered but no reply looks identical to
   // delivered but recipient offline" — which is what users see now.
+  // Pass the local relay URL explicitly. `useRealtime` no longer
+  // (re)inits the singleton when `relayUrl` is undefined — a status-only
+  // bail to stop ConnectionStatusBanner from clobbering an active
+  // proxy socket. DMs continue to default to the local relay until
+  // cross-host DM routing lands.
   const { sendDM, isReady: isRealtimeReady, lookupBoxKey } = useRealtime({
     onDMMessage: handleDMMessage,
+    relayUrl: HTTP_RELAY_BASE,
   });
 
   useEffect(() => {
