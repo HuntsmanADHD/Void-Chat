@@ -491,8 +491,18 @@ export default function Community() {
 
   if (!isReady || (isLoading && !needsPassword)) {
     return (
-      <div className="h-screen w-screen flex items-center justify-center bg-black">
-        <p className="text-zinc-400">Loading community…</p>
+      <div className="h-screen w-screen flex flex-col items-center justify-center gap-4 bg-black">
+        {/* Pixel art loading animation (64×64 source, rendered at
+            128×128 with nearest-neighbor scaling so the pixels stay
+            crisp). GIF handles its own frame timing + loop. */}
+        <img
+          src="/images/loading-clawed.gif"
+          alt=""
+          aria-hidden="true"
+          className="w-32 h-32"
+          style={{ imageRendering: 'pixelated' }}
+        />
+        <p className="text-zinc-400 text-sm">Loading community…</p>
       </div>
     );
   }

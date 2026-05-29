@@ -64,7 +64,8 @@ Void Chat is a [Tauri 2](https://tauri.app) desktop app. Tauri uses your OS's na
 ```bash
 sudo pacman -S --needed base-devel curl wget file openssl \
                         appmenu-gtk-module libappindicator-gtk3 \
-                        librsvg webkit2gtk-4.1
+                        librsvg webkit2gtk-4.1 \
+                        gst-plugins-base gst-plugins-good
 ```
 
 **Ubuntu / Debian:**
@@ -72,14 +73,16 @@ sudo pacman -S --needed base-devel curl wget file openssl \
 sudo apt update
 sudo apt install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
                     libxdo-dev libssl-dev libayatana-appindicator3-dev \
-                    librsvg2-dev
+                    librsvg2-dev \
+                    gstreamer1.0-plugins-base gstreamer1.0-plugins-good
 ```
 
 **Fedora:**
 ```bash
 sudo dnf install -y gcc gcc-c++ make \
                     webkit2gtk4.1-devel openssl-devel curl wget file \
-                    libappindicator-gtk3-devel librsvg2-devel
+                    libappindicator-gtk3-devel librsvg2-devel \
+                    gstreamer1-plugins-base gstreamer1-plugins-good
 ```
 (`gcc gcc-c++ make` is Fedora's equivalent of Ubuntu's `build-essential` — Rust needs a C linker. Fedora doesn't bundle one by default, so omitting these gives a `linker 'cc' not found` error the first time cargo compiles a crate.)
 
@@ -88,8 +91,11 @@ sudo dnf install -y gcc gcc-c++ make \
 sudo xbps-install -Sy base-devel pkg-config \
                       webkit2gtk-devel openssl-devel \
                       librsvg-devel libappindicator-devel \
+                      gst-plugins-base1 gst-plugins-good1 \
                       curl wget file gnupg
 ```
+
+> **About the GStreamer packages:** Void Chat doesn't play audio (no voice calls, no media). But WebKitGTK probes for an audio sink at webview startup and logs a noisy `GStreamer element autoaudiosink not found` + `GLib-GObject-CRITICAL: invalid (NULL) pointer instance` if the GStreamer plugin packages are missing. The app still runs without them — it's pure log spam — but installing `gst-plugins-base` + `gst-plugins-good` (or the distro equivalents above) silences it cleanly.
 
 > **Use glibc Void, not musl Void.** The bundled Tor Expert Bundle from `scripts/fetch-tor-binaries.sh` is glibc-linked and won't load on musl (you'll get a confusing `Exec format error` or `not found`). On musl, skip the fetch script and `sudo xbps-install tor` instead — the runtime falls back to system tor on `PATH`. Some Rust crates (notably the `openssl` family) also need extra work on musl.
 
