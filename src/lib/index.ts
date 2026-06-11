@@ -5,3 +5,14 @@
  */
 
 export { formatPublicId, truncatePublicId } from './format';
+export {
+  compressSmart,
+  compressMessage,
+  decompressMessage,
+  gzipCompress,
+  gzipDecompress,
+  isLikelyPrecompressed,
+  crc32,
+  CorruptDataError,
+  CHAT_DICTIONARY,
+} from './compress';

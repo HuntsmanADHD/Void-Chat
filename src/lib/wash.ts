@@ -29,7 +29,7 @@
  *   void$wash$pub1$  <base64( ephemPubRaw(65) || iv(12) || ciphertext )>
  */
 
-import bs58 from 'bs58';
+import bs58 from './base58';
 
 const PREFIX_PASSPHRASE = 'void$wash$v1$';
 const PREFIX_SUBPUB = 'void$wash$pub1$';

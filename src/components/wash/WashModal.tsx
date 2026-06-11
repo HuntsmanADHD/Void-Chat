@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { X } from 'lucide-react';
+import { X } from '@/lib/icons';
 import { WashWidget } from './WashWidget';
 import { useBackdropClose } from '@/hooks/useBackdropClose';
 

@@ -19,8 +19,9 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 hyper = "1"
 
-# Socket.io protocol (matches existing JS client wire format)
-socketioxide = "0.16"
+# Raw-WebSocket transport: futures combinators for splitting the axum WS into
+# a read stream + write sink (Phase 6 replaced socket.io with a raw-WS envelope).
+futures-util = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

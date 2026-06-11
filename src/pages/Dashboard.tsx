@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Users, MessageCircle, Sparkles } from 'lucide-react';
+import { Plus, Users, MessageCircle, Sparkles } from '@/lib/icons';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { CommunityCard, type CommunityData } from '@/components/community/CommunityCard';
 import {

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Crown } from 'lucide-react';
+import { Crown } from '@/lib/icons';
 import { Avatar } from '../ui/Avatar';
 import { truncatePublicId } from '@/lib/format';
 

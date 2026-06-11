@@ -1,9 +1,9 @@
 import { Link } from 'react-router-dom';
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Eye, EyeOff, KeyRound, Lock, RefreshCw, Server, Trash2 } from 'lucide-react';
-import nacl from 'tweetnacl';
-import bs58 from 'bs58';
-import naclUtil from 'tweetnacl-util';
+import { ArrowLeft, Eye, EyeOff, KeyRound, Lock, RefreshCw, Server, Trash2 } from '@/lib/icons';
+import nacl from '@/lib/nacl';
+import bs58 from '@/lib/base58';
+import naclUtil from '@/lib/naclUtil';
 
 const { decodeBase64, decodeUTF8, encodeBase64, encodeUTF8 } = naclUtil;
 

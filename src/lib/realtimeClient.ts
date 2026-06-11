@@ -15,9 +15,9 @@
  * until state becomes `ready`.
  */
 
-import { io as ioClient, type Socket } from 'socket.io-client';
-import nacl from 'tweetnacl';
-import bs58 from 'bs58';
+import { WsConn, wsUrlFor } from './wsConn';
+import nacl from './nacl';
+import bs58 from './base58';
 
 import {
   MAX_PLAINTEXT_BYTES,
@@ -90,7 +90,7 @@ interface ChannelEntry {
 const RELAY_PORT = 3001;
 
 /**
- * Emit a socket.io event with a server-side ack, resolved as a bool.
+ * Emit an event with a server-side ack, resolved as a bool.
  * Resolves false on timeout or on `{ ok: false }` from the relay; true
  * only on explicit `{ ok: true }`. Caller decides what to do on false
  * (rollback optimistic UI, surface a toast, etc.).
@@ -102,7 +102,7 @@ const RELAY_PORT = 3001;
 const SEND_ACK_TIMEOUT_MS = 10_000;
 
 function emitWithAck(
-  socket: Socket,
+  socket: WsConn,
   event: string,
   payload: unknown,
 ): Promise<boolean> {
@@ -205,31 +205,9 @@ function resolveRelayUrl(): string {
   return `http://localhost:${RELAY_PORT}`;
 }
 
-/**
- * Split a relay URL into the `(origin, socket.io path)` pair that
- * socket.io-client wants. For local (`http://localhost:3001`) the
- * path is the default `/socket.io/`; for cross-host
- * (`http://localhost:11811/o/<token>/<onion>`) the path becomes
- * `/o/<token>/<onion>/socket.io/` so the proxy can route by onion.
- *
- * Falls back to the input string + default path if URL parsing fails
- * — better to attempt the connect than refuse silently.
- */
-function splitSocketIoUrl(url: string): { origin: string; path: string } {
-  try {
-    const u = new URL(url);
-    const base = u.pathname.replace(/\/+$/, '');
-    return {
-      origin: `${u.protocol}//${u.host}`,
-      path: `${base}/socket.io/`,
-    };
-  } catch {
-    return { origin: url, path: '/socket.io/' };
-  }
-}
 
 class RealtimeClient {
-  private socket: Socket | null = null;
+  private socket: WsConn | null = null;
   private session: Session | null = null;
   private state: ConnectionState = 'disconnected';
   private pendingNonce: string | null = null;
@@ -301,18 +279,10 @@ class RealtimeClient {
 
     this.currentUrl = url;
     this.setState('connecting');
-    // socket.io always appends its own path (`/socket.io/?...`) to the
-    // host:port of the URL — it ignores any pathname you supply. For
-    // cross-host (`http://localhost:11811/o/<token>/<onion>`) we need
-    // the proxy prefix to land in the wire path, otherwise the proxy
-    // sees a bare `/socket.io/` and can't tell which onion to dial.
-    // Fix: extract the pathname and feed it via the `path` option,
-    // which socket.io DOES respect.
-    const { origin, path: socketPath } = splitSocketIoUrl(url);
-    this.socket = ioClient(origin, {
-      transports: ['websocket'],
-      path: socketPath,
-      reconnection: true,
+    // `wsUrlFor` swaps http→ws and appends `/ws`, preserving any cross-host
+    // onion-proxy prefix (`/o/<token>/<onion>`) so the proxy can route by
+    // onion. WsConn owns reconnect/backoff (formerly socket.io's job).
+    this.socket = new WsConn(wsUrlFor(url), {
       reconnectionDelay: 500,
       reconnectionDelayMax: 5_000,
     });
@@ -438,7 +408,7 @@ class RealtimeClient {
    * by the joiner so a captured roster sig can't be replayed by a
    * malicious relay into a different channel context.
    */
-  private emitJoin(socket: Socket, channelId: string): void {
+  private emitJoin(socket: WsConn, channelId: string): void {
     if (!this.session) return;
     const joinTs = Date.now();
     const joinSig = signChannelJoin({
@@ -555,7 +525,7 @@ class RealtimeClient {
     for (const fn of this.rosterListeners) fn(channelId, roster);
   }
 
-  private wireSocketEvents(socket: Socket): void {
+  private wireSocketEvents(socket: WsConn): void {
     socket.on('connect', () => {
       // Wait for the server's nonce before announcing.
       this.setState('handshaking');

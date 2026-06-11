@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import nacl from 'tweetnacl';
-import bs58 from 'bs58';
+import nacl from '@/lib/nacl';
+import bs58 from '@/lib/base58';
 import type { Session } from '@/types/session';
 
 const SESSION_KEYS_STORAGE = 'voidchat_session_keys'; // sessionStorage

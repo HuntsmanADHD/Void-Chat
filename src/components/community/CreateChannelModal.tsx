@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { X, Hash } from 'lucide-react';
+import { X, Hash } from '@/lib/icons';
 
 export interface CreateChannelFormData {
   name: string;

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Eye, Lock, Shield, Trash2, UserX, Zap } from 'lucide-react';
+import { Eye, Lock, Shield, Trash2, UserX, Zap } from '@/lib/icons';
 import { WashIcon } from '@/components/wash/WashIcon';
 import { WarrantCanaryBadge } from '@/components/legal/WarrantCanary';
 

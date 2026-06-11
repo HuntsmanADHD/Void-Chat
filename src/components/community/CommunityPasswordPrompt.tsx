@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Lock } from 'lucide-react';
+import { Lock } from '@/lib/icons';
 import { useBackdropClose } from '@/hooks/useBackdropClose';
 
 export interface CommunityPasswordPromptProps {

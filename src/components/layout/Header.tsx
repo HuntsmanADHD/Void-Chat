@@ -9,7 +9,7 @@ import {
   HelpCircle,
   Inbox,
   Menu,
-} from 'lucide-react';
+} from '@/lib/icons';
 import { Avatar } from '../ui/Avatar';
 import { truncatePublicId as truncateId } from '@/lib/format';
 

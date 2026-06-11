@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { z } from 'zod';
+import { z } from '@/lib/validate';
 import { useBackdropClose } from '@/hooks/useBackdropClose';
 
 const createCommunityFormSchema = z.object({

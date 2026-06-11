@@ -5,7 +5,7 @@ import {
   MessageSquare,
   Copy,
   Check,
-} from 'lucide-react';
+} from '@/lib/icons';
 import { Avatar } from './Avatar';
 import { useBackdropClose } from '@/hooks/useBackdropClose';
 

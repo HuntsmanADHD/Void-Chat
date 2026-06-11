@@ -11,9 +11,9 @@
  * encoding choice doesn't matter for opaque blobs).
  */
 
-import nacl from 'tweetnacl';
-import bs58 from 'bs58';
-import { decodeBase64, decodeUTF8, encodeBase64, encodeUTF8 } from 'tweetnacl-util';
+import nacl from './nacl';
+import bs58 from './base58';
+import { decodeBase64, decodeUTF8, encodeBase64, encodeUTF8 } from './naclUtil';
 
 export interface SealedMessage {
   ciphertext: string;

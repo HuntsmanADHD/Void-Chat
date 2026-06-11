@@ -11,7 +11,7 @@ import {
   Share2,
   Trash2,
   X,
-} from 'lucide-react';
+} from '@/lib/icons';
 import { WashIcon } from '@/components/wash/WashIcon';
 import { Avatar } from '../ui/Avatar';
 import { WashFloating } from '@/components/wash/WashFloating';

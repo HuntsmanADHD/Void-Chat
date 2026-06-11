@@ -10,9 +10,9 @@ import {
   Share2,
   Sparkles,
   X,
-} from 'lucide-react';
-import nacl from 'tweetnacl';
-import naclUtil from 'tweetnacl-util';
+} from '@/lib/icons';
+import nacl from '@/lib/nacl';
+import naclUtil from '@/lib/naclUtil';
 
 const { decodeBase64, decodeUTF8, encodeBase64, encodeUTF8 } = naclUtil;
 

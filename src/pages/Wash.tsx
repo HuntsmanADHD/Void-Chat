@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft } from '@/lib/icons';
 import { WashWidget } from '@/components/wash/WashWidget';
 
 export default function Wash() {

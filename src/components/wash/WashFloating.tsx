@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { X } from 'lucide-react';
+import { X } from '@/lib/icons';
 import { WashWidget } from './WashWidget';
 
 export interface WashFloatingProps {

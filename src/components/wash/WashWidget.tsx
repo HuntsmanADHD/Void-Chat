@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowRight, Check, Copy, Eye, EyeOff, KeyRound, Sparkles } from 'lucide-react';
+import { ArrowRight, Check, Copy, Eye, EyeOff, KeyRound, Sparkles } from '@/lib/icons';
 import {
   getOrCreateWashIdentity,
   isWashed,

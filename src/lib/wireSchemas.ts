@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z, type Schema } from './validate';
 
 /**
  * Runtime validation for inbound socket.io events. TypeScript types are
@@ -135,7 +135,7 @@ export const WireErrorSchema = z
  * logs once at warn level on failure so a misbehaving relay is visible
  * without spamming on every malformed frame.
  */
-export function safeParse<T>(schema: z.ZodSchema<T>, raw: unknown, eventName: string): T | null {
+export function safeParse<T>(schema: Schema<T>, raw: unknown, eventName: string): T | null {
   const result = schema.safeParse(raw);
   if (result.success) return result.data;
   console.warn(`[wire] dropping malformed ${eventName} from relay:`, result.error.issues);

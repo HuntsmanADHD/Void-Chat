@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Lock } from 'lucide-react';
+import { Lock } from '@/lib/icons';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { ChatContainer, type ChatHeaderInfo } from '@/components/chat/ChatContainer';
 import type { MessageData } from '@/components/chat/Message';

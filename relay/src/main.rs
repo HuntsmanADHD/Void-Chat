@@ -49,8 +49,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = http::AppState::new(db);
     let rt_state = realtime::RealtimeState::new();
-    let (io_layer, _io) = realtime::build(rt_state);
-    let app = http::router(state, &cfg).layer(io_layer);
+    realtime::build(rt_state.clone()); // spawns the GC sweeper
+    let app = http::router(state, &cfg).merge(
+        axum::Router::new()
+            .route("/ws", axum::routing::get(realtime::ws_handler))
+            .with_state(rt_state),
+    );
 
     // Pinned to loopback. The relay is only ever reached via either
     // the local Tauri renderer or the local onion proxy forwarding

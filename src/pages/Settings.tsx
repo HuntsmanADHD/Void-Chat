@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Check, Copy, Download, Eye, Globe, Key, Shield, Trash2, Upload } from 'lucide-react';
+import { ArrowLeft, Check, Copy, Download, Eye, Globe, Key, Shield, Trash2, Upload } from '@/lib/icons';
 import { useSession } from '@/hooks/useSession';
 import { destroyActiveSession } from '@/lib/messageStore';
 import { useTorStatus } from '@/hooks/useTorStatus';
