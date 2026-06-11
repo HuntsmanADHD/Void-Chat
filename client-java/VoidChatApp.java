@@ -145,7 +145,20 @@ public final class VoidChatApp {
         String base = relayField.getText().trim();
         String name = nameField.getText().trim();
         if (name.isEmpty()) { name = "anon"; }
-        api = new RelayHttpClient(base);
+        // VOIDCHAT_SOCKS=host:port routes everything through a SOCKS5 proxy
+        // (Tor: 127.0.0.1:9050). Required when the relay is an .onion.
+        Transport transport;
+        try {
+            transport = Transport.fromSpec(System.getenv("VOIDCHAT_SOCKS"));
+        } catch (RuntimeException ex) {
+            error("bad VOIDCHAT_SOCKS: " + ex.getMessage());
+            return;
+        }
+        if (base.contains(".onion") && !transport.isProxied()) {
+            error(".onion relay needs VOIDCHAT_SOCKS=127.0.0.1:9050 (a running Tor)");
+            return;
+        }
+        api = new RelayHttpClient(base, transport);
         try {
             // Persistent identity: same keys across restarts. The name field
             // is authoritative — update + re-save if the user changed it.
@@ -158,6 +171,7 @@ public final class VoidChatApp {
             return;
         }
         client.setListener(new ClientEvents());
+        client.setTransport(transport);
         String wsUri = base.replaceFirst("^http", "ws") + "/ws";
         new SwingWorker<Void, Void>() {
             protected Void doInBackground() throws Exception { client.connect(wsUri); return null; }
@@ -267,19 +281,24 @@ public final class VoidChatApp {
             SwingUtilities.invokeLater(() -> { status.setText("connected as " + client.displayName); setConnected(true); });
         }
         public void onChannelMessage(String channelId, String name, String box, String text, String msgId, long ts) {
-            if (!channelId.equals(activeChannelId)) return;
-            SwingUtilities.invokeLater(() -> append("[" + now() + "] " + name + ": " + text));
+            // activeChannelId is mutated on the EDT (openChannel), so the
+            // filter must run there too — checking it on the WS thread races
+            // a channel switch and can render into the wrong channel.
+            SwingUtilities.invokeLater(() -> {
+                if (!channelId.equals(activeChannelId)) return;
+                append("[" + now() + "] " + name + ": " + text);
+            });
         }
         public void onDM(String box, String name, String text, boolean ok, String msgId, long ts) {
             SwingUtilities.invokeLater(() ->
                 append("[" + now() + "] " + (name == null ? "?" : name) + " (DM" + (ok ? "" : " ⚠ unverified") + "): " + text));
         }
         public void onRoster(String channelId, List<String> names) {
-            if ("1".equals(System.getenv("VOIDCHAT_DEBUG")))
-                System.err.println("[" + client.displayName + " roster] " + channelId + " -> " + names
-                    + (channelId.equals(activeChannelId) ? "" : " (inactive)"));
-            if (!channelId.equals(activeChannelId)) return;
             SwingUtilities.invokeLater(() -> {
+                if ("1".equals(System.getenv("VOIDCHAT_DEBUG")))
+                    System.err.println("[" + client.displayName + " roster] " + channelId + " -> " + names
+                        + (channelId.equals(activeChannelId) ? "" : " (inactive)"));
+                if (!channelId.equals(activeChannelId)) return;
                 rosterModel.clear();
                 for (String n : names) rosterModel.addElement(n);
                 // Demo auto-message: once a peer is present, send once.

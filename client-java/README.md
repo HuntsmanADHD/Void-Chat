@@ -2,9 +2,9 @@
 
 The client side of the JVM migration: a headless protocol/crypto engine
 (`VoidClient`) plus a Swing UI (`VoidChatApp`). Zero third-party deps —
-`java.base` (the engine) + `java.net.http` (HTTP/WebSocket client) +
-`java.desktop` (Swing). Builds on the relay (`../relay-java`) and crypto
-(`../seal-java`) modules.
+the engine is pure `java.base` (`jdeps`-verified; the hand-rolled transport
+replaced `java.net.http`), the UI adds `java.desktop` (Swing). Builds on the
+relay (`../relay-java`) and crypto (`../seal-java`) modules.
 
 ## Build & run
 
@@ -22,10 +22,14 @@ Optional auto-pilot env vars for demos: `VOIDCHAT_NAME`, `VOIDCHAT_AUTOCONNECT=1
 |---|---|
 | `VoidClient.java` | protocol + crypto engine: announce, join, channel send/recv, DM, roster verification, peer-binding cache, **heartbeat + auto-reconnect** |
 | `Identity.java` | persistent identity (Ed25519 + X25519 keys) saved to `~/.voidchat/identity.json` |
-| `RelayHttpClient.java` | community/channel CRUD over the relay HTTP API |
-| `VoidChatApp.java` | Swing desktop UI |
+| `Transport.java` | TCP dialer: direct or hand-rolled **SOCKS5 client (RFC 1928)** for Tor — always domain-ATYP, so .onion names go to the proxy verbatim (no local DNS, no leaks) |
+| `WsClientConnection.java` | hand-rolled **RFC 6455 client** (upgrade handshake, masked frames, auto-pong) — the mirror of relay-java's server `WebSocket.java`; same code path direct and over SOCKS |
+| `RelayHttpClient.java` | community/channel CRUD — hand-rolled HTTP/1.1 over `Transport` |
+| `VoidChatApp.java` | Swing desktop UI (`VOIDCHAT_SOCKS=host:port` routes via Tor) |
 | `ClientE2ETest.java` | two clients exchange E2E messages through a live relay (11 checks) |
-| `ClientFeatureTest.java` | identity persistence + reconnect-across-relay-restart (14 checks) |
+| `ClientFeatureTest.java` | identity persistence + reconnect-across-relay-restart (16 checks) |
+| `TorTransportTest.java` | full client flow through an in-process SOCKS5 server with a fake .onion name only the proxy can resolve (11 checks) |
+| `LiveOnionTest.java` | **real Tor network round-trip**: relay published as a v3 onion (relay-java `Tor.java`), client dials back through tor's SOCKS, E2E message + DM across mixed transports — run before shipping, needs internet + tor |
 
 ## Identity persistence
 
@@ -57,10 +61,32 @@ to the message listeners. (Note: the current protocol seals the **raw message
 text**, not a JSON envelope — message kinds like edit/reaction/reply aren't
 implemented in the TS client either, so there's no envelope gap to close yet.)
 
+## Tor transport (client side)
+
+`Transport.socks5(host, port)` (UI: `VOIDCHAT_SOCKS=127.0.0.1:9050`) routes
+every connection — HTTP CRUD and the websocket — through a SOCKS5 proxy
+using domain addressing, which is how Tor resolves `.onion` services. The
+JDK's `java.net.http` can't speak SOCKS, so the whole client transport is
+hand-rolled (and `java.net.http` is gone entirely). It's one code path: the
+direct tests exercise the same framing/handshake code the Tor route uses.
+
+`TorTransportTest` proves the SOCKS layer offline: a fake `.onion` hostname
+that only the embedded proxy can resolve, so any local-DNS shortcut would
+fail every assertion. The remaining (user-only) step is the same one the TS
+stack has: a live two-machine test against a real Tor onion.
+
+Not yet on the Tor side: *hosting* — publishing the relay as a hidden
+service needs a managed `tor` process (torrc `HiddenServiceDir` or
+control-port `ADD_ONION`), the Java counterpart of the Tauri sidecar.
+
 ## Status / gaps
 
 Done: announce, channel + DM messaging (E2E), roster + DM signature
-verification, identity persistence, heartbeat, reconnect, **msgId dedup**.
+verification, identity persistence, heartbeat, reconnect, **msgId dedup**,
+**SOCKS5/Tor client transport**, GUI roster-callback timing fix (the
+active-channel filter now runs on the EDT where `activeChannelId` is
+mutated).
 
 Not yet (see project notes): message history, local stores
-(password/host/pinned), Tor transport, and the GUI roster-callback timing bug.
+(password/host/pinned), Tor *hosting* (onion publication / tor process
+management), identity-file passphrase encryption.

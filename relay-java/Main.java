@@ -21,8 +21,20 @@ public final class Main {
         Relay relay = start(cfg, store);
         Log.info("listening on 127.0.0.1:" + relay.port());
 
+        // VOIDCHAT_TOR=1 publishes the relay as a v3 onion hidden service via
+        // a managed tor process (binary from PATH or VOIDCHAT_TOR_BINARY).
+        Tor tor = null;
+        if ("1".equals(System.getenv("VOIDCHAT_TOR"))) {
+            tor = Tor.start(cfg.dataDir.resolve("tor"), relay.port(),
+                    (pct, summary) -> Log.info("tor bootstrap " + pct + "% " + summary));
+            Log.info("onion address: http://" + tor.onionHostname()
+                    + "  (socks for outbound dials: 127.0.0.1:" + tor.socksPort() + ")");
+        }
+
+        final Tor torRef = tor;
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             Log.info("shutting down");
+            if (torRef != null) torRef.stop();
             relay.stop();
         }));
 

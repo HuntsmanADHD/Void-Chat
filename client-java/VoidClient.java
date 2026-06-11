@@ -1,8 +1,9 @@
 /*
  * VoidClient.java — headless Void Chat client core. Connects to the relay
- * over WebSocket (JDK java.net.http.WebSocket), performs the signed announce
- * handshake, joins channels, and sends/receives end-to-end encrypted channel
- * messages and DMs. Pure JDK + the seal-java crypto (Box, Ed25519Sign).
+ * over WebSocket (hand-rolled WsClientConnection — optionally through a
+ * SOCKS5/Tor Transport), performs the signed announce handshake, joins
+ * channels, and sends/receives end-to-end encrypted channel messages and
+ * DMs. Pure java.base + the seal-java crypto (Box, Ed25519Sign).
  *
  * This is the protocol + crypto engine the UI sits on. It owns the security
  * policy the relay can't enforce:
@@ -17,16 +18,12 @@
  * Wire format + signed payloads mirror the TS client exactly (see
  * encryption.ts / realtime.rs), so this interoperates with existing peers.
  */
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.WebSocket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -62,12 +59,11 @@ public final class VoidClient {
     public volatile String displayName;
 
     // ── Connection / state ────────────────────────────────────────────
-    private final HttpClient http = HttpClient.newHttpClient();
-    private volatile WebSocket ws;
+    private volatile Transport transport = Transport.DIRECT;
+    private volatile WsClientConnection ws;
     private volatile String currentNonce;
     private volatile boolean announced = false;
     private final AtomicLong ackSeq = new AtomicLong(1);
-    private final StringBuilder partial = new StringBuilder();
 
     // Heartbeat + auto-reconnect.
     private static final long HEARTBEAT_MS = 20_000;   // relay drops at 60s idle
@@ -145,6 +141,14 @@ public final class VoidClient {
     // ── Connect + handshake ───────────────────────────────────────────
 
     /**
+     * Route connections through a SOCKS5 proxy (Tor). Set before connect();
+     * applies to the initial dial and every reconnect.
+     */
+    public void setTransport(Transport t) {
+        this.transport = t == null ? Transport.DIRECT : t;
+    }
+
+    /**
      * Connect to the relay ws endpoint (e.g. ws://127.0.0.1:3001/ws). Blocks
      * for the initial connection (throws if the relay is unreachable), then
      * keeps the link alive with a heartbeat and auto-reconnects with backoff
@@ -155,25 +159,27 @@ public final class VoidClient {
         this.wsUri = wsUri;
         this.shouldReconnect = true;
         announced = false;
-        ws = http.newWebSocketBuilder()
-                .buildAsync(URI.create(wsUri), new WsListener())
-                .get();
+        // Assign ws BETWEEN open() and start(): no frame is delivered until
+        // start(), so the first connection:nonce → doAnnounce → send can
+        // never observe a null ws.
+        WsClientConnection c = WsClientConnection.open(transport, wsUri, new WsListener());
+        ws = c;
+        c.start();
         startHeartbeat();
     }
 
     private void reconnect() {
         if (!shouldReconnect) return;
         announced = false;
-        http.newWebSocketBuilder()
-                .buildAsync(URI.create(wsUri), new WsListener())
-                .whenComplete((w, ex) -> {
-                    if (ex != null) {
-                        scheduleReconnect(); // relay still down — try again
-                    } else {
-                        ws = w;
-                        startHeartbeat();
-                    }
-                });
+        try {
+            // Blocking dial on the scheduler thread — fine, it's dedicated.
+            WsClientConnection c = WsClientConnection.open(transport, wsUri, new WsListener());
+            ws = c;
+            c.start();
+            startHeartbeat();
+        } catch (Exception ex) {
+            scheduleReconnect(); // relay still down — try again
+        }
     }
 
     private void scheduleReconnect() {
@@ -187,9 +193,9 @@ public final class VoidClient {
         if (heartbeatStarted) return;
         heartbeatStarted = true;
         scheduler.scheduleAtFixedRate(() -> {
-            WebSocket w = ws;
-            if (w != null && !w.isOutputClosed()) {
-                try { w.sendText("{\"t\":\"" + PING + "\"}", true); } catch (RuntimeException ignored) {}
+            WsClientConnection w = ws;
+            if (w != null && !w.isClosed()) {
+                try { w.send("{\"t\":\"" + PING + "\"}"); } catch (RuntimeException ignored) {}
             }
         }, HEARTBEAT_MS, HEARTBEAT_MS, TimeUnit.MILLISECONDS);
     }
@@ -208,31 +214,13 @@ public final class VoidClient {
         if (TRACE) System.err.println((System.currentTimeMillis() % 100000) + " [" + displayName + "] " + s);
     }
 
-    private final class WsListener implements WebSocket.Listener {
-        @Override public void onOpen(WebSocket webSocket) {
-            // Assign ws HERE, not after buildAsync().get() returns: the JDK can
-            // deliver the first message (connection:nonce → doAnnounce → send)
-            // before .get() completes, and a null ws would silently drop the
-            // announce. onOpen is guaranteed to run before any onText.
-            ws = webSocket;
-            webSocket.request(1);
+    private final class WsListener implements WsClientConnection.Listener {
+        @Override public void onText(String message) {
+            try { dispatch(message); } catch (RuntimeException e) { /* ignore malformed */ }
         }
-        @Override public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
-            partial.append(data);
-            if (last) {
-                String msg = partial.toString();
-                partial.setLength(0);
-                try { dispatch(msg); } catch (RuntimeException e) { /* ignore malformed */ }
-            }
-            webSocket.request(1);
-            return null;
-        }
-        @Override public void onError(WebSocket webSocket, Throwable error) {
+        @Override public void onClose() {
+            // Fires exactly once per connection, for any cause.
             handleDisconnect();
-        }
-        @Override public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
-            handleDisconnect();
-            return null;
         }
     }
 
@@ -489,8 +477,8 @@ public final class VoidClient {
     }
 
     private void send(Object frame) {
-        WebSocket w = ws;
-        if (w != null) w.sendText(Json.write(frame), true);
+        WsClientConnection w = ws;
+        if (w != null) w.send(Json.write(frame));
     }
 
     public boolean isAnnounced() { return announced; }
@@ -504,7 +492,7 @@ public final class VoidClient {
     public void close() {
         shouldReconnect = false;        // stop the reconnect loop
         scheduler.shutdownNow();        // stop heartbeat
-        WebSocket w = ws;
-        if (w != null) w.sendClose(WebSocket.NORMAL_CLOSURE, "bye");
+        WsClientConnection w = ws;
+        if (w != null) w.close();
     }
 }

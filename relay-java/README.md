@@ -21,7 +21,20 @@ Requires JDK 21+ (virtual threads, `EdECPublicKeySpec`). Config via env:
 ```sh
 java -cp out CryptoUtilTest   # 251 vector/hostile-input assertions
 java -cp out RelayTest        # 50 integration assertions (boots a live relay)
+java -cp out TorHostTest      # 11 assertions — real tor binary, offline (DisableNetwork)
 ```
+
+## Tor hosting
+
+`VOIDCHAT_TOR=1` publishes the relay as a v3 onion hidden service via a
+managed tor process (`Tor.java` — binary from PATH or `VOIDCHAT_TOR_BINARY`).
+The onion identity lives in `<data>/tor/onion/`; back up that directory to
+keep the address, reuse the data dir to keep it across restarts. The same
+tor exposes a local SOCKS port for outbound dials (`Transport` in
+client-java), so one process serves both directions — same shape as the
+Tauri sidecar. `TorHostTest` validates the torrc against the real tor parser
+and proves identity persistence offline; `client-java`'s `LiveOnionTest`
+does the full round-trip over the live Tor network.
 
 ## What's hand-rolled vs. JDK
 
