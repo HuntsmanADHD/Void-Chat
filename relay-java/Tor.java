@@ -41,6 +41,13 @@ public final class Tor {
     private final Process process;
     private final int socksPort;
     private final CountDownLatch bootstrapped = new CountDownLatch(1);
+    /**
+     * Client-mode readiness: tor accepted the config and entered its main
+     * loop — signalled by the SOCKS listener opening OR any "Bootstrapped"
+     * line (the latter still appears under DisableNetwork, where no
+     * listeners exist; a rejected config exits before either).
+     */
+    private final CountDownLatch clientReady = new CountDownLatch(1);
     private final ArrayDeque<String> logTail = new ArrayDeque<>();
     private volatile String onionHostname;
 
@@ -55,6 +62,11 @@ public final class Tor {
      * any network activity), throws on bad binary / bad config / timeout.
      * Reachability additionally needs awaitBootstrapped().
      *
+     * relayPort == 0 means CLIENT-ONLY: no hidden service is published; the
+     * instance just provides the local SOCKS port for dialing other onions.
+     * In that mode readiness = the SOCKS listener being open, and
+     * onionHostname() stays null.
+     *
      * `disableNetwork` keeps tor fully offline (used by tests: the real
      * binary still validates the torrc and mints the onion identity).
      */
@@ -63,19 +75,23 @@ public final class Tor {
         String binary = System.getenv("VOIDCHAT_TOR_BINARY");
         if (binary == null || binary.isBlank()) binary = "tor";
 
+        boolean hosting = relayPort != 0;
         Path dataDir = stateDir.resolve("tor-data");
         Path onionDir = stateDir.resolve("onion");
         createPrivateDir(stateDir);
         createPrivateDir(dataDir);
-        createPrivateDir(onionDir);
+        if (hosting) createPrivateDir(onionDir);
 
         int socksPort = pickFreePort();
         Path torrc = stateDir.resolve("torrc");
         String conf = "DataDirectory " + dataDir.toAbsolutePath() + "\n"
                 + "SocksPort 127.0.0.1:" + socksPort + "\n"
                 + "ControlPort 0\n"
-                + "HiddenServiceDir " + onionDir.toAbsolutePath() + "\n"
-                + "HiddenServicePort 80 127.0.0.1:" + relayPort + "\n"
+                + "SafeLogging 1\n"
+                + (hosting
+                        ? "HiddenServiceDir " + onionDir.toAbsolutePath() + "\n"
+                        + "HiddenServicePort 80 127.0.0.1:" + relayPort + "\n"
+                        : "")
                 + (disableNetwork ? "DisableNetwork 1\n" : "")
                 + "Log notice stdout\n";
         Files.writeString(torrc, conf);
@@ -93,22 +109,27 @@ public final class Tor {
         Tor tor = new Tor(p, socksPort);
         Thread.ofVirtual().name("tor-log").start(() -> tor.logLoop(progress));
 
-        // Wait for the hostname file; fail fast if tor dies (bad torrc etc).
+        // Readiness: hosting waits for the hostname file; client-only waits
+        // for the SOCKS listener. Either way fail fast if tor dies.
         Path hostnameFile = onionDir.resolve("hostname");
         long deadline = System.currentTimeMillis() + timeoutMs;
         for (;;) {
-            if (Files.exists(hostnameFile)) {
-                String name = Files.readString(hostnameFile, StandardCharsets.US_ASCII).trim();
-                if (!name.isEmpty()) {
-                    tor.onionHostname = name;
-                    return tor;
+            if (hosting) {
+                if (Files.exists(hostnameFile)) {
+                    String name = Files.readString(hostnameFile, StandardCharsets.US_ASCII).trim();
+                    if (!name.isEmpty()) {
+                        tor.onionHostname = name;
+                        return tor;
+                    }
                 }
+            } else if (tor.clientReady.getCount() == 0) {
+                return tor;
             }
             if (!p.isAlive())
                 throw new IOException("tor exited (code " + p.exitValue() + "):\n" + tor.tail());
             if (System.currentTimeMillis() > deadline) {
                 tor.stop();
-                throw new IOException("timed out waiting for onion hostname:\n" + tor.tail());
+                throw new IOException("timed out waiting for tor readiness:\n" + tor.tail());
             }
             try {
                 Thread.sleep(HOSTNAME_POLL_MS);
@@ -123,6 +144,12 @@ public final class Tor {
     /** Convenience: online, 30 s hostname timeout. */
     public static Tor start(Path stateDir, int relayPort, Progress progress) throws IOException {
         return start(stateDir, relayPort, progress, 30_000, false);
+    }
+
+    /** Client-only tor: local SOCKS for dialing onions, no hidden service. */
+    public static Tor startClient(Path stateDir, Progress progress,
+            long timeoutMs, boolean disableNetwork) throws IOException {
+        return start(stateDir, 0, progress, timeoutMs, disableNetwork);
     }
 
     /** The published v3 address, e.g. "abc…xyz.onion". */
@@ -166,8 +193,11 @@ public final class Tor {
                     logTail.addLast(line);
                     if (logTail.size() > LOG_TAIL_LINES) logTail.removeFirst();
                 }
+                if (line.contains("Opened Socks listener"))
+                    clientReady.countDown();
                 Matcher m = BOOTSTRAP_LINE.matcher(line);
                 if (m.find()) {
+                    clientReady.countDown();
                     int pct = Integer.parseInt(m.group(1));
                     if (progress != null)
                         progress.onBootstrap(pct, m.group(2) == null ? "" : m.group(2));

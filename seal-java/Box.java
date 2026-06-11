@@ -100,12 +100,52 @@ public final class Box {
         return new String(plain, StandardCharsets.UTF_8);
     }
 
-    /** crypto_box beforenm: X25519 ECDH → HChaCha20 key derivation. */
+    /**
+     * crypto_box beforenm: X25519 ECDH → HChaCha20 key derivation, with an
+     * LRU cache — this is exactly the precompute split libsodium's
+     * beforenm/afternm API exists for. The ECDH dominates a seal (~90 µs),
+     * so re-sealing to the same peer (every channel message) skips it. The
+     * cache key is a SHA-256 over both inputs, so distinct identities in
+     * one process can't collide, and no key material sits in map keys.
+     */
     static byte[] beforenm(byte[] theirPublic, byte[] mySecret) {
+        String cacheKey = fingerprint(theirPublic, mySecret);
+        synchronized (BEFORENM_CACHE) {
+            byte[] hit = BEFORENM_CACHE.get(cacheKey);
+            if (hit != null)
+                return hit.clone();
+        }
         byte[] shared = x25519(mySecret, theirPublic);
         if (shared == null)
             return null;
-        return Seal.hchacha20(shared, ZERO16);
+        byte[] boxKey = Seal.hchacha20(shared, ZERO16);
+        synchronized (BEFORENM_CACHE) {
+            BEFORENM_CACHE.put(cacheKey, boxKey.clone());
+        }
+        return boxKey;
+    }
+
+    private static final int BEFORENM_CACHE_MAX = 512;
+    private static final java.util.LinkedHashMap<String, byte[]> BEFORENM_CACHE =
+            new java.util.LinkedHashMap<>(64, 0.75f, true) { // access-order LRU
+                @Override protected boolean removeEldestEntry(java.util.Map.Entry<String, byte[]> e) {
+                    if (size() > BEFORENM_CACHE_MAX) {
+                        java.util.Arrays.fill(e.getValue(), (byte) 0); // scrub evicted key
+                        return true;
+                    }
+                    return false;
+                }
+            };
+
+    private static String fingerprint(byte[] theirPublic, byte[] mySecret) {
+        try {
+            java.security.MessageDigest d = java.security.MessageDigest.getInstance("SHA-256");
+            d.update(mySecret);
+            d.update(theirPublic);
+            return Base64.getEncoder().encodeToString(d.digest());
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
     }
 
     // ── X25519 via the JDK (XDH) ──────────────────────────────────────

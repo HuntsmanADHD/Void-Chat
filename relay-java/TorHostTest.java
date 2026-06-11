@@ -61,13 +61,24 @@ public final class TorHostTest {
             "fresh stateDir mints a different onion identity");
         tor3.stop();
 
+        // ── Client-only mode: SOCKS, no hidden service ─────────────────
+        Path stateDir5 = Files.createTempDirectory("vc-tor-client");
+        Tor client = Tor.startClient(stateDir5, null, 30_000, true);
+        check(client.onionHostname() == null, "client mode publishes no onion");
+        check(client.socksPort() > 0, "client mode opens a SOCKS port");
+        check(!Files.exists(stateDir5.resolve("onion")), "client mode creates no onion dir");
+        check(client.isAlive(), "client-mode tor runs");
+        client.stop();
+        check(!client.isAlive(), "client-mode tor stops");
+
         // ── Failure honesty: tor rejecting the config must throw fast ──
-        // HiddenServicePort forwarding to port 0 fails tor's config parse,
-        // so the process exits before writing a hostname.
+        // HiddenServicePort forwarding to port -1 fails tor's config parse,
+        // so the process exits before writing a hostname. (Port 0 is NOT a
+        // bad config — it selects client-only mode.)
         Path stateDir4 = Files.createTempDirectory("vc-tor-host-bad");
         boolean threwOnBadConfig = false;
         try {
-            Tor.start(stateDir4, 0, null, 15_000, true);
+            Tor.start(stateDir4, -1, null, 15_000, true);
         } catch (Exception e) {
             threwOnBadConfig = true;
         }
