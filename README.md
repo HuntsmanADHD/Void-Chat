@@ -4,6 +4,8 @@ A privacy-first desktop messenger that routes everything through Tor hidden serv
 
 No accounts. No email. No password. No history. Every browser tab generates a fresh cryptographic identity that disappears when you close it.
 
+> **⚡ The pure-Java rewrite (v0.1 candidate) lives in [`seal-java/`](seal-java/), [`relay-java/`](relay-java/), and [`client-java/`](client-java/) — zero dependencies, JDK only. See [Pure-Java build](#pure-java-build-v01-candidate) below. The Tauri/TypeScript/Rust app this README describes remains in-tree as the reference implementation.**
+
 <p align="center">
   <img src="public/Example%20Img/landing%20page.png" alt="Void Chat landing page" width="800" />
 </p>
@@ -28,6 +30,70 @@ No accounts. No email. No password. No history. Every browser tab generates a fr
 7. [Day-to-day commands](#day-to-day-commands)
 8. [Honest limitations](#honest-limitations)
 9. [Tech stack + license](#tech-stack--license)
+
+---
+
+## Pure-Java build (v0.1 candidate)
+
+The whole stack — message crypto, relay, client, GUI, Tor integration — has
+been rewritten in plain Java: **zero third-party dependencies**, no
+Maven/Gradle, nothing beyond the JDK (`jdeps`-verified: `java.base` +
+`java.desktop`). The application code is a ~150 KB jar. The original
+TypeScript/Rust app stays in-tree as the byte-compatibility reference
+(the Java seal is proven byte-identical to the TS client's, 600 cases both
+directions).
+
+### Prerequisites
+
+- **JDK 21+** to build (the produced `dist/` bundles its own trimmed runtime)
+- **tor** for hosting or joining `.onion` communities: `pacman -S tor` /
+  `apt install tor` / `brew install tor` — or point `VOIDCHAT_TOR_BINARY`
+  at a binary. Nothing else.
+
+### Build & run
+
+```sh
+./build.sh              # → dist/ (jar + trimmed runtime + launchers)
+./dist/voidchat         # GUI: host + client in one app
+./dist/voidchat-relay   # headless relay (VOIDCHAT_TOR=1 publishes an onion)
+./build.sh --package    # optional: jpackage app-image in dist/package/
+```
+
+### Host a community (be the server)
+
+Click **Host over Tor** in the GUI. It boots the bundled relay + a managed
+tor, shows bootstrap progress, then gives you a copyable
+`http://<56-chars>.onion` invite. You're connected to your own relay
+automatically.
+
+### Join a friend's community
+
+Paste their `http://….onion` invite into the Relay field and Connect. If no
+SOCKS proxy is configured, the app starts its own client-only tor and waits
+for bootstrap — no setup on the joiner's side beyond having tor installed.
+
+### Back up your onion identity
+
+Your address IS the key directory: `~/.voidchat/host/tor/onion/`. Copy that
+directory (it's `0700`; treat it like a private key — it's exactly that) to
+keep the same `.onion` address across machines. Delete it to become
+unreachable at that address forever.
+
+### What's on disk, honestly
+
+Identity keys (`~/.voidchat/identity.json`, plaintext `0600` by default —
+the **Identity…** button seals it under a passphrase with Argon2id +
+XChaCha20-Poly1305), pinned communities, a community-password cache
+(plaintext `0600` in v0.1), recent hosts, the hosted community directory,
+and the onion key above. Full inventory + audit: [`AUDIT_JAVA.md`](AUDIT_JAVA.md).
+
+### Verify the stack yourself
+
+Every module ships its tests (416 assertions): RFC vectors for ChaCha20/
+Poly1305/Argon2/Blake2b/scrypt/Ed25519, a 600-case libsodium cross-check,
+live-relay integration suites, an offline Tor-hosting suite against the real
+tor binary, and `LiveOnionTest` — a full round-trip over the real Tor
+network. See `relay-java/README.md` and `client-java/README.md`.
 
 ---
 

@@ -1,0 +1,6 @@
+Manifest-Version: 1.0
+Main-Class: VoidChatApp
+Implementation-Title: Void Chat (Java)
+Implementation-Version: 0.1.0
+Created-By: 26.0.1 (Arch Linux)
+

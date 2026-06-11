@@ -31,7 +31,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class WsClientConnection {
     private static final String GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     private static final int MAX_MESSAGE_BYTES = 256 * 1024; // match the relay's cap
+    private static final int MAX_CONTROL_BYTES = 125;        // RFC 6455 §5.5
     private static final int MAX_HANDSHAKE_BYTES = 16 * 1024;
+    private static final int HANDSHAKE_TIMEOUT_MS = 20_000;
+    // No server frame for this long ⇒ dead/half-open link (e.g. a dropped Tor
+    // circuit). We heartbeat every ~20s and the relay $pongs, so a healthy
+    // idle link always beats this; on expiry the read throws → onClose →
+    // VoidClient reconnects.
+    private static final int READ_IDLE_TIMEOUT_MS = 90_000;
     private static final Object QUEUE_CLOSE = new Object();
     private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -73,9 +80,11 @@ public final class WsClientConnection {
 
         Socket s = transport.open(host, port);
         try {
+            s.setSoTimeout(HANDSHAKE_TIMEOUT_MS); // don't hang on a stalled upgrade
             InputStream in = new java.io.BufferedInputStream(s.getInputStream());
             OutputStream out = new java.io.BufferedOutputStream(s.getOutputStream());
             handshake(in, out, host, port, path);
+            s.setSoTimeout(READ_IDLE_TIMEOUT_MS); // steady-state liveness watchdog
             return new WsClientConnection(s, in, out, listener);
         } catch (IOException e) {
             try { s.close(); } catch (IOException ignored) {}
@@ -251,6 +260,9 @@ public final class WsClientConnection {
         // RFC 6455 §5.1: server frames MUST NOT be masked.
         if (masked) throw new IOException("masked server frame");
         if (len > MAX_MESSAGE_BYTES) throw new IOException("frame too large");
+        // RFC 6455 §5.5: control frames (0x8–0xA) carry ≤125 bytes.
+        if ((opcode & 0x8) != 0 && len > MAX_CONTROL_BYTES)
+            throw new IOException("control frame too large");
         byte[] payload = new byte[(int) len];
         readFully(payload, (int) len);
         Frame f = new Frame();

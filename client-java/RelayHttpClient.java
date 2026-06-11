@@ -20,6 +20,7 @@ import java.util.Map;
 
 public final class RelayHttpClient {
     private static final int MAX_RESPONSE_BYTES = 4 * 1024 * 1024; // avatars are ≤2 MB
+    private static final int READ_TIMEOUT_MS = 60_000; // don't hang the caller on a stalled relay
 
     private final String base; // e.g. http://127.0.0.1:3001 or http://xyz.onion
     private final Transport transport;
@@ -79,6 +80,12 @@ public final class RelayHttpClient {
         if (!"http".equalsIgnoreCase(u.getScheme()))
             throw new IOException("only http:// relay URLs are supported, got: " + base);
         String host = u.getHost();
+        // Privacy: the relay must be loopback or a .onion. This blocks a user
+        // being tricked into sending cleartext HTTP to an arbitrary internet
+        // host (Tor provides the transport encryption for .onion; loopback is
+        // the local host's own relay).
+        if (host == null || !(isLoopback(host) || host.endsWith(".onion")))
+            throw new IOException("relay must be 127.0.0.1/localhost or a .onion, got: " + host);
         int port = u.getPort() == -1 ? 80 : u.getPort();
 
         byte[] bodyBytes = body == null ? null : Json.write(body).getBytes(StandardCharsets.UTF_8);
@@ -99,6 +106,7 @@ public final class RelayHttpClient {
         int status;
         String responseBody;
         try (Socket s = transport.open(host, port)) {
+            s.setSoTimeout(READ_TIMEOUT_MS);
             OutputStream out = s.getOutputStream();
             out.write(req.toString().getBytes(StandardCharsets.ISO_8859_1));
             if (bodyBytes != null) out.write(bodyBytes);
@@ -107,10 +115,7 @@ public final class RelayHttpClient {
             InputStream in = new java.io.BufferedInputStream(s.getInputStream());
             String headerBlock = readHeaderBlock(in);
             status = parseStatus(headerBlock);
-            String lenHeader = headerValue(headerBlock, "content-length");
-            byte[] raw = lenHeader != null
-                    ? readN(in, Integer.parseInt(lenHeader.trim()))
-                    : readToEof(in);
+            byte[] raw = readBody(in, headerValue(headerBlock, "content-length"));
             responseBody = new String(raw, StandardCharsets.UTF_8);
         }
 
@@ -156,6 +161,25 @@ public final class RelayHttpClient {
                 return line.substring(colon + 1).trim();
         }
         return null;
+    }
+
+    /** Read the body by Content-Length (validated) or to EOF if absent. */
+    private static byte[] readBody(InputStream in, String lenHeader) throws IOException {
+        if (lenHeader == null) return readToEof(in);
+        long len;
+        try {
+            len = Long.parseLong(lenHeader.trim());
+        } catch (NumberFormatException e) {
+            throw new IOException("bad Content-Length: " + lenHeader);
+        }
+        if (len < 0 || len > MAX_RESPONSE_BYTES)
+            throw new IOException("bad Content-Length: " + len);
+        return readN(in, (int) len);
+    }
+
+    private static boolean isLoopback(String host) {
+        return host.equals("127.0.0.1") || host.equals("localhost") || host.equals("::1")
+                || host.equals("[::1]");
     }
 
     private static byte[] readN(InputStream in, int n) throws IOException {

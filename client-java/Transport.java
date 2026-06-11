@@ -56,7 +56,12 @@ public final class Transport {
         }
         try {
             s.connect(new InetSocketAddress(socksHost, socksPort), CONNECT_TIMEOUT_MS);
+            // Bound the SOCKS handshake reads so a stalled proxy can't hang
+            // the caller forever; cleared once CONNECT succeeds so the caller
+            // (WS/HTTP) sets its own steady-state read timeout.
+            s.setSoTimeout(CONNECT_TIMEOUT_MS);
             socks5Connect(s, host, port);
+            s.setSoTimeout(0);
             return s;
         } catch (IOException e) {
             try { s.close(); } catch (IOException ignored) {}

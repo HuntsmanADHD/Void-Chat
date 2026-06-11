@@ -16,6 +16,7 @@
  * send — never holding the lock across a send (matches realtime.rs).
  */
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -146,7 +147,10 @@ public final class Realtime implements WebSocket.Listener {
         }
 
         long nowMs = System.currentTimeMillis();
-        if (Math.abs(nowMs - ts) > ANNOUNCE_MAX_SKEW_MS) {
+        // Reject negative ts first: a ts of Long.MIN_VALUE makes (nowMs - ts)
+        // overflow and Math.abs() return a negative value, slipping past the
+        // skew check. Non-negative ts can't overflow the subtraction here.
+        if (ts < 0 || Math.abs(nowMs - ts) > ANNOUNCE_MAX_SKEW_MS) {
             failAnnounce(ws, "STALE_TIMESTAMP", "announce timestamp out of skew window", null);
             return;
         }
@@ -172,7 +176,8 @@ public final class Realtime implements WebSocket.Listener {
             failAnnounce(ws, "BAD_NONCE", "no nonce issued for this socket", claimedBox);
             return;
         }
-        if (!nonce.equals(expected)) {
+        if (!MessageDigest.isEqual(nonce.getBytes(StandardCharsets.UTF_8),
+                expected.getBytes(StandardCharsets.UTF_8))) {
             failAnnounce(ws, "BAD_NONCE", "nonce mismatch", claimedBox);
             return;
         }

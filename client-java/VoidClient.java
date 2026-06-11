@@ -371,13 +371,23 @@ public final class VoidClient {
         if (!verifyJoin(channelId, signingPub, boxPub, joinTs, joinSig))
             return null; // audit pt6 H8: drop members with bad/replayed join sigs
         learnBinding(signingPub, boxPub);
-        return new Member(signingPub, boxPub, name);
+        // displayName isn't covered by the join sig, so a hostile relay can
+        // supply any string. Clamp it for display safety (matches the relay's
+        // own 32-codepoint announce cap); identity is the verified key, not
+        // the name (names are spoofable by design).
+        return new Member(signingPub, boxPub, clampName(name));
+    }
+
+    /** Bound an untrusted display name to 64 chars so it can't bloat the UI. */
+    private static String clampName(String name) {
+        if (name == null) return null;
+        return name.length() <= 64 ? name : name.substring(0, 64) + "…";
     }
 
     private void onChannelMessage(Map<String, Object> d) {
         String channelId = Json.str(d, "channelId");
         String senderBoxPub = Json.str(d, "senderBoxPublicKey");
-        String senderName = Json.str(d, "senderDisplayName");
+        String senderName = clampName(Json.str(d, "senderDisplayName"));
         String ct = Json.str(d, "ciphertext");
         String nonce = Json.str(d, "nonce");
         String msgId = Json.str(d, "msgId");
@@ -405,7 +415,7 @@ public final class VoidClient {
     private void onDmMessage(Map<String, Object> d) {
         String senderBoxPub = Json.str(d, "senderBoxPublicKey");
         String senderSignPub = Json.str(d, "senderSigningPublicKey");
-        String senderName = Json.str(d, "senderDisplayName");
+        String senderName = clampName(Json.str(d, "senderDisplayName"));
         String ct = Json.str(d, "ciphertext");
         String nonce = Json.str(d, "nonce");
         String senderSig = Json.str(d, "senderSig");

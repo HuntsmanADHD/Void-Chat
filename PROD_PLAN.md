@@ -117,18 +117,22 @@ All JDK-native tooling — the zero-dep rule applies to the build too.
 
 ## Phase E — Release gates (definition of done for v0.1)
 
-- [ ] Full suite green on the release build (364+ and growing)
-- [ ] `LiveOnionTest` green on the release artifact
+- [x] Full suite green on the release build — 416 assertions (2026-06-11)
+- [x] `LiveOnionTest` green on the release artifact — 9/9 with production
+      classes loaded from `dist/voidchat.jar`, real Tor network (2026-06-11)
 - [ ] **Two-machine test:** a second physical machine joins your onion,
       messages flow both ways, survives a reconnect (the one thing no test
-      here can replace)
+      here can replace) — **user**
 - [ ] 24 h soak: idle connection stays alive across Tor circuit rotation;
-      no memory growth
+      no memory growth — **user** (the 90 s read-watchdog + reconnect from
+      the Phase C fixes is the mechanism under test)
 - [ ] Interop decision exercised: either a TS client joins a Java relay live
       (wire contract claim proven end-to-end) or v0.1 is declared Java-only
-- [ ] Audit: all C/H findings fixed, M findings documented in AUDIT_JAVA.md
-- [ ] `jdeps` clean: `java.base` (+ `java.desktop` for the GUI) only
-- [ ] Tag `v0.1.0-java`, artifacts attached, branch merged
+      — **user decision**
+- [x] Audit: zero C/H findings; 9 hardening fixes applied; Lows documented
+      in AUDIT_JAVA.md (2026-06-11)
+- [x] `jdeps` clean — enforced as a hard gate inside `build.sh`
+- [ ] Tag `v0.1.0-java`, artifacts attached, branch merged — **user**
 
 ## Open product decisions (need your call, in Phase A)
 
@@ -176,4 +180,47 @@ that already saved this branch once.
   `seal-compat.mjs` byte-equality. JSON measured a non-issue (~400k
   frames/s); store-write debounce skipped (bench did not indict it).
 
-Next: **Phase C audit** — run against a committed checkpoint.
+**2026-06-11 — Phase C audit done. No Critical/High/Medium findings.**
+
+Full writeup in `AUDIT_JAVA.md`. `security-review` skill (sub-agent, traced
+to ground truth) returned zero findings ≥ confidence 8. Manual sweeps
+confirmed: all secret comparisons constant-time, `SecureRandom` throughout,
+the new `beforenm` cache key correctly binds (mySecret‖theirPublic) so it
+can't cross keypairs, parsers fail closed, every input cap present, loopback
+binds + `ControlPort 0` + `SafeLogging 1`, no plaintext/keys in default
+logs. Three Low items documented (opt-in `VOIDCHAT_DEBUG` stderr; plaintext
+`passwords.json`/pins/hosts not under the identity passphrase — post-v0.1
+whole-profile encryption; first-contact DM shows ⚠ unverified by design).
+`/fix-audit` is a no-op (nothing C/H to fix). Disk-at-rest inventory
+included. Recommend a general `/pre-prod-audit` correctness pass before tag.
+
+**2026-06-11 — Phase C completed (pre-prod correctness pass + fixes).**
+
+Ran `/pre-prod-audit` (6 parallel agents) after the security review. Triaged
+out the false positives (heartbeat/reconnect, LocalStore reentrancy, DM-map
+race — all non-issues) and applied 9 real fixes: announce ts<0 reject
+(Math.abs overflow), constant-time nonce compare, relay store 0600, **WS
+read idle-timeout on both ends** (dead Tor circuit → reconnect/reap — the key
+reliability fix), SOCKS/handshake/request socket timeouts, RFC 6455
+control-frame ≤125B, hostile Content-Length robustness, relay host allowlist
+(loopback/.onion only), untrusted display-name clamp. Suite re-run: 416
+assertions green. Details in `AUDIT_JAVA.md`. Deferred (documented):
+client-side $ack surfacing, tor PATH hardening.
+
+**2026-06-11 — Phase D packaging done.**
+
+`build.sh` (repo root, JDK tooling only): compiles the 26 production sources
+(tests/bench/interop excluded; byte-identical Base58 duplicate gated by a
+diff check), enforces the jdeps purity gate (`java.base` + `java.desktop` +
+its transitive `java.datatransfer`), produces `dist/voidchat.jar` (**152 KB**,
+Main-Class VoidChatApp, version-stamped manifest), a jlink-trimmed runtime
+(51 MB), launchers `dist/voidchat` (GUI) + `dist/voidchat-relay` (headless),
+and with `--package` a jpackage app-image (54 MB). Dist artifact smoke-tested:
+relay boots from the launcher, serves the API, writes the store 0600.
+`dist/` gitignored. README gained a "Pure-Java build" section (prereqs:
+JDK 21+ to build, system tor or `VOIDCHAT_TOR_BINARY`; host/join quickstart;
+onion-key backup story; disk inventory link; verify-it-yourself pointer) and
+the top marks the TS/Rust app as the in-tree reference implementation.
+
+Next: **Phase E release gates** — user-paced (two-machine test, 24 h soak,
+tag v0.1.0-java).

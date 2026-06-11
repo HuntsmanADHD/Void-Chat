@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -146,14 +147,24 @@ public final class Store {
         try {
             Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
             Files.writeString(tmp, text, StandardCharsets.UTF_8);
+            restrict(tmp); // owner-only before it carries password/token hashes
             try {
                 Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE);
             } catch (java.nio.file.AtomicMoveNotSupportedException e) {
                 Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
             }
+            restrict(file);
         } catch (IOException e) {
             Log.error("persist failed: " + e);
             throw new RuntimeException("persist failed", e);
+        }
+    }
+
+    private static void restrict(Path p) {
+        try {
+            Files.setPosixFilePermissions(p, PosixFilePermissions.fromString("rw-------"));
+        } catch (UnsupportedOperationException | IOException ignored) {
+            // non-POSIX filesystem (e.g. Windows) — best effort
         }
     }
 

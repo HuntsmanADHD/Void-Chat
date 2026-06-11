@@ -22,6 +22,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class WebSocket {
     private static final String GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     private static final int MAX_MESSAGE_BYTES = 256 * 1024; // generous; ciphertext cap is checked above this
+    private static final int MAX_CONTROL_BYTES = 125;        // RFC 6455 §5.5
+    // No client frame for this long ⇒ dead/half-open connection. The client
+    // heartbeats every ~20s, so a healthy idle link always beats this.
+    private static final int READ_IDLE_TIMEOUT_MS = 90_000;
     private static final long QUEUE_POISON = -1;
 
     private final Socket socket;
@@ -66,6 +70,10 @@ public final class WebSocket {
             return;
         }
 
+        try {
+            socket.setSoTimeout(READ_IDLE_TIMEOUT_MS); // reap dead/half-open clients
+        } catch (java.net.SocketException ignored) {
+        }
         WebSocket ws = new WebSocket(socket, in, out);
         ws.writerThread = Thread.ofVirtual().name("ws-writer").start(ws::writerLoop);
         try {
@@ -175,6 +183,9 @@ public final class WebSocket {
             throw new IOException("unmasked client frame");
         if (len > MAX_MESSAGE_BYTES)
             throw new IOException("frame too large");
+        // RFC 6455 §5.5: control frames (0x8–0xA) carry ≤125 bytes.
+        if ((opcode & 0x8) != 0 && len > MAX_CONTROL_BYTES)
+            throw new IOException("control frame too large");
         byte[] mask = new byte[4];
         readFully(mask, 4);
         byte[] payload = new byte[(int) len];
